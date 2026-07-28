@@ -1,0 +1,454 @@
+"""Concrete implementation of :class:`PiDataProvider` against a PI Web API."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import ssl
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+from pydantic import SecretStr
+
+from app.integrations.pi.errors import (
+    PiAuthError,
+    PiIntegrationError,
+    PiInvalidResponseError,
+    PiNotConfiguredError,
+    PiRateLimitedError,
+    PiSSLError,
+    PiTagNotFoundError,
+    PiTimeoutError,
+    PiUnavailableError,
+    PiUnsupportedAuthError,
+)
+from app.integrations.pi.provider import (
+    PiDataProvider,
+    PiInterpolatedValues,
+    PiPoint,
+    PiRecordedValues,
+    PiValue,
+)
+
+logger = logging.getLogger("pi_analytics_data.pi")
+
+
+def _normalize_timestamp(raw: Any) -> datetime:
+    """Convert a PI timestamp string to a timezone-aware ``datetime`` in UTC."""
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=timezone.utc)
+        return raw.astimezone(timezone.utc)
+    if not isinstance(raw, str):
+        raise PiInvalidResponseError("Timestamp retornado pelo PI Web API em formato invalido.")
+    text = raw.strip()
+    if not text:
+        raise PiInvalidResponseError("Timestamp vazio retornado pelo PI Web API.")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise PiInvalidResponseError(
+            "Timestamp retornado pelo PI Web API nao esta em formato ISO 8601."
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _normalize_value(raw: Any) -> object:
+    """Return the PI value preserving its original Python type.
+
+    Numeric strings are converted to numbers; everything else is kept as-is.
+    ``None`` is allowed.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text == "":
+            return None
+        try:
+            if any(ch in text for ch in (".", ",", "e", "E")):
+                return float(text)
+            return int(text)
+        except ValueError:
+            return text
+    return raw
+
+
+def _parse_quality(flags: Any) -> Tuple[bool, bool, bool]:
+    """Extract (good, questionable, substituted) from a PI ``Good`` flag.
+
+    PI returns a boolean or an integer per value where:
+    * Good=0  -> good
+    * Good=1  -> substituted
+    * Good=2  -> questionable
+    * Good=3+ -> bad
+    """
+    if flags is None:
+        return True, False, False
+    if isinstance(flags, bool):
+        return (not flags), False, flags
+    if isinstance(flags, (int, float)):
+        code = int(flags)
+        if code == 0:
+            return True, False, False
+        if code == 1:
+            return False, False, True
+        if code == 2:
+            return False, True, False
+        return False, True, False
+    return True, False, False
+
+
+def _parse_value_entry(entry: Dict[str, Any]) -> PiValue:
+    timestamp = _normalize_timestamp(entry.get("Timestamp"))
+    value = _normalize_value(entry.get("Value"))
+    good, questionable, substituted = _parse_quality(entry.get("Good"))
+    return PiValue(
+        timestamp=timestamp,
+        value=value,
+        good=good,
+        questionable=questionable,
+        substituted=substituted,
+        units=entry.get("Units"),
+    )
+
+
+class PiWebApiDataProvider(PiDataProvider):
+    """PI Web API implementation using HTTPX ``AsyncClient``.
+
+    The client is reused across calls to take advantage of HTTP keep-alive
+    and connection pooling. Retries are limited to idempotent GETs and
+    respect the configured ``max_retries``/``timeout`` values.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        data_server: str,
+        auth_mode: str = "none",
+        username: Optional[str] = None,
+        password: Optional[SecretStr] = None,
+        verify_ssl: bool = True,
+        timeout: float = 30.0,
+        max_retries: int = 2,
+    ) -> None:
+        if auth_mode not in {"none", "basic"}:
+            raise PiUnsupportedAuthError(
+                f"Modo de autenticacao '{auth_mode}' nao suportado. Use 'none' ou 'basic'."
+            )
+        self.base_url = base_url.rstrip("/") + "/" if base_url else ""
+        self.data_server = data_server
+        self.auth_mode = auth_mode
+        self.username = username
+        self.password = password
+        self.verify_ssl = verify_ssl
+        self.timeout = timeout
+        self.max_retries = max(0, max_retries)
+        self._auth: Optional[httpx.BasicAuth] = None
+        if auth_mode == "basic":
+            if not username or password is None:
+                raise PiUnsupportedAuthError(
+                    "Autenticacao basica requer usuario e senha."
+                )
+            self._auth = httpx.BasicAuth(username, password.get_secret_value())
+        self._client: Optional[httpx.AsyncClient] = None
+
+    def _build_client(self) -> httpx.AsyncClient:
+        ssl_context: Optional[ssl.SSLContext] = None
+        if not self.verify_ssl:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        return httpx.AsyncClient(
+            base_url=self.base_url,
+            auth=self._auth,
+            verify=self.verify_ssl if ssl_context is None else ssl_context,
+            timeout=self.timeout,
+            headers={"Accept": "application/json"},
+            follow_redirects=True,
+        )
+
+    async def start(self) -> None:
+        if self._client is None:
+            self._client = self._build_client()
+            await self._client.__aenter__()
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            raise PiUnavailableError("Cliente HTTP do PI Web API nao inicializado.")
+        return self._client
+
+    @property
+    def is_started(self) -> bool:
+        return self._client is not None
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        """Issue an HTTP request with retry on transient errors.
+
+        Only idempotent GETs are retried. Retries are allowed only for:
+        * timeout (PiTimeoutError)
+        * connection failures (PiUnavailableError)
+        * HTTP 429 (PiRateLimitedError), 502, 503, 504 (PiUnavailableError)
+
+        Responses 400, 401, 403, 404 are never retried.
+        """
+        if not self.base_url:
+            raise PiNotConfiguredError()
+
+        attempts = 1
+        if method.upper() == "GET":
+            attempts = self.max_retries + 1
+
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self.client.request(method, path, **kwargs)
+                self._raise_for_status(response, path)
+                return response
+            except PiIntegrationError as exc:
+                last_error = exc
+                if attempt >= attempts or not exc.retryable:
+                    raise
+                backoff = min(2 ** (attempt - 1), 5)
+                logger.warning(
+                    "PI request failed (attempt %s/%s), retrying in %ss: %s",
+                    attempt,
+                    attempts,
+                    backoff,
+                    exc.code,
+                )
+                await asyncio.sleep(backoff)
+            except httpx.HTTPError as exc:
+                pi_exc = self._translate_request_error(exc)
+                last_error = pi_exc
+                if attempt >= attempts or not pi_exc.retryable:
+                    raise pi_exc from exc
+                backoff = min(2 ** (attempt - 1), 5)
+                logger.warning(
+                    "PI request failed (attempt %s/%s), retrying in %ss: %s",
+                    attempt,
+                    attempts,
+                    backoff,
+                    pi_exc.code,
+                )
+                await asyncio.sleep(backoff)
+        # Defensive: should not reach here.
+        if last_error:
+            raise last_error
+        raise PiUnavailableError("Falha inesperada na comunicacao com o PI Web API.")
+
+    def _raise_for_status(self, response: httpx.Response, path: str) -> None:
+        code = response.status_code
+        if code == 401 or code == 403:
+            raise PiAuthError(
+                f"PI Web API retornou {code} (Unauthorized ou Forbidden)."
+            )
+        if code == 404:
+            raise PiTagNotFoundError(
+                f"PI Web API retornou 404 para {path}."
+            )
+        if code == 400:
+            raise PiInvalidResponseError(
+                f"PI Web API retornou 400 (Bad Request)."
+            )
+        if code == 429:
+            raise PiRateLimitedError(
+                f"PI Web API retornou 429 (Too Many Requests)."
+            )
+        if code in (502, 503, 504):
+            raise PiUnavailableError(
+                f"PI Web API retornou {code}."
+            )
+        if 500 <= code < 600:
+            raise PiInvalidResponseError(
+                f"PI Web API retornou status {code}."
+            )
+        if not response.is_success:
+            raise PiInvalidResponseError(
+                f"PI Web API retornou status {code}."
+            )
+
+    def _translate_request_error(self, exc: httpx.HTTPError) -> Exception:
+        if isinstance(exc, httpx.TimeoutException):
+            return PiTimeoutError()
+        if isinstance(exc, httpx.ConnectError):
+            return PiUnavailableError()
+        if isinstance(exc, (ssl.SSLError, httpx.ConnectError)):
+            # ``ConnectError`` may also wrap SSL issues.
+            message = str(exc).lower()
+            if "ssl" in message or "certificate" in message:
+                return PiSSLError()
+            return PiUnavailableError()
+        return PiUnavailableError(str(exc))
+
+    async def _safe_request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        try:
+            return await self._request(method, path, **kwargs)
+        except PiIntegrationError:
+            raise
+        except httpx.HTTPError as exc:
+            raise self._translate_request_error(exc) from exc
+        except Exception as exc:  # pragma: no cover - defensive
+            raise PiUnavailableError(str(exc)) from exc
+
+    async def ping(self) -> None:
+        response = await self._safe_request("GET", "/")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PiInvalidResponseError("Resposta nao-JSON do PI Web API.") from exc
+        if not isinstance(payload, dict):
+            raise PiInvalidResponseError("Resposta inesperada do PI Web API.")
+        links = payload.get("Links")
+        if not isinstance(links, dict):
+            raise PiInvalidResponseError(
+                "Resposta do PI Web API nao contem o objeto 'Links'."
+            )
+        if not links.get("Self") and not links.get("System"):
+            raise PiInvalidResponseError(
+                "Objeto 'Links' nao contem 'Self' ou 'System'."
+            )
+
+    def _build_path(self, name: str) -> str:
+        return f"\\\\{self.data_server}\\{name.lstrip('\\\\')}"
+
+    async def resolve_point(self, path: str) -> Optional[PiPoint]:
+        normalized = path.replace("/", "\\")
+        response = await self._safe_request(
+            "GET",
+            "/points",
+            params={"path": normalized},
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PiInvalidResponseError("Resposta nao-JSON do PI Web API.") from exc
+        if not isinstance(payload, dict):
+            raise PiInvalidResponseError("Resposta inesperada do PI Web API.")
+        web_id = payload.get("WebId")
+        if not web_id:
+            return None
+        return PiPoint(
+            web_id=web_id,
+            name=payload.get("Name", normalized),
+            description=payload.get("Descriptor"),
+            engineering_unit=payload.get("EngineeringUnits"),
+            point_type=payload.get("PointType"),
+            data_type=payload.get("PointClass") or payload.get("Type"),
+            raw=payload,
+        )
+
+    def _values_endpoint(self, web_id: str) -> str:
+        return f"/streams/{web_id}/recorded"
+
+    def _interpolated_endpoint(self, web_id: str) -> str:
+        return f"/streams/{web_id}/interpolated"
+
+    def _parse_values(self, payload: Any) -> List[PiValue]:
+        if not isinstance(payload, dict):
+            raise PiInvalidResponseError("Resposta inesperada do PI Web API.")
+        items = payload.get("Items")
+        if items is None:
+            # StreamSet may wrap a single point.
+            web_id = payload.get("WebId")
+            if web_id:
+                return self._parse_values({"Items": [{"WebId": web_id, **payload}]})
+            raise PiInvalidResponseError("Resposta sem 'Items' retornada pelo PI Web API.")
+        results: List[PiValue] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            web_id = item.get("WebId")
+            inner_items = item.get("Items")
+            if inner_items is None and web_id is None:
+                # Single-point response may be flat.
+                if "Timestamp" in item or "Values" in item:
+                    inner_items = item.get("Values", [item])
+            if inner_items is None:
+                continue
+            for entry in inner_items:
+                if not isinstance(entry, dict):
+                    continue
+                results.append(_parse_value_entry(entry))
+        return results
+
+    async def get_recorded_values(
+        self,
+        web_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        max_count: Optional[int] = None,
+    ) -> PiRecordedValues:
+        if not web_id:
+            raise PiInvalidResponseError("WebId vazio ao consultar valores registrados.")
+        params: Dict[str, Any] = {
+            "startTime": self._format_timestamp(start_time),
+            "endTime": self._format_timestamp(end_time),
+        }
+        if max_count is not None:
+            params["maxCount"] = int(max_count)
+        response = await self._safe_request(
+            "GET",
+            self._values_endpoint(web_id),
+            params=params,
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PiInvalidResponseError("Resposta nao-JSON do PI Web API.") from exc
+        values = self._parse_values(payload)
+        return PiRecordedValues(web_id=web_id, values=values)
+
+    async def get_interpolated_values(
+        self,
+        web_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        interval: str,
+        max_count: Optional[int] = None,
+    ) -> PiInterpolatedValues:
+        if not web_id:
+            raise PiInvalidResponseError("WebId vazio ao consultar valores interpolados.")
+        if not interval:
+            raise PiInvalidResponseError("Intervalo obrigatorio para valores interpolados.")
+        params: Dict[str, Any] = {
+            "startTime": self._format_timestamp(start_time),
+            "endTime": self._format_timestamp(end_time),
+            "interval": interval,
+        }
+        if max_count is not None:
+            params["maxCount"] = int(max_count)
+        response = await self._safe_request(
+            "GET",
+            self._interpolated_endpoint(web_id),
+            params=params,
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PiInvalidResponseError("Resposta nao-JSON do PI Web API.") from exc
+        values = self._parse_values(payload)
+        return PiInterpolatedValues(web_id=web_id, values=values)
+
+    @staticmethod
+    def _format_timestamp(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        # PI Web API expects ISO 8601 with the trailing 'Z'.
+        return value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")

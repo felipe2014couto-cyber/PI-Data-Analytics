@@ -1,0 +1,354 @@
+:root {
+  --piad-navy: #0d3b66;
+  --piad-navy-dark: #082a4a;
+  --piad-blue: #1976d2;
+  --piad-blue-light: #e3f0fb;
+  --piad-selection-bg: #dbeafe;
+  --piad-soft-gray: #f4f6f9;
+  --piad-border: #dee2e6;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--piad-soft-gray);
+  color: #1f2d3d;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  width: 260px;
+  background-color: var(--piad-navy);
+  color: #ffffff;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-sidebar__brand {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+
+.app-sidebar__brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background-color: var(--piad-blue);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.app-sidebar__nav {
+  padding: 0.75rem 0;
+  flex-grow: 1;
+  overflow-y: auto;
+}
+
+.app-sidebar__section {
+  padding: 0.75rem 1.5rem 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.app-sidebar__link {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 1.5rem;
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: none;
+  font-size: 0.95rem;
+  border-left: 3px solid transparent;
+}
+
+.app-sidebar__link:hover {
+  background-color: var(--piad-navy-dark);
+  color: #ffffff;
+}
+
+.app-sidebar__link.active {
+  background-color: var(--piad-navy-dark);
+  color: #ffffff;
+  border-left-color: var(--piad-blue);
+}
+
+.app-sidebar__footer {
+  padding: 0.75rem 1.5rem;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.app-topbar {
+  background-color: #ffffff;
+  border-bottom: 1px solid var(--piad-border);
+  padding: 0.75rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.app-topbar__title {
+  font-weight: 600;
+  color: var(--piad-navy);
+}
+
+.app-topbar__subtitle {
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+
+.app-content {
+  padding: 1.5rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.app-footer {
+  background-color: #ffffff;
+  border-top: 1px solid var(--piad-border);
+  padding: 0.75rem 1.5rem;
+  font-size: 0.8rem;
+  color: #6c757d;
+}
+
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.page-header__title {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--piad-navy);
+  margin: 0;
+}
+
+.page-header__subtitle {
+  color: #6c757d;
+  font-size: 0.9rem;
+  margin: 0.15rem 0 0;
+}
+
+.breadcrumb {
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
+.card.piad-card {
+  border: 1px solid var(--piad-border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.card.piad-card .card-header {
+  background-color: #ffffff;
+  border-bottom: 1px solid var(--piad-border);
+  font-weight: 600;
+  color: var(--piad-navy);
+}
+
+.btn-piad-primary {
+  background-color: var(--piad-blue);
+  border-color: var(--piad-blue);
+  color: #ffffff;
+}
+
+.btn-piad-primary:hover,
+.btn-piad-primary:focus {
+  background-color: #135ba1;
+  border-color: #135ba1;
+  color: #ffffff;
+}
+
+.btn-piad-outline {
+  background-color: transparent;
+  border: 1px solid var(--piad-blue);
+  color: var(--piad-blue);
+}
+
+.btn-piad-outline:hover,
+.btn-piad-outline:focus {
+  background-color: var(--piad-blue-light);
+  color: var(--piad-blue);
+}
+
+.piad-status-pending {
+  background-color: #fff3cd;
+  color: #856404;
+}
+
+.piad-status-valid {
+  background-color: #d1e7dd;
+  color: #0f5132;
+}
+
+.piad-status-invalid {
+  background-color: #f8d7da;
+  color: #842029;
+}
+
+.piad-status-error {
+  background-color: #f5c2c7;
+  color: #58151c;
+}
+
+.piad-empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: #6c757d;
+}
+
+.piad-empty i {
+  font-size: 2.5rem;
+  color: #adb5bd;
+}
+
+.piad-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 2rem;
+  color: #6c757d;
+}
+
+.piad-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.piad-pagination__info {
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+
+.piad-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  margin-bottom: 1rem;
+  background-color: #ffffff;
+  border: 1px solid var(--piad-border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+}
+
+.piad-filter-bar .form-label {
+  font-size: 0.8rem;
+  color: #6c757d;
+  margin-bottom: 0.2rem;
+}
+
+.piad-table-card .table thead th {
+  background-color: #f8f9fa;
+  color: #495057;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--piad-border);
+}
+
+.piad-table-card .table tbody td {
+  vertical-align: middle;
+  font-size: 0.9rem;
+}
+
+.piad-table-actions {
+  display: flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.piad-disabled-note {
+  background-color: #f8f9fa;
+  border: 1px dashed #ced4da;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+
+.tag-multi-select-list .tag-multi-select-item-selected {
+  background-color: var(--piad-selection-bg);
+  border-color: #bfdbfe;
+  color: #1f2d3d;
+}
+
+.tag-multi-select-list .tag-multi-select-item-selected .text-muted {
+  color: #495057 !important;
+}
+
+.tag-multi-select-list .tag-multi-select-item-selected:hover,
+.tag-multi-select-list .tag-multi-select-item-selected:focus {
+  background-color: #bfdbfe;
+  color: #1f2d3d;
+}
+
+.filter-accordion .accordion-button {
+  font-weight: 600;
+  color: var(--piad-navy);
+}
+
+.filter-accordion .accordion-button:not(.collapsed) {
+  background-color: var(--piad-blue-light);
+  box-shadow: inset 0 calc(-1 * var(--bs-accordion-border-width)) 0 var(--piad-border);
+}
+
+@media (max-width: 991.98px) {
+  .app-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: -280px;
+    z-index: 1040;
+    transition: left 0.25s ease-in-out;
+  }
+  .app-sidebar.open {
+    left: 0;
+  }
+  .app-sidebar__backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    z-index: 1030;
+  }
+  .app-main {
+    width: 100%;
+  }
+}

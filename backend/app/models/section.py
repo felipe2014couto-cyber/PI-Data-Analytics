@@ -1,0 +1,43 @@
+"""Section ORM model."""
+from typing import List, Optional
+
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database.session import Base
+from app.models.base import TimestampMixin
+
+
+class Section(Base, TimestampMixin):
+    __tablename__ = "sections"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    equipment_id: Mapped[int] = mapped_column(
+        ForeignKey("equipments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+
+    equipment: Mapped["Equipment"] = relationship(  # noqa: F821
+        "Equipment",
+        back_populates="sections",
+        lazy="joined",
+    )
+    pi_tags: Mapped[List["PiTag"]] = relationship(  # noqa: F821
+        "PiTag",
+        back_populates="section",
+        cascade="save-update, merge",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("equipment_id", "code", name="uq_sections_equipment_code"),
+        Index("ix_sections_equipment_id", "equipment_id"),
+        Index("ix_sections_active", "active"),
+    )
+
+    def __repr__(self) -> str:
+        return f"Section(id={self.id}, equipment_id={self.equipment_id}, code={self.code!r})"

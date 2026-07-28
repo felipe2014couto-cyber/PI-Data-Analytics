@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Banco de dados local
+*.db
+*.sqlite
+*.sqlite3
+backend/tests/_test_pads.db
+backend/pi_analytics_data.db
+
+# Logs
+*.log
+logs/
+
+# Ambiente
+.env
+backend/.env
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Builds
+build/
+dist/
+*.egg
+
+# Coverage
+.coverage
+htmlcov/
