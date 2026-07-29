@@ -11,7 +11,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -97,11 +97,100 @@ class StreamSetResult:
     values: List[PiValue]
 
 
-def _parse_streamset_response(payload: Any) -> Dict[str, List[PiValue]]:
+def _safe_mask_webid(web_id: Any) -> str:
+    """Mask a WebId for diagnostic logging."""
+    if not isinstance(web_id, str):
+        return "<non-string>"
+    if len(web_id) <= 6:
+        return web_id[:2] + "***"
+    return web_id[:3] + "***" + web_id[-2:]
+
+
+def _dump_payload_structure(payload: Any, depth: int = 0, max_depth: int = 6) -> List[str]:
+    """Return safe structural description lines of a PI payload (no values/WebIDs)."""
+    lines: List[str] = []
+    prefix = "  " * depth
+    if isinstance(payload, list):
+        lines.append(f"{prefix}list len={len(payload)}")
+        if payload and depth < max_depth:
+            _dump_node_structure(payload[0], depth, "list[0]", lines, max_depth)
+    elif isinstance(payload, dict):
+        lines.append(f"{prefix}dict keys={sorted(payload.keys())}")
+        if depth < max_depth:
+            for k in sorted(payload.keys()):
+                _dump_node_structure(payload.get(k), depth, k, lines, max_depth)
+    else:
+        lines.append(f"{prefix}{type(payload).__name__}")
+    return lines
+
+
+def _dump_node_structure(
+    node: Any, depth: int, label: str, lines: List[str], max_depth: int
+) -> None:
+    """Append a single structural line for *node*."""
+    prefix = "  " * (depth + 1)
+    if isinstance(node, dict):
+        keys = sorted(node.keys())
+        lines.append(f"{prefix}{label}: dict keys={keys}")
+        if "WebId" in node:
+            lines.append(f"{prefix}{label}.WebId: string masked={_safe_mask_webid(node['WebId'])}")
+        has_ts = "Timestamp" in node or "timestamp" in node
+        has_val = "Value" in node or "value" in node
+        has_good = "Good" in node or "good" in node
+        has_items = "Items" in node or "items" in node
+        has_values_key = "Values" in node or "values" in node
+        if has_items:
+            inner = node.get("Items") or node.get("items")
+            lines.append(f"{prefix}{label}.Items: {type(inner).__name__} len={len(inner) if isinstance(inner, (list, dict)) else '?'}")
+        if has_values_key:
+            lines.append(f"{prefix}{label}.Values: present")
+        if has_ts:
+            lines.append(f"{prefix}{label}.Timestamp: present")
+        if has_val:
+            val = node.get("Value") if "Value" in node else node.get("value")
+            val_type = type(val).__name__
+            if isinstance(val, dict):
+                val_keys = sorted(val.keys())
+                lines.append(f"{prefix}{label}.Value: dict keys={val_keys}")
+                if "Items" in val or "items" in val:
+                    inner = val.get("Items") or val.get("items")
+                    lines.append(f"{prefix}{label}.Value.Items: {type(inner).__name__} len={len(inner) if isinstance(inner, (list, dict)) else '?'}")
+                    if isinstance(inner, list) and inner and depth + 2 < max_depth:
+                        first = inner[0]
+                        if isinstance(first, dict):
+                            lines.append(f"{prefix}{label}.Value.Items[0]: dict keys={sorted(first.keys())}")
+            elif isinstance(val, list):
+                lines.append(f"{prefix}{label}.Value: list len={len(val)}")
+            else:
+                lines.append(f"{prefix}{label}.Value: {val_type}")
+        if has_good:
+            lines.append(f"{prefix}{label}.Good: present")
+        if "Errors" in node:
+            lines.append(f"{prefix}{label}.Errors: {type(node['Errors']).__name__}")
+    elif isinstance(node, list):
+        lines.append(f"{prefix}{label}: list len={len(node)}")
+        if node and depth + 1 < max_depth:
+            _dump_node_structure(node[0], depth + 1, f"{label}[0]", lines, max_depth)
+    elif node is None:
+        lines.append(f"{prefix}{label}: None")
+    else:
+        lines.append(f"{prefix}{label}: {type(node).__name__}")
+
+
+def _parse_streamset_response(
+    payload: Any,
+    error_collector: Optional[Dict[str, List[dict]]] = None,
+) -> Dict[str, List[PiValue]]:
     """Parse StreamSet response keyed by WebId.
 
-    PI Web API returned payload format for streamsets:
+    PI Web API ``/streamsets/{mode}`` returns:
     ``{"Items": [{"WebId": "...", "Items": [value, ...]}, ...]}``
+
+    Each series entry contains a flat list of value objects with at least a
+    ``Timestamp`` key.  Entries containing a non-empty ``Errors`` list are
+    PI error responses, not process points, and are excluded from the
+    returned values.  When *error_collector* is provided, error entries
+    are recorded keyed by WebId for recovery by the caller.
     """
     if not isinstance(payload, dict):
         raise PiInvalidResponseError(
@@ -116,7 +205,7 @@ def _parse_streamset_response(payload: Any) -> Dict[str, List[PiValue]]:
 
     results: Dict[str, List[PiValue]] = {}
 
-    def parse_series_values(node: Any) -> List[PiValue]:
+    def parse_series_values(node: Any, web_id: str) -> List[PiValue]:
         """Walk containers inside one StreamSet series without crossing WebIds."""
         values: List[PiValue] = []
 
@@ -128,15 +217,32 @@ def _parse_streamset_response(payload: Any) -> Dict[str, List[PiValue]]:
             if not isinstance(current, dict):
                 return
 
-            # Some PI versions/proxies add paging or result wrappers that also
-            # carry a Timestamp. Containers must win over point detection so
-            # the wrapper is not emitted as a single null-valued point.
             for key in ("Items", "items", "Values", "values"):
                 if key in current:
                     visit(current.get(key))
                     return
 
+            for value_key in ("Value", "value"):
+                nested_value = current.get(value_key)
+                if isinstance(nested_value, dict) and any(
+                    key in nested_value for key in ("Items", "items", "Values", "values")
+                ):
+                    visit(nested_value)
+                    return
+
             if "Timestamp" in current or "timestamp" in current:
+                errors = current.get("Errors") or current.get("errors")
+                if errors and isinstance(errors, list) and len(errors) > 0:
+                    if error_collector is not None:
+                        error_collector.setdefault(web_id, []).append({
+                            "timestamp": current.get("Timestamp"),
+                            "errors": errors,
+                        })
+                    logger.debug(
+                        "StreamSet error entry excluded for %s",
+                        _safe_mask_webid(web_id),
+                    )
+                    return
                 values.append(_parse_value_entry(current))
 
         visit(node)
@@ -156,10 +262,99 @@ def _parse_streamset_response(payload: Any) -> Dict[str, List[PiValue]]:
             sub_items = entry.get("Value")
         else:
             sub_items = entry.get("value")
-        values = parse_series_values(sub_items)
-        results.setdefault(str(web_id), []).extend(values)
+        str_wid = str(web_id)
+        values = parse_series_values(sub_items, str_wid)
+        results.setdefault(str_wid, []).extend(values)
 
     return results
+
+
+_WINDOW_MAX_DAYS = 30
+
+
+def _deduplicate_values(values: List[PiValue]) -> List[PiValue]:
+    """Remove duplicate points by timestamp within a single series."""
+    if len(values) <= 1:
+        return values
+    seen: set = set()
+    result: List[PiValue] = []
+    for v in sorted(values, key=lambda x: x.timestamp):
+        if v.timestamp not in seen:
+            seen.add(v.timestamp)
+            result.append(v)
+    return result
+
+
+def _safe_window_str(start: datetime, end: datetime) -> str:
+    """Safe time-window representation for logging."""
+    return f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
+
+
+async def _recover_failed_series(
+    failed_web_ids: List[str],
+    start_time: datetime,
+    end_time: datetime,
+    interval: str,
+    max_count: Optional[int],
+    provider,
+    semaphore: asyncio.Semaphore,
+) -> Tuple[Dict[str, List[PiValue]], Dict[str, List[str]]]:
+    """Recover series that returned only PI error entries using 30-day windows.
+
+    Each affected WebId is fetched individually via the interpolated endpoint
+    with non-overlapping windows.  Partial results are kept when some windows
+    succeed and others fail.  Returns ``(recovered_values, window_errors)``.
+    """
+    recovered: Dict[str, List[PiValue]] = {}
+    window_errors: Dict[str, List[str]] = {}
+    window = timedelta(days=_WINDOW_MAX_DAYS)
+
+    for web_id in failed_web_ids:
+        series_values: List[PiValue] = []
+        current_start = start_time
+        errors_for_web: List[str] = []
+
+        while current_start < end_time:
+            current_end = min(current_start + window, end_time)
+
+            async with semaphore:
+                try:
+                    response = await provider.get_interpolated_values(
+                        web_id,
+                        current_start,
+                        current_end,
+                        interval=interval,
+                        max_count=max_count,
+                    )
+                    series_values.extend(response.values)
+                except PiIntegrationError as exc:
+                    window_label = _safe_window_str(current_start, current_end)
+                    errors_for_web.append(f"{window_label}: {exc.safe_message}")
+                    logger.warning(
+                        "Windowed recovery failed for %s window %s: %s",
+                        _safe_mask_webid(web_id),
+                        window_label,
+                        exc.safe_message,
+                    )
+
+            current_start = current_end
+
+        deduped = _deduplicate_values(series_values)
+
+        if deduped:
+            recovered[web_id] = deduped
+            if errors_for_web:
+                window_errors[web_id] = errors_for_web
+                logger.info(
+                    "Partial recovery for %s: %d points, %d failed windows",
+                    _safe_mask_webid(web_id),
+                    len(deduped),
+                    len(errors_for_web),
+                )
+        else:
+            window_errors[web_id] = errors_for_web or ["No data returned"]
+
+    return recovered, window_errors
 
 
 def _is_streamset_unsupported_error(exc: PiIntegrationError) -> bool:
@@ -224,6 +419,7 @@ async def fetch_streamset_batch(
     all_results: Dict[str, List[PiValue]] = {}
     total_requests = 0
     used_streamset = False
+    error_info: Dict[str, List[dict]] = {}
 
     for i in range(0, len(web_ids), batch_size):
         batch = web_ids[i : i + batch_size]
@@ -246,13 +442,27 @@ async def fetch_streamset_batch(
                     "GET", streamset_path, params=params
                 )
                 payload = response.json()
-                batch_results = _parse_streamset_response(payload)
+                if logger.isEnabledFor(logging.DEBUG):
+                    try:
+                        struct_lines = _dump_payload_structure(payload, max_depth=4)
+                        logger.debug(
+                            "StreamSet %s payload structure (%d lines):",
+                            mode, len(struct_lines),
+                        )
+                        for line in struct_lines:
+                            logger.debug("  SS_STRUCT %s", line)
+                    except Exception as diag_exc:
+                        logger.debug("STREAMSET_DIAG_FAILED: %s", diag_exc)
+                batch_results = _parse_streamset_response(
+                    payload, error_collector=error_info,
+                )
                 all_results.update(batch_results)
                 await _CAPABILITY.mark_supported(mode)
                 used_streamset = True
                 logger.info(
-                    "StreamSet %s batch of %d tags: %d results",
-                    mode, len(batch), len(batch_results)
+                    "StreamSet %s batch of %d tags: %d results (points=%d)",
+                    mode, len(batch), len(batch_results),
+                    sum(len(v) for v in batch_results.values()),
                 )
             except PiIntegrationError as exc:
                 if _is_streamset_unsupported_error(exc):
@@ -269,6 +479,37 @@ async def fetch_streamset_batch(
                     mode, exc.code if hasattr(exc, "code") else "unknown"
                 )
                 return {}, total_requests, False
+
+    if mode == "interpolated" and interval and error_info:
+        failed_web_ids = [
+            wid for wid in web_ids
+            if wid in error_info and not all_results.get(wid)
+        ]
+        if failed_web_ids:
+            logger.info(
+                "Attempting windowed recovery for %d failed series (30d windows)",
+                len(failed_web_ids),
+            )
+            recovered, recovery_errors = await _recover_failed_series(
+                failed_web_ids,
+                start_time,
+                end_time,
+                interval,
+                max_count,
+                provider,
+                semaphore,
+            )
+            all_results.update(recovered)
+            days_span = max(1, (end_time - start_time).days)
+            windows_per_series = max(1, (days_span + _WINDOW_MAX_DAYS - 1) // _WINDOW_MAX_DAYS)
+            total_requests += len(failed_web_ids) * windows_per_series
+            for wid, errs in recovery_errors.items():
+                if wid not in recovered:
+                    logger.warning(
+                        "Recovery fully failed for %s: %s",
+                        _safe_mask_webid(wid),
+                        "; ".join(errs),
+                    )
 
     return all_results, total_requests, used_streamset
 
