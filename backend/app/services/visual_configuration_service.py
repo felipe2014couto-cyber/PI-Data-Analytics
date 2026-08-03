@@ -26,7 +26,9 @@ class VisualConfigurationService:
         item = VisualConfiguration(owner_id=self.user.id, name=payload.name.strip(), description=payload.description, current_version=1)
         self.db.add(item); self.db.flush()
         self.db.add(VisualConfigurationVersion(configuration_id=item.id, version=1, snapshot=payload.document.model_dump(), created_by_user_id=self.user.id, operation="create"))
-        self.db.commit(); self.db.refresh(item); return item
+        try: self.db.commit()
+        except Exception: self.db.rollback(); raise
+        self.db.refresh(item); return item
 
     def list_all(self) -> list[VisualConfiguration]:
         return list(self.db.scalars(select(VisualConfiguration).where(VisualConfiguration.owner_id == self.user.id).order_by(VisualConfiguration.updated_at.desc(), VisualConfiguration.id)).all())
@@ -58,3 +60,8 @@ class VisualConfigurationService:
     def restore(self, config_id: str, expected: int, version: int) -> VisualConfiguration:
         item = self._owned(config_id); source = self._version(config_id, version)
         return self._advance(item, expected, source.snapshot, "restore")
+
+    def delete(self, config_id: str) -> None:
+        item = self._owned(config_id)
+        self.db.delete(item)
+        self.db.commit()

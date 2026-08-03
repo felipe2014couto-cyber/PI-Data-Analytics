@@ -108,7 +108,9 @@ export const apiMock = {
   visualConfigUpdate: vi.fn(),
   visualConfigRename: vi.fn(),
   visualConfigHistory: vi.fn(),
+  visualConfigGetVersion: vi.fn(),
   visualConfigRestore: vi.fn(),
+  visualConfigRemove: vi.fn(),
   healthCheck: vi.fn(),
   piHealth: vi.fn(),
   listEquipments: vi.fn(),
@@ -131,7 +133,7 @@ export function mockApiModule() {
   return {
     authApi: { me: apiMock.authMe, login: apiMock.authLogin, logout: apiMock.authLogout, changePassword: apiMock.authChangePassword },
     adminUsersApi: { list: apiMock.adminListUsers, create: apiMock.adminCreateUser, update: apiMock.adminUpdateUser, activate: apiMock.adminActivateUser, deactivate: apiMock.adminDeactivateUser, resetPassword: apiMock.adminResetPassword },
-    visualConfigurationsApi: { list: apiMock.visualConfigList, get: apiMock.visualConfigGet, create: apiMock.visualConfigCreate, update: apiMock.visualConfigUpdate, rename: apiMock.visualConfigRename, history: apiMock.visualConfigHistory, restore: apiMock.visualConfigRestore },
+    visualConfigurationsApi: { list: apiMock.visualConfigList, get: apiMock.visualConfigGet, create: apiMock.visualConfigCreate, update: apiMock.visualConfigUpdate, rename: apiMock.visualConfigRename, history: apiMock.visualConfigHistory, getVersion: apiMock.visualConfigGetVersion, restore: apiMock.visualConfigRestore, remove: apiMock.visualConfigRemove },
     healthApi: {
       check: apiMock.healthCheck,
     },

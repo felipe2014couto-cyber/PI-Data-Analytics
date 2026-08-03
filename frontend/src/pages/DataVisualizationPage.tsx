@@ -20,6 +20,7 @@ import type {
   VariableType,
   VisualizationType,
   VisualRulesState,
+  VisualConfigurationDocument,
 } from "../types";
 import { DataFiltersPanel } from "../components/DataFiltersPanel";
 import { SeriesAssignmentsPanel, type SeriesConfigurationTag } from "../components/SeriesAssignmentsPanel";
@@ -45,6 +46,7 @@ import { alignSeriesByTimestamp, groupLatestValuesByUnit } from "../utils/compar
 import { assignmentIdentity } from "../utils/seriesAssignments";
 import { buildTagOption, type TagOption } from "../components/TagMultiSelect";
 import {
+  APPLICATION_TIMEZONE,
   formatResolvedTimePeriod,
   resolveTimePeriod,
   type ResolvedTimePeriod,
@@ -60,6 +62,7 @@ import {
   type AssignmentTag,
 } from "../utils/seriesAssignments";
 import { calculateMetricResults } from "../utils/analysisMetrics";
+import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument, type PersistablePageState } from "../utils/visualConfiguration";
 
 const DEFAULT_MAX_COUNT = 2000;
 
@@ -83,6 +86,7 @@ interface FiltersState {
   sectionId: number | null;
   variableTypeId: number | null;
   timePeriod: TimePeriod;
+  timezone: "America/Sao_Paulo";
   mode: TimeSeriesMode;
   interval: string;
   maxCount: number;
@@ -104,6 +108,7 @@ const INITIAL_FILTERS: FiltersState = {
   sectionId: null,
   variableTypeId: null,
   timePeriod: { kind: "preset", preset: "PT1H" },
+  timezone: APPLICATION_TIMEZONE,
   mode: "interpolated",
   interval: "1m",
   maxCount: DEFAULT_MAX_COUNT,
@@ -187,6 +192,7 @@ export function DataVisualizationPage() {
   const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
   const [tags, setTags] = useState<PiTag[]>([]);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupsLoaded, setLookupsLoaded] = useState(false);
 
   const [piHealth, setPiHealth] = useState<PiHealth | null>(null);
   const [piChecking, setPiChecking] = useState(false);
@@ -223,6 +229,7 @@ export function DataVisualizationPage() {
         page += 1;
       }
       setTags(tagList.filter((tag) => tag.active));
+      setLookupsLoaded(true);
     } catch (err) {
       if (!signal?.aborted) {
         setLookupError(err instanceof Error ? err.message : "Falha ao carregar catalogos.");
@@ -286,12 +293,13 @@ export function DataVisualizationPage() {
 
   // Whenever equipment or section changes, prune selectedTagIds that no longer match.
   useEffect(() => {
+    if (!lookupsLoaded) return;
     const allowed = new Set(filteredTagOptions.map((o) => o.id));
     setSelectedTagIds((prev) => {
       const next = prev.filter((id) => allowed.has(id));
       return next.length === prev.length ? prev : next;
     });
-  }, [filteredTagOptions]);
+  }, [filteredTagOptions, lookupsLoaded]);
 
   const equipmentOptions = useMemo(
     () => equipments.map((eq) => ({ id: eq.id, code: eq.code, name: eq.name })),
@@ -336,8 +344,9 @@ export function DataVisualizationPage() {
   }, [selectedTagIds, tags, query.timeSeries]);
 
   useEffect(() => {
+    if (!lookupsLoaded) return;
     setSeriesAssignments((current) => reconcileAssignments(current, selectedAssignmentTags));
-  }, [selectedAssignmentTags]);
+  }, [selectedAssignmentTags, lookupsLoaded]);
 
   const orderedTimeSeries = useMemo(() => {
     if (!query.timeSeries) return null;
@@ -530,6 +539,35 @@ export function DataVisualizationPage() {
     setComparison(INITIAL_COMPARISON);
     setVisualRules(INITIAL_VISUAL_RULES);
     scatterInitializedRef.current = false;
+    setQuery(INITIAL_QUERY);
+  };
+
+  const visualConfigurationDocument = buildVisualConfigurationDocument({
+    filters,
+    selectedTagIds,
+    seriesAssignments,
+    metricConfiguration,
+    comparison,
+    visualRules,
+  });
+
+  const openVisualConfiguration = (document: VisualConfigurationDocument) => {
+    const defaults: PersistablePageState = {
+      filters: INITIAL_FILTERS,
+      selectedTagIds: [],
+      seriesAssignments: [],
+      metricConfiguration: { kind: "none" },
+      comparison: INITIAL_COMPARISON,
+      visualRules: INITIAL_VISUAL_RULES,
+    };
+    const restored = normalizeVisualConfigurationDocument(document, defaults, APPLICATION_TIMEZONE);
+    setFilters(restored.filters);
+    setSelectedTagIds(restored.selectedTagIds);
+    setSeriesAssignments(restored.seriesAssignments);
+    setMetricConfiguration(restored.metricConfiguration);
+    setComparison(restored.comparison);
+    setVisualRules(restored.visualRules);
+    scatterInitializedRef.current = restored.seriesAssignments.some((item) => item.scatterRole !== "none");
     setQuery(INITIAL_QUERY);
   };
 
@@ -785,6 +823,12 @@ export function DataVisualizationPage() {
       <PageHeader
         title="Visualizacao de Dados"
         subtitle="Grafico de linha com consulta direta ao PI Web API"
+        center={
+          <VisualConfigurationsPanel
+            document={visualConfigurationDocument}
+            onOpen={openVisualConfiguration}
+          />
+        }
         actions={
           <div className="d-flex flex-wrap gap-2 align-items-center">
             {piHealth ? (
@@ -924,16 +968,7 @@ export function DataVisualizationPage() {
                     }}
                   />
                 }
-                visualConfiguration={
-                  <><VisualConfigurationsPanel
-                    visualRules={visualRules}
-                    mode={filters.mode}
-                    onOpen={(rules, mode) => {
-                      setVisualRules(rules);
-                      setFilters((current) => ({ ...current, mode }));
-                    }}
-                  /><VisualRulesPanel state={visualRules} series={visualSeriesOptions} onChange={setVisualRules} /></>
-                }
+                visualConfiguration={<VisualRulesPanel state={visualRules} series={visualSeriesOptions} onChange={setVisualRules} />}
                 metricConfiguration={
                   <MetricConfigurationPanel
                     configuration={metricConfiguration}

@@ -280,7 +280,36 @@ export interface VisualRulesState {
   queryMode?: TimeSeriesMode;
 }
 
-export interface VisualConfigurationDocument { schema_version: 1; visual_rules: VisualRulesState; }
+export interface VisualConfigurationSidebarState {
+  filters: {
+    analysisModel: AnalysisModel;
+    equipmentId: number | null;
+    sectionId: number | null;
+    variableTypeId: number | null;
+    timePeriod: TimePeriod;
+    timezone: TimezoneId;
+    mode: TimeSeriesMode;
+    interval: string;
+    maxCount: number;
+    resolutionMode: string;
+    targetPointsPerTag: number;
+    ignoreBadQuality: boolean;
+    visualization: VisualizationType;
+    filterConfiguration: DataFilterConfiguration;
+  };
+  selectedTagIds: number[];
+  seriesAssignments: SeriesAssignment[];
+  metricConfiguration: MetricConfiguration;
+  comparison: {
+    type: ComparisonType | "disabled";
+    contextBEquipmentId: number | null;
+    contextBCategoryId: number | null;
+    contextBTagIds: number[];
+    contextBStart: string;
+    contextBEnd: string;
+  };
+}
+export interface VisualConfigurationDocument { schema_version: 1; visual_rules: VisualRulesState; sidebar_state?: VisualConfigurationSidebarState; }
 export interface VisualConfiguration { id: string; name: string; description: string | null; current_version: number; created_at: string; updated_at: string; document: VisualConfigurationDocument | null; }
 export interface VisualConfigurationVersion { id: string; version: number; document: VisualConfigurationDocument; operation: string; created_at: string; }
 

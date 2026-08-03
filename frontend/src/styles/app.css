@@ -142,13 +142,15 @@ body {
 }
 
 .page-header {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(220px, auto) minmax(280px, 1fr) auto;
   gap: 1rem;
   align-items: center;
-  justify-content: space-between;
   margin-bottom: 1.25rem;
 }
+
+.page-header__center { justify-self: center; min-width: 0; }
+.page-header__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
 
 .page-header__title {
   font-size: 1.35rem;
@@ -161,6 +163,36 @@ body {
   color: #6c757d;
   font-size: 0.9rem;
   margin: 0.15rem 0 0;
+}
+
+.visual-config-control { min-width: 0; position: relative; }
+.visual-config-control__main { display: flex; align-items: center; gap: 0.4rem; }
+.visual-config-control__main .form-select { width: min(240px, 32vw); min-width: 150px; }
+.visual-config-control__main .visual-config-control__version { width: 72px; min-width: 72px; }
+.visual-config-control__icon { width: 32px; height: 31px; padding: 0; flex: 0 0 auto; }
+.visual-config-control__menu::after { display: none; }
+.visual-config-control__current { display: block; color: #6c757d; margin-top: 0.2rem; }
+.visual-config-control__feedback { position: absolute; z-index: 1020; top: calc(100% + 0.25rem); left: 0; right: 0; padding: 0.35rem 0.6rem; margin: 0; font-size: 0.8rem; }
+.visual-config-search { width: min(320px, calc(100vw - 2rem)); max-width: calc(100vw - 2rem); }
+.visual-config-search__input { position: relative; }
+.visual-config-search__input > i { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: #6c757d; z-index: 1; }
+.visual-config-search__input .form-control { padding-left: 2rem; }
+.visual-config-search__results { max-height: 240px; overflow-y: auto; }
+.visual-config-search__result { border: 0; border-radius: 0.25rem; background: transparent; color: inherit; display: flex; justify-content: space-between; gap: 1rem; padding: 0.45rem 0.5rem; text-align: left; width: 100%; }
+.visual-config-search__result:hover, .visual-config-search__result:focus { background: #f1f5f9; outline: none; }
+.visual-config-search__result.is-current { background: #e8f5ee; color: #146c43; font-weight: 600; }
+.visual-config-search__result small { white-space: nowrap; }
+
+@media (max-width: 1199.98px) {
+  .page-header { grid-template-columns: minmax(220px, 1fr) auto; }
+  .page-header__center { grid-column: 1 / -1; grid-row: 2; justify-self: start; }
+}
+
+@media (max-width: 767.98px) {
+  .page-header { grid-template-columns: minmax(0, 1fr); }
+  .page-header__center, .page-header__actions { grid-column: 1; justify-self: stretch; justify-content: flex-start; }
+  .visual-config-control__main { flex-wrap: wrap; }
+  .visual-config-control__main .form-select { width: min(100%, 260px); flex: 1 1 170px; }
 }
 
 .breadcrumb {

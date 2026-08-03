@@ -33,6 +33,12 @@ def get_one(config_id: str, db: Session = Depends(get_db_session), user: User = 
     item, version = service(db, user).get(config_id); return public(item, version.snapshot)
 
 
+@router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_one(config_id: str, db: Session = Depends(get_db_session), user: User = Depends(get_current_user)) -> None:
+    service(db, user).delete(config_id)
+    return None
+
+
 @router.put("/{config_id}", response_model=VisualConfigurationPublic)
 def update_one(config_id: str, payload: VisualConfigurationUpdate, db: Session = Depends(get_db_session), user: User = Depends(get_current_user)):
     item = service(db, user).update(config_id, payload.expected_version, payload.document.model_dump()); return public(item, payload.document)

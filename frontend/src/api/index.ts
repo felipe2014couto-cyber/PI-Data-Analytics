@@ -52,7 +52,9 @@ export const visualConfigurationsApi = {
   update(id: string, expectedVersion: number, document: VisualConfigurationDocument) { return httpClient.put<VisualConfiguration>(`/visual-configurations/${id}`, { expected_version: expectedVersion, document }); },
   rename(id: string, expectedVersion: number, name: string) { return httpClient.post<VisualConfiguration>(`/visual-configurations/${id}/rename`, { expected_version: expectedVersion, name }); },
   history(id: string) { return httpClient.get<VisualConfigurationVersion[]>(`/visual-configurations/${id}/history`); },
+  getVersion(id: string, version: number) { return httpClient.get<VisualConfigurationVersion>(`/visual-configurations/${id}/history/${version}`); },
   restore(id: string, expectedVersion: number, version: number) { return httpClient.post<VisualConfiguration>(`/visual-configurations/${id}/restore`, { expected_version: expectedVersion, version }); },
+  remove(id: string) { return httpClient.delete<void>(`/visual-configurations/${id}`); },
 };
 
 function buildListQuery(params?: ListParams): Record<string, unknown> {

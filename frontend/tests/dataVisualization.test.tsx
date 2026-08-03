@@ -13,7 +13,7 @@ import {
   sectionFixture,
   variableTypeFixture,
 } from "./mocks/api";
-import type { PiTag, TimeSeries } from "../src/types";
+import type { PiTag, TimeSeries, VisualConfigurationDocument } from "../src/types";
 
 vi.mock("../src/api", () => mockApiModule());
 vi.mock("../src/components/EChartsWrapper");
@@ -88,6 +88,7 @@ const TEXTUAL_SERIES = {
 describe("Data visualization page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    apiMock.visualConfigHistory.mockResolvedValue([]);
     apiMock.listEquipments.mockResolvedValue(paginated([equipmentFixture]));
     apiMock.listSections.mockResolvedValue(paginated([sectionFixture]));
     apiMock.listVariableTypes.mockResolvedValue(paginated([variableTypeFixture]));
@@ -104,6 +105,41 @@ describe("Data visualization page", () => {
     expect(apiMock.listVariableTypes).toHaveBeenCalled();
     expect(apiMock.listPiTags).toHaveBeenCalled();
     expect(screen.getByTestId("data-filters-panel")).toBeInTheDocument();
+  });
+
+  it("restaura configuração completa sem efeitos dependentes apagarem as tags", async () => {
+    const document: VisualConfigurationDocument = {
+      schema_version: 1,
+      visual_rules: { enabled: false, selectedSeriesInstanceId: null, bySeries: {} },
+      sidebar_state: {
+        filters: {
+          analysisModel: "unit", equipmentId: 1, sectionId: 1, variableTypeId: 1,
+          timePeriod: { kind: "preset", preset: "PT1H" }, timezone: "America/Sao_Paulo",
+          mode: "recorded", interval: "5m", maxCount: 2000, resolutionMode: "manual",
+          targetPointsPerTag: 5000, ignoreBadQuality: false, visualization: "line",
+          filterConfiguration: { quality: { excludeBad: false, excludeQuestionable: true, excludeSubstituted: false }, rules: [] },
+        },
+        selectedTagIds: [1],
+        seriesAssignments: [{ tagId: 1, order: 0, lineAxis: "secondary", scatterRole: "none" }],
+        metricConfiguration: { kind: "single", metric: "mean" },
+        comparison: { type: "disabled", contextBEquipmentId: null, contextBCategoryId: null, contextBTagIds: [], contextBStart: "", contextBEnd: "" },
+      },
+    };
+    const savedConfig = { id: "complete", name: "Completa", description: null, current_version: 4, created_at: "2026-01-01", updated_at: "2026-01-01", document };
+    apiMock.listPiTags.mockResolvedValue(paginated([piTagFixture])); apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.visualConfigList.mockResolvedValue([savedConfig]); apiMock.visualConfigGet.mockResolvedValue(savedConfig);
+    renderAt("/analises/visualizacao");
+    await waitFor(() => expect(screen.getByTestId("visual-config-select")).toHaveValue(""));
+    fireEvent.change(screen.getByTestId("visual-config-select"), { target: { value: "complete" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ações da configuração" })); fireEvent.click(screen.getByText("Abrir"));
+    await waitFor(() => expect(screen.getByTestId("equipment-select")).toHaveValue("1"));
+    expect(screen.getByTestId("section-select")).toHaveValue("1");
+    expect(screen.getByTestId("variable-type-select")).toHaveValue("1");
+    expect(screen.getByTestId("period-kind")).toHaveValue("preset");
+    expect(screen.getByTestId("period-preset")).toHaveValue("PT1H");
+    expect(within(screen.getByTestId("tag-multi-select")).getByTestId("tag-option-1")).toHaveAttribute("data-selected", "true");
+    expect(screen.getByText("Aberta: Completa, versão 4")).toBeInTheDocument();
+    expect(apiMock.timeSeriesQuery).not.toHaveBeenCalled();
   });
 
   it("keeps period and context values mounted when their sections are collapsed", async () => {

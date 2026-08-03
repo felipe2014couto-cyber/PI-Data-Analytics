@@ -130,7 +130,7 @@ def client(fake_provider):
     app.dependency_overrides[get_current_user] = _authenticated_user
     app.dependency_overrides[validate_csrf] = lambda: None
 
-    with TestClient(app) as c:
+    with TestClient(app, backend_options={"use_uvloop": True}) as c:
         c.fake_provider = fake_provider  # type: ignore[attr-defined]
         yield c
 

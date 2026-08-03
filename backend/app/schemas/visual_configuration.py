@@ -2,7 +2,7 @@
 import json
 from datetime import datetime
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_DOCUMENT_BYTES = 100_000
 
@@ -11,6 +11,7 @@ class VisualDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
     schema_version: Literal[1]
     visual_rules: dict[str, Any]
+    sidebar_state: dict[str, Any] | None = None
 
     @field_validator("visual_rules")
     @classmethod
@@ -19,9 +20,13 @@ class VisualDocument(BaseModel):
             raise ValueError("Documento visual incompleto.")
         if not isinstance(value.get("enabled"), bool) or not isinstance(value.get("bySeries"), dict):
             raise ValueError("Estrutura visual invalida.")
-        if len(json.dumps({"schema_version": 1, "visual_rules": value}, ensure_ascii=False).encode()) > MAX_DOCUMENT_BYTES:
-            raise ValueError("Documento visual excede o limite de 100000 bytes.")
         return value
+
+    @model_validator(mode="after")
+    def validate_size(self):
+        if len(json.dumps(self.model_dump(exclude_none=True), ensure_ascii=False).encode()) > MAX_DOCUMENT_BYTES:
+            raise ValueError("Documento visual excede o limite de 100000 bytes.")
+        return self
 
 
 class VisualConfigurationCreate(BaseModel):

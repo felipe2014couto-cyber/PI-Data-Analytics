@@ -27,7 +27,7 @@ def auth_client():
         try: yield db
         finally: db.close()
     app.dependency_overrides[get_db_session] = db_override
-    with TestClient(app) as client: yield client
+    with TestClient(app, backend_options={"use_uvloop": True}) as client: yield client
 
 
 def create_user(db: Session, username="admin", role="admin", active=True, password=PASSWORD, pending=False):
