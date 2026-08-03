@@ -43,7 +43,24 @@ class PiTagValidationResult(BaseModel):
 
 
 class PiTagValidationBatchRequest(BaseModel):
-    tag_ids: Optional[List[int]] = Field(default=None, description="IDs das tags a validar. Se vazio, valida todas as tags ativas.")
+    tag_ids: Optional[List[int]] = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="IDs das tags a validar. Se vazio, valida todas as tags ativas.",
+    )
+
+    @field_validator("tag_ids")
+    @classmethod
+    def _validate_tag_ids(cls, value: Optional[List[int]]) -> Optional[List[int]]:
+        if value is None:
+            return None
+        if not value:
+            raise ValueError("tag_ids nao pode estar vazio.")
+        for tag_id in value:
+            if tag_id <= 0:
+                raise ValueError("IDs de tags devem ser positivos.")
+        return list(dict.fromkeys(value))
 
 
 class PiTagValidationBatchResponse(BaseModel):
@@ -151,7 +168,7 @@ class TimeSeriesRequest(BaseModel):
     start_time: datetime
     end_time: datetime
     mode: TimeSeriesMode = "recorded"
-    interval: Optional[str] = Field(default=None, max_length=16)
+    interval: Optional[str] = Field(default=None, max_length=16, pattern=r"^\d+[smhd]$")
     max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000)
     resolution_mode: Optional[str] = Field(default=None, pattern="^(automatic|manual)$")
     target_points_per_tag: Optional[int] = Field(default=None, ge=1000, le=50000)
@@ -213,7 +230,7 @@ class TimeSeriesComparisonRequest(BaseModel):
     comparison_type: ComparisonType
     contexts: List[ComparisonContextRequest] = Field(min_length=2, max_length=2)
     mode: TimeSeriesMode = "recorded"
-    interval: Optional[str] = Field(default=None, max_length=16)
+    interval: Optional[str] = Field(default=None, max_length=16, pattern=r"^\d+[smhd]$")
     max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000)
     resolution_mode: str = Field(default="automatic", pattern="^(automatic|manual)$")
     target_points_per_tag: Optional[int] = Field(default=10000, ge=1000, le=50000)
