@@ -32,6 +32,12 @@ class Section(Base, TimestampMixin):
         cascade="save-update, merge",
         passive_deletes=True,
     )
+    cep_variables: Mapped[List["CepVariable"]] = relationship(  # noqa: F821
+        "CepVariable",
+        back_populates="section",
+        cascade="save-update, merge",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         UniqueConstraint("equipment_id", "code", name="uq_sections_equipment_code"),

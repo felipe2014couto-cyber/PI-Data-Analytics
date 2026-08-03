@@ -24,6 +24,12 @@ class VariableType(Base, TimestampMixin):
         cascade="save-update, merge",
         passive_deletes=True,
     )
+    cep_variables: Mapped[List["CepVariable"]] = relationship(  # noqa: F821
+        "CepVariable",
+        back_populates="variable_type",
+        cascade="save-update, merge",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("ix_variable_types_active", "active"),

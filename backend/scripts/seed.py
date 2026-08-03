@@ -18,6 +18,7 @@ from app.models.equipment import Equipment
 from app.models.pi_tag import PiTag
 from app.models.section import Section
 from app.models.variable_type import VariableType
+from app.models.cep_variable import CepVariable
 
 PI_SERVER = "PIMS"
 
@@ -289,6 +290,92 @@ _RB1_TAGS: List[dict] = [
 
 assert len(_RB1_TAGS) == 73, f"Manifesto RB1 deve ter 73 tags, encontrado {len(_RB1_TAGS)}"
 
+# ---------------------------------------------------------------------------
+# CEP Variables — 24 monitored variables (11 + 1 + 12)
+# Each maps a reading tag + lower limit + upper limit + optional target
+# ---------------------------------------------------------------------------
+
+_CEP_VARIABLES: List[dict] = [
+    # Decapagem Eletrolitica — 11 variables
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "ESC_01", "name": "Escova 01",
+     "reading": "LFI_RB1_COR_ESC1", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA01_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA01_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "ESC_02", "name": "Escova 02",
+     "reading": "LFI_RB1_COR_ESC2", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA02_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA02_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "ESC_03", "name": "Escova 03",
+     "reading": "LFI_RB1_COR_ESC3", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA03_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA03_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "ESC_04", "name": "Escova 04",
+     "reading": "LFI_RB1_COR_ESC4", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA04_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_ESCOVA04_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "RET_01", "name": "Retificador 01",
+     "reading": "LFI_RB1_COR_RETF1", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET01_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET01_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "RET_02", "name": "Retificador 02",
+     "reading": "LFI_RB1_COR_RETF2", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET02_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET02_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "RET_03", "name": "Retificador 03",
+     "reading": "LFI_RB1_COR_RETF3", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET03_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET03_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "CURRENT", "code": "RET_04", "name": "Retificador 04",
+     "reading": "LFI_RB1_COR_RETF4", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET04_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_COR_RET04_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "TEMPERATURE", "code": "TAN_01", "name": "Tanque 01",
+     "reading": "LFI_RB1_TPR_TANQ1", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_TEMP_TANQUE01_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_TEMP_TANQUE01_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "TEMPERATURE", "code": "TAN_02", "name": "Tanque 02",
+     "reading": "LFI_RB1_TPR_TANQ2", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_TEMP_TANQUE02_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_TEMP_TANQUE02_LIM_SUP"},
+    {"section": "DECAPAGEM_ELETROLITICA", "vtype": "IRON_CONTENT", "code": "TEOR_FE", "name": "Teor Fe",
+     "reading": "LFI_RB1_DE_TF_REAL", "lower": "LFI_RB1_DECAPAGEM_ELETROLITICA_TEOR_FERRO_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_ELETROLITICA_TEOR_FERRO_LIM_SUP"},
+    # Decapagem Quimica — 1 variable
+    {"section": "DECAPAGEM_QUIMICA", "vtype": "TEMPERATURE", "code": "TEMP_DQ", "name": "Temperatura",
+     "reading": "LFI_RB1_TPR_BAN", "lower": "LFI_RB1_DECAPAGEM_QUIMICA_TEMP_LIM_INF",
+     "upper": "LFI_RB1_DECAPAGEM_QUIMICA_TEMP_LIM_SUP"},
+    # Forno — 12 variables
+    {"section": "FORNO", "vtype": "OXYGEN", "code": "OXIG", "name": "Oxigenio",
+     "reading": "LFI_RB1_PERC_OXIG_REAL", "lower": "LFI_RB1_FRN_OXIGENIO_LIM_INF",
+     "upper": "LFI_RB1_FRN_OXIGENIO_LIM_SUP"},
+    {"section": "FORNO", "vtype": "PRESSURE", "code": "PCI", "name": "PCI",
+     "reading": "LFI_RB1_PCI_MISTURA_REAL", "lower": "LFI_RB1_FRN_PCI_LIM_INF",
+     "upper": "LFI_RB1_FRN_PCI_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "PIR_01", "name": "Pirometro 01",
+     "reading": "LFI_RB1_TEMP_PRMT1", "lower": "LFI_RB1_FRN_TEMP_TIRAP1_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_TIRAP1_LIM_SUP"},
+    {"section": "FORNO", "vtype": "SPEED", "code": "VEL", "name": "Velocidade",
+     "reading": "LFI_RB1_VEL_PROC_PV", "lower": "LFI_RB1_FRN_VELOCIDADE_LIM_INF",
+     "upper": "LFI_RB1_FRN_VELOCIDADE_LIM_SUP",
+     "target": "LFI_RB1_FRN_VELOCIDADE_LIM_OBJ"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_01", "name": "Zona 01",
+     "reading": "LFI_RB1_TIC1_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA1_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA1_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_02", "name": "Zona 02",
+     "reading": "LFI_RB1_TIC2_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA2_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA2_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_03", "name": "Zona 03",
+     "reading": "LFI_RB1_TIC3_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA3_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA3_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_04", "name": "Zona 04",
+     "reading": "LFI_RB1_TIC4_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA4_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA4_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_05", "name": "Zona 05",
+     "reading": "LFI_RB1_TIC5_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA5_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA5_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_06", "name": "Zona 06",
+     "reading": "LFI_RB1_TIC6_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA6_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA6_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_07", "name": "Zona 07",
+     "reading": "LFI_RB1_TIC7_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA7_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA7_LIM_SUP"},
+    {"section": "FORNO", "vtype": "TEMPERATURE", "code": "ZN_08", "name": "Zona 08",
+     "reading": "LFI_RB1_TIC8_PV", "lower": "LFI_RB1_FRN_TEMP_ZONA8_LIM_INF",
+     "upper": "LFI_RB1_FRN_TEMP_ZONA8_LIM_SUP"},
+]
+
+assert len(_CEP_VARIABLES) == 24, f"Manifesto CEP deve ter 24 variaveis, encontrado {len(_CEP_VARIABLES)}"
+
 
 def upsert_equipments(db: Session) -> Tuple[int, int]:
     created = 0
@@ -398,6 +485,80 @@ def upsert_pi_tags(db: Session) -> Tuple[int, int]:
     return created, updated
 
 
+def upsert_cep_variables(db: Session) -> Tuple[int, int]:
+    """Seed 24 CEP variables linking PI tags by role."""
+    equipment = db.query(Equipment).filter(Equipment.code == "RB1").one()
+    sections = {
+        s.code: s.id
+        for s in db.query(Section).filter(Section.equipment_id == equipment.id).all()
+    }
+    vtypes = {
+        vt.code: vt.id
+        for vt in db.query(VariableType).filter(VariableType.code.in_([
+            "TEMPERATURE", "SPEED", "CURRENT", "IRON_CONTENT", "OXYGEN", "PRESSURE",
+        ])).all()
+    }
+
+    # Build a lookup of pi_tag_name -> PiTag for all RB1 tags
+    all_tags = (
+        db.query(PiTag)
+        .filter(PiTag.equipment_id == equipment.id)
+        .all()
+    )
+    tag_by_name = {t.pi_tag_name: t for t in all_tags}
+
+    created = 0
+    updated = 0
+    for var_data in _CEP_VARIABLES:
+        section_id = sections[var_data["section"]]
+        variable_type_id = vtypes[var_data["vtype"]]
+
+        reading_tag = tag_by_name.get(var_data["reading"])
+        lower_tag = tag_by_name.get(var_data["lower"])
+        upper_tag = tag_by_name.get(var_data["upper"])
+        target_tag_name = var_data.get("target")
+        target_tag = tag_by_name.get(target_tag_name) if target_tag_name else None
+
+        if reading_tag is None:
+            raise ValueError(f"Tag de leitura nao encontrada: {var_data['reading']}")
+        if lower_tag is None:
+            raise ValueError(f"Tag de limite inferior nao encontrada: {var_data['lower']}")
+        if upper_tag is None:
+            raise ValueError(f"Tag de limite superior nao encontrada: {var_data['upper']}")
+
+        existing = (
+            db.query(CepVariable)
+            .filter(CepVariable.equipment_id == equipment.id, CepVariable.code == var_data["code"])
+            .one_or_none()
+        )
+        if existing is None:
+            db.add(CepVariable(
+                equipment_id=equipment.id,
+                section_id=section_id,
+                variable_type_id=variable_type_id,
+                reading_tag_id=reading_tag.id,
+                lower_limit_tag_id=lower_tag.id,
+                upper_limit_tag_id=upper_tag.id,
+                target_tag_id=target_tag.id if target_tag else None,
+                code=var_data["code"],
+                name=var_data["name"],
+                active=True,
+            ))
+            created += 1
+        else:
+            existing.section_id = section_id
+            existing.variable_type_id = variable_type_id
+            existing.reading_tag_id = reading_tag.id
+            existing.lower_limit_tag_id = lower_tag.id
+            existing.upper_limit_tag_id = upper_tag.id
+            existing.target_tag_id = target_tag.id if target_tag else None
+            existing.name = var_data["name"]
+            existing.active = True
+            updated += 1
+    db.flush()
+    return created, updated
+
+
 def run_seed() -> dict:
     configure_logging()
     db = SessionLocal()
@@ -406,12 +567,14 @@ def run_seed() -> dict:
         section_stats = upsert_sections(db)
         variable_type_stats = upsert_variable_types(db)
         pi_tag_stats = upsert_pi_tags(db)
+        cep_var_stats = upsert_cep_variables(db)
         db.commit()
         result = {
             "equipments": {"created": equipment_stats[0], "updated": equipment_stats[1]},
             "sections": {"created": section_stats[0], "updated": section_stats[1]},
             "variable_types": {"created": variable_type_stats[0], "updated": variable_type_stats[1]},
             "pi_tags": {"created": pi_tag_stats[0], "updated": pi_tag_stats[1]},
+            "cep_variables": {"created": cep_var_stats[0], "updated": cep_var_stats[1]},
         }
         logger.info("Seed finished: %s", result)
         return result

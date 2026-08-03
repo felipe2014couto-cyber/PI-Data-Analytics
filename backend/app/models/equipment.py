@@ -29,6 +29,12 @@ class Equipment(Base, TimestampMixin):
         cascade="save-update, merge",
         passive_deletes=True,
     )
+    cep_variables: Mapped[List["CepVariable"]] = relationship(  # noqa: F821
+        "CepVariable",
+        back_populates="equipment",
+        cascade="save-update, merge",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("ix_equipments_active", "active"),

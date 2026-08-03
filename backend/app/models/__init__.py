@@ -5,6 +5,7 @@ from app.models.variable_type import VariableType
 from app.models.pi_tag import PiTag, PiTagDataType, PiTagValidationStatus
 from app.models.user import User, UserRole
 from app.models.visual_configuration import VisualConfiguration, VisualConfigurationVersion
+from app.models.cep_variable import CepVariable
 
 __all__ = [
     "Equipment",
@@ -17,4 +18,5 @@ __all__ = [
     "UserRole",
     "VisualConfiguration",
     "VisualConfigurationVersion",
+    "CepVariable",
 ]
