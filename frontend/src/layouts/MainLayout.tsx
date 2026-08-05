@@ -21,6 +21,7 @@ const CADASTROS_ITEMS: NavItem[] = [
 
 const ANALISES_ITEMS: NavItem[] = [
   { to: "/analises/visualizacao", label: "Visualizacao de Dados", icon: "bi-graph-up" },
+  { to: "/analises/cep", label: "Análise CEP", icon: "bi-clipboard-data" },
 ];
 
 function Sidebar({ open, onClose, admin }: { open: boolean; onClose: () => void; admin: boolean }) {

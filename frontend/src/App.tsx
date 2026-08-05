@@ -7,6 +7,7 @@ import { SectionsPage } from "./pages/SectionsPage";
 import { VariableTypesPage } from "./pages/VariableTypesPage";
 import { PiTagsPage } from "./pages/PiTagsPage";
 import { DataVisualizationPage } from "./pages/DataVisualizationPage";
+import { CepAnalysisPage } from "./pages/CepAnalysisPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthProvider } from "./auth/AuthContext";
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="cadastros/tipos-variavel" element={<VariableTypesPage />} />
           <Route path="cadastros/tags-pi" element={<PiTagsPage />} />
           <Route path="analises/visualizacao" element={<DataVisualizationPage />} />
+          <Route path="analises/cep" element={<CepAnalysisPage />} />
           <Route element={<ProtectedRoute admin />}><Route path="admin/usuarios" element={<AdminUsersPage />} /></Route>
           <Route path="*" element={<NotFoundPage />} />
           <Route path="/redirect" element={<Navigate to="/" replace />} />

@@ -27,6 +27,10 @@ import type {
   VisualConfiguration,
   VisualConfigurationDocument,
   VisualConfigurationVersion,
+  CepAnalysisRequest,
+  CepAnalysisAccepted,
+  CepQueryResponse,
+  CepQueryCancelled,
 } from "../types";
 
 export const authApi = {
@@ -217,5 +221,17 @@ export const timeSeriesApi = {
 export const healthApi = {
   check() {
     return httpClient.get<{ status: string; application: string }>("/health");
+  },
+};
+
+export const cepApi = {
+  startAnalysis(payload: CepAnalysisRequest) {
+    return httpClient.post<CepAnalysisAccepted>("/cep/analyze", payload);
+  },
+  getStatus(queryId: string) {
+    return httpClient.get<CepQueryResponse>(`/cep/analyze/${queryId}`);
+  },
+  cancelAnalysis(queryId: string) {
+    return httpClient.post<CepQueryCancelled>(`/cep/analyze/${queryId}/cancel`);
   },
 };

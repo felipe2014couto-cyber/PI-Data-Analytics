@@ -618,3 +618,127 @@ export interface FilterApplicationResult {
   ruleResults: FilterRuleResult[];
   errors: FilterRuleError[];
 }
+
+// ---------------------------------------------------------------------------
+// CEP Analysis types
+// ---------------------------------------------------------------------------
+
+export type CepQueryStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type CepAnalysisStatus = "completed" | "partial" | "failed";
+export type CepVariableStatus = "processed" | "no_data" | "error";
+
+export interface CepAnalysisRequest {
+  start_time: string;
+  end_time: string;
+  equipment_id?: number | null;
+  section_id?: number | null;
+  variable_ids?: number[] | null;
+  include_recorded?: boolean;
+}
+
+export interface CepAnalysisAccepted {
+  query_id: string;
+  query_status: "pending";
+  message: string;
+}
+
+export interface CepQueryPending {
+  query_id: string;
+  query_status: "pending";
+}
+
+export interface CepQueryRunning {
+  query_id: string;
+  query_status: "running";
+  started_at: string;
+}
+
+export interface CepQueryCancelled {
+  query_id: string;
+  query_status: "cancelled";
+  message: string;
+}
+
+export interface CepAnalysisSummary {
+  analysis_status: CepAnalysisStatus;
+  overall_pct: number | null;
+  total_variables: number;
+  conformant_variables: number;
+  non_conformant_variables: number;
+  no_data_variables: number;
+  failed_variables: number;
+  period_start: string;
+  period_end: string;
+}
+
+export interface CepVariableResult {
+  variable_id: number;
+  code: string;
+  name: string;
+  equipment_id: number;
+  section_id: number;
+  variable_type_id: number;
+  conformity_pct: number | null;
+  total_points: number;
+  conformant: number;
+  non_conformant: number;
+  no_data: number;
+  status: CepVariableStatus;
+}
+
+export interface CepDiagnostic {
+  tag_id: number;
+  tag_name: string;
+  variable_ids: number[];
+  error_code: string;
+  message: string;
+}
+
+export interface CepRecordedPoint {
+  timestamp: string;
+  value: number | null;
+  good: boolean;
+  questionable: boolean;
+  substituted: boolean;
+}
+
+export interface CepRecordedSeries {
+  tag_id: number;
+  tag_name: string;
+  variable_ids: number[];
+  points: CepRecordedPoint[];
+  truncated: boolean;
+  source_point_count: number | null;
+}
+
+export interface CepAnalysisMetadata {
+  pi_request_count: number | null;
+  pi_points_received: number | null;
+  points_returned: number | null;
+  webid_cache_hits: number | null;
+  webid_cache_misses: number | null;
+  duration_ms: number | null;
+  tags_processed: number | null;
+  tags_failed: number | null;
+  webid_resolved: number | null;
+  recorded_total_point_limit: number;
+  recorded_returned_point_count: number;
+  recorded_total_limit_reached: boolean;
+  recorded_tags_not_acquired: string[];
+}
+
+export interface CepAnalysisResult {
+  query_id: string;
+  query_status: "completed" | "failed";
+  summary: CepAnalysisSummary;
+  variables: CepVariableResult[];
+  diagnostics: CepDiagnostic[];
+  recorded_series?: CepRecordedSeries[] | null;
+  metadata: CepAnalysisMetadata;
+}
+
+export type CepQueryResponse =
+  | CepQueryPending
+  | CepQueryRunning
+  | CepQueryCancelled
+  | CepAnalysisResult;

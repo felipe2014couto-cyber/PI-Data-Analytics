@@ -1,6 +1,6 @@
 """Core configuration module."""
 from functools import lru_cache
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,16 +21,16 @@ class Settings(BaseSettings):
     app_debug: bool = Field(default=False)
     database_url: str = Field(default="sqlite:///./pi_analytics_data.db")
     frontend_origin: str = Field(default="http://localhost:5173")
-    auth_jwt_secret: Optional[SecretStr] = Field(default=None)
+    auth_jwt_secret: SecretStr | None = Field(default=None)
     auth_jwt_expire_minutes: int = Field(default=60, ge=5, le=1440)
     auth_cookie_secure: bool = Field(default=False)
     auth_cookie_name: str = Field(default="pads_session", min_length=3, max_length=64)
     auth_csrf_cookie_name: str = Field(default="pads_csrf", min_length=3, max_length=64)
 
     api_prefix: str = "/api"
-    cors_origins: List[str] = Field(default_factory=list)
+    cors_origins: list[str] = Field(default_factory=list)
 
-    pi_web_api_base_url: Optional[str] = Field(
+    pi_web_api_base_url: str | None = Field(
         default=None,
         description="URL base do PI Web API (ex.: https://servidor/piwebapi).",
     )
@@ -38,11 +38,11 @@ class Settings(BaseSettings):
         default="none",
         description="Modo de autenticacao do PI Web API. Apenas 'none' ou 'basic' sao suportados.",
     )
-    pi_web_api_username: Optional[str] = Field(
+    pi_web_api_username: str | None = Field(
         default=None,
         description="Usuario para autenticacao basica no PI Web API.",
     )
-    pi_web_api_password: Optional[SecretStr] = Field(
+    pi_web_api_password: SecretStr | None = Field(
         default=None,
         description="Senha para autenticacao basica no PI Web API (SecretStr).",
     )
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
         default=True,
         description="Define se a verificacao SSL/TLS do PI Web API deve ser realizada.",
     )
-    pi_data_server_name: Optional[str] = Field(
+    pi_data_server_name: str | None = Field(
         default=None,
         description="Nome do PI Data Archive usado na construcao do caminho da tag.",
     )
@@ -225,7 +225,15 @@ class Settings(BaseSettings):
         description="Tempo de vida de conexoes keep-alive.",
     )
 
-    def get_cors_origins(self) -> List[str]:
+    # CEP Analysis
+    pi_cep_max_variables: int = Field(default=24)
+    pi_cep_result_ttl_seconds: int = Field(default=3600)
+    pi_cep_operation_timeout_seconds: int = Field(default=1800)
+    pi_cep_cleanup_interval_seconds: int = Field(default=60)
+    pi_cep_recorded_max_points_per_tag: int = Field(default=10000)
+    pi_cep_recorded_max_total_points: int = Field(default=100000)
+
+    def get_cors_origins(self) -> list[str]:
         if self.cors_origins:
             return self.cors_origins
         return [origin.strip() for origin in self.frontend_origin.split(",") if origin.strip()]
