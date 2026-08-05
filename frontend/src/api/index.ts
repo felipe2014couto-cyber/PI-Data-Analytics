@@ -31,6 +31,7 @@ import type {
   CepAnalysisAccepted,
   CepQueryResponse,
   CepQueryCancelled,
+  CepVariableSeries,
 } from "../types";
 
 export const authApi = {
@@ -233,5 +234,8 @@ export const cepApi = {
   },
   cancelAnalysis(queryId: string) {
     return httpClient.post<CepQueryCancelled>(`/cep/analyze/${queryId}/cancel`);
+  },
+  getVariableSeries(queryId: string, variableId: number) {
+    return httpClient.get<CepVariableSeries>(`/cep/analyze/${queryId}/variables/${variableId}/series`);
   },
 };

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db_session, get_pi_provider, get_query_registry_dep
+from app.api.cep import _load_and_materialize
 from app.core.config import settings
 from app.models.cep_variable import CepVariable
 from app.models.equipment import Equipment
@@ -128,6 +129,57 @@ def _make_client(db_session, fake_provider):
     app.dependency_overrides[validate_csrf] = lambda: None
 
     return TestClient(app), store
+
+
+def test_materialization_uses_grouped_limit_tags_from_reading_registration(db_session) -> None:
+    eq = Equipment(code="RB1", name="RB1", active=True)
+    db_session.add(eq)
+    db_session.flush()
+    sec = Section(equipment_id=eq.id, code="SEC1", name="Secao 1", active=True)
+    vt = VariableType(code="CURRENT", name="CURRENT", active=True)
+    db_session.add_all([sec, vt])
+    db_session.flush()
+
+    reading = PiTag(
+        equipment_id=eq.id, section_id=sec.id, variable_type_id=vt.id,
+        pi_server="PIMS", pi_tag_name="PV_CORRETA", pi_web_id="WEBID_PV",
+        lower_limit_tag="LIM_INF_CORRETO", upper_limit_tag="LIM_SUP_CORRETO",
+        display_name="Escova 01", data_type=PiTagDataType.NUMERIC, active=True,
+        validation_status=PiTagValidationStatus.VALID,
+    )
+    wrong_lower = PiTag(
+        equipment_id=eq.id, section_id=sec.id, variable_type_id=vt.id,
+        pi_server="PIMS", pi_tag_name="PV_DE_OUTRA_VARIAVEL", display_name="Outro",
+        data_type=PiTagDataType.NUMERIC, active=True,
+        validation_status=PiTagValidationStatus.VALID,
+    )
+    wrong_upper = PiTag(
+        equipment_id=eq.id, section_id=sec.id, variable_type_id=vt.id,
+        pi_server="PIMS", pi_tag_name="OUTRO_LIMITE", display_name="Outro limite",
+        data_type=PiTagDataType.NUMERIC, active=True,
+        validation_status=PiTagValidationStatus.VALID,
+    )
+    db_session.add_all([reading, wrong_lower, wrong_upper])
+    db_session.flush()
+    db_session.add(CepVariable(
+        equipment_id=eq.id, section_id=sec.id, variable_type_id=vt.id,
+        reading_tag_id=reading.id, lower_limit_tag_id=wrong_lower.id,
+        upper_limit_tag_id=wrong_upper.id, code="ESC_01", name="Escova 01", active=True,
+    ))
+    db_session.commit()
+    assert db_session.query(CepVariable).count() == 1
+
+    materialized = _load_and_materialize(db_session, CepAnalysisRequest(
+        start_time=datetime(2026, 8, 4, 15, 35, tzinfo=UTC),
+        end_time=datetime(2026, 8, 4, 16, 5, tzinfo=UTC),
+    ))
+
+    variable = materialized.variables[0]
+    tags_by_id = {tag.id: tag for tag in materialized.unique_tags}
+    assert tags_by_id[variable.reading_tag_id].pi_tag_name == "PV_CORRETA"
+    assert tags_by_id[variable.lower_limit_tag_id].pi_tag_name == "LIM_INF_CORRETO"
+    assert tags_by_id[variable.upper_limit_tag_id].pi_tag_name == "LIM_SUP_CORRETO"
+    assert "PV_DE_OUTRA_VARIAVEL" not in {tag.pi_tag_name for tag in materialized.unique_tags}
 
 
 # ---------------------------------------------------------------------------

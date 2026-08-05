@@ -281,13 +281,19 @@ describe("PiTags page", () => {
     }
     const nameInput = dialog.querySelector<HTMLInputElement>("#tag-pi-name");
     if (nameInput) {
-      nameInput.value = "RB3.FURNO.TEMP";
-      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fireEvent.change(nameInput, { target: { value: "RB3.FURNO.TEMP" } });
+    }
+    const lowerLimitInput = dialog.querySelector<HTMLInputElement>("#tag-lower-limit");
+    if (lowerLimitInput) {
+      fireEvent.change(lowerLimitInput, { target: { value: "RB3.FURNO.TEMP.LSL" } });
+    }
+    const upperLimitInput = dialog.querySelector<HTMLInputElement>("#tag-upper-limit");
+    if (upperLimitInput) {
+      fireEvent.change(upperLimitInput, { target: { value: "RB3.FURNO.TEMP.USL" } });
     }
     const displayInput = dialog.querySelector<HTMLInputElement>("#tag-display");
     if (displayInput) {
-      displayInput.value = "Tag de teste";
-      displayInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fireEvent.change(displayInput, { target: { value: "Tag de teste" } });
     }
     const form = dialog.querySelector("form");
     form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
@@ -296,6 +302,40 @@ describe("PiTags page", () => {
     });
     const payload = apiMock.createPiTag.mock.calls[0][0];
     expect(payload.pi_server).toBe(DEFAULT_PI_SERVER);
+    expect(payload.pi_tag_name).toBe("RB3.FURNO.TEMP");
+    expect(payload.lower_limit_tag).toBe("RB3.FURNO.TEMP.LSL");
+    expect(payload.upper_limit_tag).toBe("RB3.FURNO.TEMP.USL");
+  });
+
+  it("sends null for optional limits when creating only a PV tag", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([]));
+    apiMock.createPiTag.mockResolvedValue(piTagFixture);
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    renderAt("/cadastros/tags-pi");
+    await waitFor(() => expect(apiMock.listPiTags).toHaveBeenCalled());
+    (await screen.findAllByRole("button", { name: /Nova tag PI/i }))[0].click();
+    const dialog = await screen.findByRole("dialog");
+    const equipmentSelect = dialog.querySelector<HTMLSelectElement>("#tag-equipment-form");
+    if (equipmentSelect) {
+      fireEvent.change(equipmentSelect, { target: { value: "1" } });
+    }
+    const sectionSelect = dialog.querySelector<HTMLSelectElement>("#tag-section-form");
+    await waitFor(() => expect(sectionSelect?.disabled).toBe(false));
+    if (sectionSelect) fireEvent.change(sectionSelect, { target: { value: "1" } });
+    const vtSelect = dialog.querySelector<HTMLSelectElement>("#tag-vt-form");
+    if (vtSelect) fireEvent.change(vtSelect, { target: { value: "1" } });
+    fireEvent.input(dialog.querySelector<HTMLInputElement>("#tag-pi-name")!, {
+      target: { value: "RB3.FURNO.PRESSURE" },
+    });
+    fireEvent.input(dialog.querySelector<HTMLInputElement>("#tag-display")!, {
+      target: { value: "Pressao do forno" },
+    });
+    dialog.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(apiMock.createPiTag).toHaveBeenCalled());
+    const payload = apiMock.createPiTag.mock.calls[0][0];
+    expect(payload.pi_tag_name).toBe("RB3.FURNO.PRESSURE");
+    expect(payload.lower_limit_tag).toBeNull();
+    expect(payload.upper_limit_tag).toBeNull();
   });
 
   it("does not show PI Server info when canceling and reopening the modal", async () => {
@@ -343,7 +383,12 @@ describe("PiTags page", () => {
   });
 
   it("preserves legacy pi_server value in the update payload when editing", async () => {
-    const legacyTag = { ...piTagFixture, pi_server: "LEGACY_SRV" };
+    const legacyTag = {
+      ...piTagFixture,
+      pi_server: "LEGACY_SRV",
+      lower_limit_tag: "RB3.FURNO.TEMP.LSL",
+      upper_limit_tag: "RB3.FURNO.TEMP.USL",
+    };
     apiMock.listPiTags.mockResolvedValue(paginated([legacyTag]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
     apiMock.updatePiTag.mockResolvedValue(legacyTag);
@@ -355,6 +400,9 @@ describe("PiTags page", () => {
     editButton.click();
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).not.toContain("LEGACY_SRV");
+    expect(dialog.querySelector<HTMLInputElement>("#tag-pi-name")?.value).toBe("RB3.FURNO.TEMP");
+    expect(dialog.querySelector<HTMLInputElement>("#tag-lower-limit")?.value).toBe("RB3.FURNO.TEMP.LSL");
+    expect(dialog.querySelector<HTMLInputElement>("#tag-upper-limit")?.value).toBe("RB3.FURNO.TEMP.USL");
     const displayInput = dialog.querySelector<HTMLInputElement>("#tag-display");
     if (displayInput) {
       fireEvent.change(displayInput, { target: { value: "Nome atualizado" } });
@@ -367,6 +415,9 @@ describe("PiTags page", () => {
     const updatePayload = apiMock.updatePiTag.mock.calls[0][1];
     expect(updatePayload.pi_server).toBe("LEGACY_SRV");
     expect(updatePayload.display_name).toBe("Nome atualizado");
+    expect(updatePayload.pi_tag_name).toBe("RB3.FURNO.TEMP");
+    expect(updatePayload.lower_limit_tag).toBe("RB3.FURNO.TEMP.LSL");
+    expect(updatePayload.upper_limit_tag).toBe("RB3.FURNO.TEMP.USL");
   });
 
   it("keeps pi_server unchanged in update payload when editing display_name", async () => {

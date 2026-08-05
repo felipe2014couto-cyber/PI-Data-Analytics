@@ -38,6 +38,8 @@ interface FormState {
   variable_type_id: string;
   pi_server: string;
   pi_tag_name: string;
+  lower_limit_tag: string;
+  upper_limit_tag: string;
   display_name: string;
   description: string;
   engineering_unit: string;
@@ -51,6 +53,8 @@ const EMPTY_FORM: FormState = {
   variable_type_id: "",
   pi_server: DEFAULT_PI_SERVER,
   pi_tag_name: "",
+  lower_limit_tag: "",
+  upper_limit_tag: "",
   display_name: "",
   description: "",
   engineering_unit: "",
@@ -237,6 +241,8 @@ export function PiTagsPage() {
       variable_type_id: String(item.variable_type_id),
       pi_server: item.pi_server,
       pi_tag_name: item.pi_tag_name,
+      lower_limit_tag: item.lower_limit_tag ?? "",
+      upper_limit_tag: item.upper_limit_tag ?? "",
       display_name: item.display_name,
       description: item.description ?? "",
       engineering_unit: item.engineering_unit ?? "",
@@ -280,6 +286,8 @@ export function PiTagsPage() {
           variable_type_id: variableTypeId,
           pi_server: form.pi_server.trim() || DEFAULT_PI_SERVER,
           pi_tag_name: form.pi_tag_name.trim(),
+          lower_limit_tag: form.lower_limit_tag.trim() || null,
+          upper_limit_tag: form.upper_limit_tag.trim() || null,
           display_name: form.display_name.trim(),
           description: form.description.trim() || null,
           engineering_unit: form.engineering_unit.trim() || null,
@@ -295,6 +303,8 @@ export function PiTagsPage() {
           variable_type_id: variableTypeId,
           pi_server: DEFAULT_PI_SERVER,
           pi_tag_name: form.pi_tag_name.trim(),
+          lower_limit_tag: form.lower_limit_tag.trim() || null,
+          upper_limit_tag: form.upper_limit_tag.trim() || null,
           display_name: form.display_name.trim(),
           description: form.description.trim() || null,
           engineering_unit: form.engineering_unit.trim() || null,
@@ -768,11 +778,36 @@ export function PiTagsPage() {
             <div className="row g-3">
               <div className="col-md-12">
                 <Form.Group controlId="tag-pi-name">
-                  <Form.Label>Nome da tag no PI</Form.Label>
+                  <Form.Label>Tag de acompanhamento (PV)</Form.Label>
                   <Form.Control
                     value={form.pi_tag_name}
                     onChange={(event) => setForm((prev) => ({ ...prev, pi_tag_name: event.target.value }))}
                     required
+                    maxLength={255}
+                  />
+                </Form.Group>
+              </div>
+            </div>
+            <div className="row g-3 mt-1">
+              <div className="col-md-12">
+                <div className="fw-semibold mb-2">Limites para cálculo CEP</div>
+              </div>
+              <div className="col-md-6">
+                <Form.Group controlId="tag-lower-limit">
+                  <Form.Label>Tag de limite inferior</Form.Label>
+                  <Form.Control
+                    value={form.lower_limit_tag}
+                    onChange={(event) => setForm((prev) => ({ ...prev, lower_limit_tag: event.target.value }))}
+                    maxLength={255}
+                  />
+                </Form.Group>
+              </div>
+              <div className="col-md-6">
+                <Form.Group controlId="tag-upper-limit">
+                  <Form.Label>Tag de limite superior</Form.Label>
+                  <Form.Control
+                    value={form.upper_limit_tag}
+                    onChange={(event) => setForm((prev) => ({ ...prev, upper_limit_tag: event.target.value }))}
                     maxLength={255}
                   />
                 </Form.Group>

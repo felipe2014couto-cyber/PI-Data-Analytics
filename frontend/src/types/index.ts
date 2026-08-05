@@ -87,6 +87,8 @@ export interface PiTag {
   variable_type_id: number;
   pi_server: string;
   pi_tag_name: string;
+  lower_limit_tag?: string | null;
+  upper_limit_tag?: string | null;
   pi_web_id: string | null;
   display_name: string;
   description: string | null;
@@ -106,6 +108,8 @@ export interface PiTagCreate {
   variable_type_id: number;
   pi_server: string;
   pi_tag_name: string;
+  lower_limit_tag?: string | null;
+  upper_limit_tag?: string | null;
   display_name: string;
   description?: string | null;
   engineering_unit?: string | null;
@@ -119,6 +123,8 @@ export interface PiTagUpdate {
   variable_type_id?: number;
   pi_server?: string;
   pi_tag_name?: string;
+  lower_limit_tag?: string | null;
+  upper_limit_tag?: string | null;
   display_name?: string;
   description?: string | null;
   engineering_unit?: string | null;
@@ -634,29 +640,42 @@ export interface CepAnalysisRequest {
   section_id?: number | null;
   variable_ids?: number[] | null;
   include_recorded?: boolean;
+  interpolated_interval?: "1m" | "2m" | "5m" | "10m" | "15m" | "30m" | "1h";
 }
 
 export interface CepAnalysisAccepted {
   query_id: string;
   query_status: "pending";
   message: string;
+  progress_percent: number;
+  completed_variables: number;
+  total_variables: number;
 }
 
 export interface CepQueryPending {
   query_id: string;
   query_status: "pending";
+  progress_percent: number;
+  completed_variables: number;
+  total_variables: number;
 }
 
 export interface CepQueryRunning {
   query_id: string;
   query_status: "running";
   started_at: string;
+  progress_percent: number;
+  completed_variables: number;
+  total_variables: number;
 }
 
 export interface CepQueryCancelled {
   query_id: string;
   query_status: "cancelled";
   message: string;
+  progress_percent: number;
+  completed_variables: number;
+  total_variables: number;
 }
 
 export interface CepAnalysisSummary {
@@ -735,6 +754,33 @@ export interface CepAnalysisResult {
   diagnostics: CepDiagnostic[];
   recorded_series?: CepRecordedSeries[] | null;
   metadata: CepAnalysisMetadata;
+  progress_percent: number;
+  completed_variables: number;
+  total_variables: number;
+}
+
+export interface CepVariableSeriesPoint {
+  timestamp: string;
+  value: number | null;
+  lower_limit: number | null;
+  upper_limit: number | null;
+}
+
+export interface CepNonConformingPoint {
+  timestamp: string;
+  value: number;
+  lower_limit: number | null;
+  upper_limit: number | null;
+}
+
+export interface CepVariableSeries {
+  variable_id: number;
+  variable_name: string;
+  analysis_tag: string;
+  lower_limit: number | null;
+  upper_limit: number | null;
+  points: CepVariableSeriesPoint[];
+  non_conforming_points: CepNonConformingPoint[];
 }
 
 export type CepQueryResponse =

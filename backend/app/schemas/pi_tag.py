@@ -17,6 +17,8 @@ class PiTagBase(BaseModel):
     variable_type_id: int = Field(gt=0)
     pi_server: str = Field(min_length=1, max_length=128)
     pi_tag_name: str = Field(min_length=1, max_length=255)
+    lower_limit_tag: Optional[str] = Field(default=None, max_length=255)
+    upper_limit_tag: Optional[str] = Field(default=None, max_length=255)
     display_name: str = Field(min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     engineering_unit: Optional[str] = Field(default=None, max_length=32)
@@ -74,6 +76,8 @@ class PiTagUpdate(BaseModel):
     variable_type_id: Optional[int] = Field(default=None, gt=0)
     pi_server: Optional[str] = Field(default=None, min_length=1, max_length=128)
     pi_tag_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    lower_limit_tag: Optional[str] = Field(default=None, max_length=255)
+    upper_limit_tag: Optional[str] = Field(default=None, max_length=255)
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     engineering_unit: Optional[str] = Field(default=None, max_length=32)
@@ -136,6 +140,8 @@ class PiTagResponse(BaseModel):
     variable_type_id: int
     pi_server: str
     pi_tag_name: str
+    lower_limit_tag: Optional[str] = None
+    upper_limit_tag: Optional[str] = None
     pi_web_id: Optional[str] = None
     display_name: str
     description: Optional[str] = None

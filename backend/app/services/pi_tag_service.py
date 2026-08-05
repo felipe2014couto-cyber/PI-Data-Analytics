@@ -125,6 +125,8 @@ class PiTagService:
             variable_type_id=payload.variable_type_id,
             pi_server=payload.pi_server,
             pi_tag_name=payload.pi_tag_name,
+            lower_limit_tag=payload.lower_limit_tag,
+            upper_limit_tag=payload.upper_limit_tag,
             pi_web_id=None,
             display_name=payload.display_name,
             description=payload.description,
@@ -174,6 +176,10 @@ class PiTagService:
             item.pi_server = payload.pi_server
         if payload.pi_tag_name is not None:
             item.pi_tag_name = payload.pi_tag_name
+        if "lower_limit_tag" in payload.model_fields_set:
+            item.lower_limit_tag = payload.lower_limit_tag
+        if "upper_limit_tag" in payload.model_fields_set:
+            item.upper_limit_tag = payload.upper_limit_tag
         if payload.display_name is not None:
             item.display_name = payload.display_name
         if payload.description is not None:

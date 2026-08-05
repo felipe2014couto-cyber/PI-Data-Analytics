@@ -36,6 +36,7 @@ from app.schemas.cep_analysis import (
     MaterializedAnalysisData,
     MaterializedTag,
     MaterializedVariable,
+    CepVariableSeries,
 )
 from app.schemas.common import ErrorResponse
 from app.services.cep_analysis_service import CepAnalysisService
@@ -49,6 +50,16 @@ from app.services.query_registry import QueryRegistry
 logger = logging.getLogger("pi_analytics_data.api.cep")
 
 router = APIRouter(prefix="/cep", tags=["cep"])
+
+
+async def _get_valid_entry(query_id: str, store: CepQueryStore, registry: QueryRegistry):
+    timed_out_entry = await store.apply_timeout(query_id)
+    if timed_out_entry is not None:
+        await registry.cancel(query_id)
+    entry = await store.get_or_remove_expired(query_id)
+    if entry is None:
+        raise NotFoundError("Análise não encontrada ou expirada.")
+    return entry
 
 
 def _validate_timezone(dt: datetime, field_name: str) -> None:
@@ -104,41 +115,84 @@ def _load_and_materialize(
 
     variables = []
     tag_variable_map: dict[int, list[int]] = {}
-    unique_tag_ids: set[int] = set()
+    unique_tags: dict[int, MaterializedTag] = {}
+
+    def register_tag(tag: MaterializedTag, variable_id: int) -> None:
+        unique_tags[tag.id] = tag
+        tag_variable_map.setdefault(tag.id, []).append(variable_id)
+
+    def grouped_limit_id(reading_tag_id: int, role: str) -> int:
+        # Negative ids identify the two PI Points configured inside the grouped
+        # PiTag record. Real database PiTag ids are positive.
+        return -(reading_tag_id * 2) if role == "lower" else -(reading_tag_id * 2 + 1)
 
     for cv in cep_variables:
+        reading_tag = cv.reading_tag
+        if reading_tag is None:
+            raise ValidationError(
+                f"A variável CEP '{cv.code}' não possui tag de acompanhamento cadastrada.",
+            )
+
+        has_grouped_limits = bool(reading_tag.lower_limit_tag and reading_tag.upper_limit_tag)
+        lower_limit_tag_id = (
+            grouped_limit_id(reading_tag.id, "lower")
+            if has_grouped_limits else cv.lower_limit_tag_id
+        )
+        upper_limit_tag_id = (
+            grouped_limit_id(reading_tag.id, "upper")
+            if has_grouped_limits else cv.upper_limit_tag_id
+        )
+
         variables.append(MaterializedVariable(
             id=cv.id, code=cv.code, name=cv.name,
             equipment_id=cv.equipment_id, section_id=cv.section_id,
             variable_type_id=cv.variable_type_id,
-            reading_tag_id=cv.reading_tag_id,
-            lower_limit_tag_id=cv.lower_limit_tag_id,
-            upper_limit_tag_id=cv.upper_limit_tag_id,
+            reading_tag_id=reading_tag.id,
+            lower_limit_tag_id=lower_limit_tag_id,
+            upper_limit_tag_id=upper_limit_tag_id,
             target_tag_id=cv.target_tag_id,
         ))
 
-        for tag_id in [cv.reading_tag_id, cv.lower_limit_tag_id,
-                        cv.upper_limit_tag_id, cv.target_tag_id]:
-            if tag_id is not None:
-                unique_tag_ids.add(tag_id)
-                tag_variable_map.setdefault(tag_id, []).append(cv.id)
+        register_tag(MaterializedTag(
+            id=reading_tag.id,
+            pi_tag_name=reading_tag.pi_tag_name,
+            pi_server=reading_tag.pi_server,
+            pi_web_id=reading_tag.pi_web_id,
+        ), cv.id)
 
-    # Load PiTags
-    from app.models.pi_tag import PiTag
-    tags = db.query(PiTag).filter(PiTag.id.in_(unique_tag_ids)).all()
-    unique_tags = [
-        MaterializedTag(
-            id=t.id, pi_tag_name=t.pi_tag_name,
-            pi_server=t.pi_server, pi_web_id=t.pi_web_id,
-        )
-        for t in tags
-    ]
+        if has_grouped_limits:
+            register_tag(MaterializedTag(
+                id=lower_limit_tag_id,
+                pi_tag_name=reading_tag.lower_limit_tag,
+                pi_server=reading_tag.pi_server,
+            ), cv.id)
+            register_tag(MaterializedTag(
+                id=upper_limit_tag_id,
+                pi_tag_name=reading_tag.upper_limit_tag,
+                pi_server=reading_tag.pi_server,
+            ), cv.id)
+        else:
+            for limit_tag in [cv.lower_limit_tag, cv.upper_limit_tag]:
+                register_tag(MaterializedTag(
+                    id=limit_tag.id,
+                    pi_tag_name=limit_tag.pi_tag_name,
+                    pi_server=limit_tag.pi_server,
+                    pi_web_id=limit_tag.pi_web_id,
+                ), cv.id)
+
+        if cv.target_tag is not None:
+            register_tag(MaterializedTag(
+                id=cv.target_tag.id,
+                pi_tag_name=cv.target_tag.pi_tag_name,
+                pi_server=cv.target_tag.pi_server,
+                pi_web_id=cv.target_tag.pi_web_id,
+            ), cv.id)
 
     return MaterializedAnalysisData(
         request=request,
         variables=variables,
         tag_variable_map=tag_variable_map,
-        unique_tags=unique_tags,
+        unique_tags=list(unique_tags.values()),
     )
 
 
@@ -180,7 +234,13 @@ async def create_analysis(
     query_id = str(uuid.uuid4())
 
     # 6. Register in store (timeout starts here)
-    entry = await store.register(query_id, payload)
+    total_work_units = len(materialized.variables) + 3 + (1 if payload.include_recorded else 0)
+    entry = await store.register(
+        query_id,
+        payload,
+        total_variables=len(materialized.variables),
+        total_work_units=total_work_units,
+    )
 
     # 7. Create async task (blocked by ready_event)
     service = CepAnalysisService(provider=provider)
@@ -208,6 +268,9 @@ async def create_analysis(
         query_id=query_id,
         query_status="pending",
         message="Análise CEP aceita para processamento.",
+        progress_percent=0,
+        completed_variables=0,
+        total_variables=len(materialized.variables),
     )
 
 
@@ -226,18 +289,17 @@ async def get_analysis(
 ) -> JSONResponse:
     """Get analysis status or result."""
     # 1. Apply operational timeout (atomic)
-    timed_out_entry = await store.apply_timeout(query_id)
-    if timed_out_entry is not None:
-        await registry.cancel(query_id)
-
-    # 2. Get entry, removing if terminal expired (atomic)
-    entry = await store.get_or_remove_expired(query_id)
-    if entry is None:
-        raise NotFoundError("Análise não encontrada ou expirada.")
+    entry = await _get_valid_entry(query_id, store, registry)
 
     # 3. Return based on status
     if entry.query_status == "pending":
-        pending = CepQueryPending(query_id=query_id, query_status="pending")
+        pending = CepQueryPending(
+            query_id=query_id,
+            query_status="pending",
+            progress_percent=entry.progress_percent,
+            completed_variables=entry.completed_variables,
+            total_variables=entry.total_variables,
+        )
         return JSONResponse(content=pending.model_dump(mode="json"))
 
     if entry.query_status == "running":
@@ -245,6 +307,9 @@ async def get_analysis(
             query_id=query_id,
             query_status="running",
             started_at=entry.started_at or datetime.now(UTC),
+            progress_percent=entry.progress_percent,
+            completed_variables=entry.completed_variables,
+            total_variables=entry.total_variables,
         )
         return JSONResponse(content=running.model_dump(mode="json"))
 
@@ -253,6 +318,9 @@ async def get_analysis(
             query_id=query_id,
             query_status="cancelled",
             message="Operação cancelada.",
+            progress_percent=entry.progress_percent,
+            completed_variables=entry.completed_variables,
+            total_variables=entry.total_variables,
         )
         return JSONResponse(content=cancelled.model_dump(mode="json"))
 
@@ -267,6 +335,25 @@ async def get_analysis(
         return JSONResponse(content=content)
     else:
         return JSONResponse(content=result.model_dump(mode="json"))
+
+
+@router.get(
+    "/analyze/{query_id}/variables/{variable_id}/series",
+    response_model=CepVariableSeries,
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_variable_series(
+    query_id: str,
+    variable_id: int,
+    store: CepQueryStore = Depends(get_cep_query_store),
+    registry: QueryRegistry = Depends(get_query_registry_dep),
+) -> CepVariableSeries:
+    """Return the Interpolated series retained for one completed execution."""
+    entry = await _get_valid_entry(query_id, store, registry)
+    series = entry.variable_series.get(variable_id)
+    if series is None:
+        raise NotFoundError("Variável não encontrada nesta análise.")
+    return series
 
 
 @router.post(
@@ -312,4 +399,7 @@ async def cancel_analysis(
         query_id=query_id,
         query_status="cancelled",
         message="Operação cancelada.",
+        progress_percent=entry.progress_percent,
+        completed_variables=entry.completed_variables,
+        total_variables=entry.total_variables,
     )

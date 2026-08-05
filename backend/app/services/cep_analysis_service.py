@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import UTC, datetime
 
 from app.core.config import settings
@@ -30,6 +31,9 @@ from app.schemas.cep_analysis import (
     CepRecordedPoint,
     CepRecordedSeries,
     CepVariableResult,
+    CepNonConformingPoint,
+    CepVariableSeries,
+    CepVariableSeriesPoint,
     MaterializedAnalysisData,
     MaterializedTag,
     MaterializedVariable,
@@ -81,21 +85,38 @@ class CepAnalysisService:
 
             # 4. Resolve WebIds
             web_ids, acquisition_diagnostics = await self._resolve_web_ids(unique_tags)
+            await store.set_progress(query_id, 0, completed_work_units=1)
 
-            # 5. Fetch Interpolated 5m
+            # 5. Fetch Interpolated at the requested interval
             interpolated_data, interpolated_diagnostics = await self._fetch_interpolated(
                 web_ids, materialized_data.request.start_time,
                 materialized_data.request.end_time,
+                materialized_data.request.interpolated_interval,
             )
             acquisition_diagnostics.extend(interpolated_diagnostics)
+            await store.set_progress(query_id, 0, completed_work_units=2)
 
             # 6. Calculate compliance for each variable
             variable_results = []
+            non_conforming_points: dict[int, list[CepNonConformingPoint]] = {}
+            # Keep the original Interpolated response for the expandable chart,
+            # but exclude machine-stopped samples from the CEP population.
+            calculation_data = self._exclude_machine_stopped(interpolated_data)
             for var in materialized_data.variables:
-                result = self._calculate_variable_compliance(
-                    var, interpolated_data, tag_variable_map
+                result, occurrences = await asyncio.to_thread(
+                    self._calculate_variable_compliance,
+                    var, calculation_data, tag_variable_map,
                 )
                 variable_results.append(result)
+                non_conforming_points[var.id] = occurrences
+                await store.set_progress(
+                    query_id,
+                    len(variable_results),
+                    completed_work_units=2 + len(variable_results),
+                )
+                # Let the status endpoint/polling observe this completed unit
+                # before the next variable starts.
+                await asyncio.sleep(0)
 
             # 7. Fetch Recorded if requested
             recorded_series: list[CepRecordedSeries] = []
@@ -103,7 +124,12 @@ class CepAnalysisService:
             if materialized_data.request.include_recorded:
                 recorded_series, recorded_metadata = await self._fetch_recorded(
                     unique_tags, materialized_data.request.start_time,
-                    materialized_data.request.end_time, tag_variable_map,
+                    materialized_data.request.end_time, tag_variable_map, web_ids,
+                )
+                await store.set_progress(
+                    query_id,
+                    len(variable_results),
+                    completed_work_units=3 + len(variable_results),
                 )
 
             # 8. Build result
@@ -113,9 +139,16 @@ class CepAnalysisService:
                 interpolated_data, len(web_ids), analysis_started_at,
             )
 
+            variable_series = self._build_variable_series(
+                materialized_data.variables,
+                materialized_data.unique_tags,
+                interpolated_data,
+                non_conforming_points,
+            )
+
             # 9. Transition to terminal state
             status = self._determine_status(variable_results)
-            await store.set_result(query_id, analysis_result, status)
+            await store.set_result(query_id, analysis_result, status, variable_series)
 
         except asyncio.CancelledError:
             # Technical cancellation from QueryRegistry
@@ -129,7 +162,14 @@ class CepAnalysisService:
         except Exception as exc:
             # Unhandled exceptions → failed
             logger.exception("CEP analysis failed for %s", query_id)
-            error_result = self._build_error_result(query_id, exc)
+            failed_entry = await store.get(query_id)
+            error_result = self._build_error_result(
+                query_id,
+                exc,
+                failed_entry.progress_percent if failed_entry else 0,
+                failed_entry.completed_variables if failed_entry else 0,
+                failed_entry.total_variables if failed_entry else 0,
+            )
             await store.set_result(query_id, error_result, "failed")
         finally:
             # Always unregister from QueryRegistry (idempotent)
@@ -197,8 +237,9 @@ class CepAnalysisService:
         web_ids: dict[int, str],
         start_time: datetime,
         end_time: datetime,
+        interval: str,
     ) -> tuple[dict[str, list[PiValue]], list[CepDiagnostic]]:
-        """Fetch Interpolated 5m data, retaining a diagnostic per failed tag."""
+        """Fetch Interpolated data at the requested interval."""
         if not web_ids:
             return {}, []
 
@@ -207,7 +248,7 @@ class CepAnalysisService:
                 web_ids=list(web_ids.values()),
                 start_time=start_time,
                 end_time=end_time,
-                interval="5m",
+                interval=interval,
             )
         except PiIntegrationError as exc:
             logger.warning("Interpolated batch fetch failed: %s", exc)
@@ -222,11 +263,12 @@ class CepAnalysisService:
                 for tag_id in web_ids
             ]
 
-        tag_id_by_web_id = {web_id: tag_id for tag_id, web_id in web_ids.items()}
+        tag_ids_by_web_id: dict[str, list[int]] = {}
+        for tag_id, web_id in web_ids.items():
+            tag_ids_by_web_id.setdefault(web_id, []).append(tag_id)
         mapped: dict[str, list[PiValue]] = {str(tag_id): [] for tag_id in web_ids}
         for response in responses:
-            tag_id = tag_id_by_web_id.get(response.web_id)
-            if tag_id is not None:
+            for tag_id in tag_ids_by_web_id.get(response.web_id, []):
                 mapped[str(tag_id)] = response.values
 
         diagnostics: list[CepDiagnostic] = []
@@ -241,6 +283,23 @@ class CepAnalysisService:
                 ))
         return mapped, diagnostics
 
+    def _exclude_machine_stopped(
+        self, interpolated_data: dict[str, list[PiValue]]
+    ) -> dict[str, list[PiValue]]:
+        """Remove -999 samples before any CEP calculation or imputation."""
+        return {
+            tag_id: [point for point in points if not self._is_machine_stopped(point)]
+            for tag_id, points in interpolated_data.items()
+        }
+
+    @staticmethod
+    def _is_machine_stopped(point: PiValue) -> bool:
+        return (
+            not isinstance(point.value, bool)
+            and isinstance(point.value, (int, float))
+            and point.value == -999
+        )
+
     # -- Recorded fetch --
 
     async def _fetch_recorded(
@@ -249,6 +308,7 @@ class CepAnalysisService:
         start_time: datetime,
         end_time: datetime,
         tag_variable_map: dict[int, list[int]],
+        web_ids: dict[int, str],
     ) -> tuple[list[CepRecordedSeries], dict[str, object]]:
         """Fetch Recorded data respecting individual and aggregate limits."""
         individual_limit = settings.pi_cep_recorded_max_points_per_tag
@@ -267,7 +327,8 @@ class CepAnalysisService:
                 not_acquired.append(tag.pi_tag_name)
                 continue
 
-            if not tag.pi_web_id:
+            web_id = web_ids.get(tag.id)
+            if not web_id:
                 not_acquired.append(tag.pi_tag_name)
                 continue
 
@@ -276,7 +337,7 @@ class CepAnalysisService:
             # Reverse query: start_time=fim, end_time=início
             try:
                 raw_values = await self._provider.get_recorded_values(
-                    web_id=tag.pi_web_id,
+                    web_id=web_id,
                     start_time=end_time,
                     end_time=start_time,
                     max_count=budget + 1,
@@ -353,7 +414,7 @@ class CepAnalysisService:
         var: MaterializedVariable,
         interpolated_data: dict[str, list[PiValue]],
         tag_variable_map: dict[int, list[int]],
-    ) -> CepVariableResult:
+    ) -> tuple[CepVariableResult, list[CepNonConformingPoint]]:
         """Calculate compliance for a single variable."""
         reading_values = interpolated_data.get(str(var.reading_tag_id), [])
         lower_values = interpolated_data.get(str(var.lower_limit_tag_id), [])
@@ -380,7 +441,7 @@ class CepAnalysisService:
                 section_id=var.section_id,
                 variable_type_id=var.variable_type_id,
                 status="error",
-            )
+            ), []
 
         # Determine status
         total_classifiable = summary.total_classifiable
@@ -399,6 +460,17 @@ class CepAnalysisService:
             conformity_pct = summary.conformity_pct
 
         non_conformant = summary.non_conformant_below + summary.non_conformant_above
+        occurrences = [
+            CepNonConformingPoint(
+                timestamp=point.timestamp,
+                value=point.reading_effective,
+                lower_limit=point.lower_effective,
+                upper_limit=point.upper_effective,
+            )
+            for point in _points
+            if point.status.value in {"FORA_DO_LIMITE_INFERIOR", "FORA_DO_LIMITE_SUPERIOR"}
+            and point.reading_effective is not None
+        ]
 
         return CepVariableResult(
             variable_id=var.id,
@@ -413,7 +485,54 @@ class CepAnalysisService:
             non_conformant=non_conformant,
             no_data=summary.no_data,
             status=status,  # type: ignore[arg-type]
-        )
+        ), occurrences
+
+    def _build_variable_series(
+        self,
+        variables: list[MaterializedVariable],
+        tags: list[MaterializedTag],
+        interpolated_data: dict[str, list[PiValue]],
+        non_conforming_points: dict[int, list[CepNonConformingPoint]],
+    ) -> dict[int, CepVariableSeries]:
+        """Build chart data from the exact Interpolated batch response."""
+        tag_names = {tag.id: tag.pi_tag_name for tag in tags}
+        series_by_variable: dict[int, CepVariableSeries] = {}
+        for var in variables:
+            reading = interpolated_data.get(str(var.reading_tag_id), [])
+            lower = {point.timestamp: point for point in interpolated_data.get(str(var.lower_limit_tag_id), [])}
+            upper = {point.timestamp: point for point in interpolated_data.get(str(var.upper_limit_tag_id), [])}
+            # The calculator evaluates each reading timestamp against the exact
+            # matching limit timestamps; do not add limit-only points to the chart.
+            timestamps = sorted({p.timestamp for p in reading})
+
+            def numeric(point: PiValue | None) -> float | None:
+                value = point.value if point is not None else None
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    return None
+                return float(value) if math.isfinite(value) else None
+
+            points = []
+            reading_by_timestamp = {point.timestamp: point for point in reading}
+            for timestamp in timestamps:
+                points.append(CepVariableSeriesPoint(
+                    timestamp=timestamp,
+                    value=numeric(reading_by_timestamp.get(timestamp)),
+                    lower_limit=numeric(lower.get(timestamp)),
+                    upper_limit=numeric(upper.get(timestamp)),
+                ))
+
+            lower_values = [numeric(point) for point in lower.values()]
+            upper_values = [numeric(point) for point in upper.values()]
+            series_by_variable[var.id] = CepVariableSeries(
+                variable_id=var.id,
+                variable_name=var.name,
+                analysis_tag=tag_names.get(var.reading_tag_id, ""),
+                lower_limit=lower_values[0] if lower_values and all(value == lower_values[0] for value in lower_values) else None,
+                upper_limit=upper_values[0] if upper_values and all(value == upper_values[0] for value in upper_values) else None,
+                points=points,
+                non_conforming_points=non_conforming_points.get(var.id, []),
+            )
+        return series_by_variable
 
     # -- Result building --
 
@@ -557,7 +676,10 @@ class CepAnalysisService:
         return "failed"
 
     def _build_error_result(
-        self, query_id: str, exc: Exception
+        self, query_id: str, exc: Exception,
+        progress_percent: int = 0,
+        completed_variables: int = 0,
+        total_variables: int = 0,
     ) -> CepAnalysisResult:
         """Build a result for an unhandled error."""
         now = datetime.now(UTC)
@@ -582,4 +704,7 @@ class CepAnalysisService:
                 )
             ],
             metadata=CepAnalysisMetadata(),
+            progress_percent=progress_percent,
+            completed_variables=completed_variables,
+            total_variables=total_variables,
         )

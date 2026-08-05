@@ -61,6 +61,61 @@ async def test_set_running_transitions_pending():
 
 
 @pytest.mark.asyncio
+async def test_progress_tracks_completed_variables_and_is_bounded():
+    store = CepQueryStore()
+    await store.register("q-progress", _make_request(), total_variables=4)
+    await store.set_running("q-progress")
+
+    assert await store.set_progress("q-progress", 2) is True
+    entry = await store.get("q-progress")
+    assert entry.completed_variables == 2
+    assert entry.progress_percent == 50
+
+    await store.set_progress("q-progress", 99)
+    entry = await store.get("q-progress")
+    assert entry.completed_variables == 4
+    assert entry.progress_percent == 100
+
+
+@pytest.mark.asyncio
+async def test_progress_tracks_real_work_units_without_completing_before_finalization():
+    store = CepQueryStore()
+    await store.register("q-work", _make_request(), total_variables=12, total_work_units=15)
+    await store.set_running("q-work")
+
+    await store.set_progress("q-work", 0, completed_work_units=1)
+    entry = await store.get("q-work")
+    assert entry.progress_percent == 7
+    assert entry.completed_variables == 0
+
+    await store.set_progress("q-work", 1, completed_work_units=3)
+    entry = await store.get("q-work")
+    assert entry.progress_percent == 20
+    assert entry.completed_variables == 1
+
+    await store.set_progress("q-work", 12, completed_work_units=14)
+    entry = await store.get("q-work")
+    assert entry.progress_percent == 93
+    assert entry.progress_percent < 100
+
+    await store.set_result("q-work", _make_result("q-work"), "completed")
+    entry = await store.get("q-work")
+    assert entry.progress_percent == 100
+    assert entry.completed_variables == 12
+
+
+@pytest.mark.asyncio
+async def test_progress_is_preserved_when_cancelled():
+    store = CepQueryStore()
+    await store.register("q-cancel-progress", _make_request(), total_variables=2)
+    await store.set_running("q-cancel-progress")
+    await store.set_progress("q-cancel-progress", 1)
+    await store.set_cancelled("q-cancel-progress")
+    entry = await store.get("q-cancel-progress")
+    assert entry.progress_percent == 50
+
+
+@pytest.mark.asyncio
 async def test_set_running_refuses_terminal():
     store = CepQueryStore()
     await store.register("q1", _make_request())

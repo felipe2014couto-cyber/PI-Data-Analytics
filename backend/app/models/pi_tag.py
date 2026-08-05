@@ -44,6 +44,8 @@ class PiTag(Base, TimestampMixin):
     )
     pi_server: Mapped[str] = mapped_column(String(128), nullable=False)
     pi_tag_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    lower_limit_tag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    upper_limit_tag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     pi_web_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

@@ -23,6 +23,7 @@ from app.schemas.cep_analysis import (
     CepAnalysisResult,
     CepAnalysisSummary,
     CepDiagnostic,
+    CepVariableSeries,
 )
 
 logger = logging.getLogger("pi_analytics_data.service.cep_query_store")
@@ -44,6 +45,12 @@ class CepQueryEntry:
     started_at: datetime | None = None  # datetime UTC — public response
     request: CepAnalysisRequest | None = None
     result: CepAnalysisResult | None = None
+    variable_series: dict[int, CepVariableSeries] = field(default_factory=dict)
+    completed_variables: int = 0
+    total_variables: int = 0
+    completed_work_units: int = 0
+    total_work_units: int = 0
+    progress_percent: int = 0
     ready_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -83,7 +90,9 @@ class CepQueryStore:
     # -- Registration --
 
     async def register(
-        self, query_id: str, request: CepAnalysisRequest
+        self, query_id: str, request: CepAnalysisRequest,
+        total_variables: int = 0,
+        total_work_units: int | None = None,
     ) -> CepQueryEntry:
         """Register a new operation in pending state.
 
@@ -95,6 +104,11 @@ class CepQueryStore:
                 query_status="pending",
                 created_at=time.monotonic(),
                 request=request,
+                total_variables=max(0, total_variables),
+                total_work_units=max(
+                    0,
+                    total_work_units if total_work_units is not None else total_variables,
+                ),
             )
             self._entries[query_id] = entry
             logger.info("CEP query %s registered", query_id)
@@ -115,8 +129,35 @@ class CepQueryStore:
             logger.info("CEP query %s → running", query_id)
             return True
 
+    async def set_progress(
+        self,
+        query_id: str,
+        completed_variables: int,
+        completed_work_units: int | None = None,
+    ) -> bool:
+        """Record completed variables and real processing checkpoints."""
+        async with self._lock:
+            entry = self._entries.get(query_id)
+            if entry is None or entry.query_status in ("completed", "failed", "cancelled"):
+                return False
+            completed = min(max(0, completed_variables), entry.total_variables)
+            entry.completed_variables = max(entry.completed_variables, completed)
+            if completed_work_units is None:
+                work_completed = completed
+            else:
+                work_completed = min(max(0, completed_work_units), entry.total_work_units)
+            entry.completed_work_units = max(entry.completed_work_units, work_completed)
+            if entry.total_work_units:
+                max_progress = 100 if completed_work_units is None else 99
+                entry.progress_percent = max(
+                    entry.progress_percent,
+                    min(max_progress, max(0, round(entry.completed_work_units * 100 / entry.total_work_units))),
+                )
+            return True
+
     async def set_result(
-        self, query_id: str, result: CepAnalysisResult, status: str
+        self, query_id: str, result: CepAnalysisResult, status: str,
+        variable_series: dict[int, CepVariableSeries] | None = None,
     ) -> bool:
         """Transition to completed or failed. Returns False if already terminal."""
         async with self._lock:
@@ -128,6 +169,16 @@ class CepQueryStore:
             entry.query_status = status
             entry.terminal_at = time.monotonic()
             entry.result = result
+            entry.variable_series = variable_series or {}
+            if status == "completed":
+                entry.completed_variables = entry.total_variables
+                entry.completed_work_units = entry.total_work_units
+                entry.progress_percent = 100
+            entry.result = result.model_copy(update={
+                "progress_percent": entry.progress_percent,
+                "completed_variables": entry.completed_variables,
+                "total_variables": entry.total_variables,
+            })
             logger.info("CEP query %s → %s", query_id, status)
             return True
 
@@ -281,6 +332,9 @@ class CepQueryStore:
                 )
             ],
             metadata=CepAnalysisMetadata(),
+            progress_percent=entry.progress_percent,
+            completed_variables=entry.completed_variables,
+            total_variables=entry.total_variables,
         )
 
 

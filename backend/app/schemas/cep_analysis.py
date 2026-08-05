@@ -26,6 +26,7 @@ class CepAnalysisRequest(BaseModel):
     section_id: int | None = None
     variable_ids: list[int] | None = None
     include_recorded: bool = False
+    interpolated_interval: Literal["1m", "2m", "5m", "10m", "15m", "30m", "1h"] = "5m"
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -51,6 +52,9 @@ class CepAnalysisAccepted(BaseModel):
     query_id: str
     query_status: Literal["pending"]
     message: str
+    progress_percent: int = 0
+    completed_variables: int = 0
+    total_variables: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,9 @@ class CepQueryPending(BaseModel):
 
     query_id: str
     query_status: Literal["pending"]
+    progress_percent: int = 0
+    completed_variables: int = 0
+    total_variables: int = 0
 
 
 class CepQueryRunning(BaseModel):
@@ -71,6 +78,9 @@ class CepQueryRunning(BaseModel):
     query_id: str
     query_status: Literal["running"]
     started_at: datetime
+    progress_percent: int = 0
+    completed_variables: int = 0
+    total_variables: int = 0
 
 
 class CepQueryCancelled(BaseModel):
@@ -79,6 +89,9 @@ class CepQueryCancelled(BaseModel):
     query_id: str
     query_status: Literal["cancelled"]
     message: str
+    progress_percent: int = 0
+    completed_variables: int = 0
+    total_variables: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +189,39 @@ class CepAnalysisResult(BaseModel):
     diagnostics: list[CepDiagnostic] = Field(default_factory=list)
     recorded_series: list[CepRecordedSeries] | None = None
     metadata: CepAnalysisMetadata
+    progress_percent: int = 0
+    completed_variables: int = 0
+    total_variables: int = 0
+
+
+class CepVariableSeriesPoint(BaseModel):
+    """Interpolated point retained from one CEP execution."""
+
+    timestamp: datetime
+    value: float | None = None
+    lower_limit: float | None = None
+    upper_limit: float | None = None
+
+
+class CepNonConformingPoint(BaseModel):
+    """A point classified outside the limits by the CEP calculation."""
+
+    timestamp: datetime
+    value: float
+    lower_limit: float | None = None
+    upper_limit: float | None = None
+
+
+class CepVariableSeries(BaseModel):
+    """Chart data for a variable, sourced from the completed CEP execution."""
+
+    variable_id: int
+    variable_name: str
+    analysis_tag: str
+    lower_limit: float | None = None
+    upper_limit: float | None = None
+    points: list[CepVariableSeriesPoint] = Field(default_factory=list)
+    non_conforming_points: list[CepNonConformingPoint] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

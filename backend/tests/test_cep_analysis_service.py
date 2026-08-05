@@ -166,6 +166,27 @@ async def test_resolves_missing_webids_before_interpolated_fetch():
 
 
 @pytest.mark.asyncio
+async def test_interpolated_batch_keeps_each_tag_associated_with_its_webid():
+    provider = FakePiDataProvider(
+        interpolated={
+            "W_SHARED": [make_value("2026-01-01T00:05:00Z", 50.0)],
+            "W_UPPER": [make_value("2026-01-01T00:05:00Z", 60.0)],
+        }
+    )
+    service = CepAnalysisService(provider)
+
+    values, diagnostics = await service._fetch_interpolated(
+        {10: "W_SHARED", -20: "W_SHARED", -21: "W_UPPER"},
+        _ts(), _ts(day=2), "5m",
+    )
+
+    assert diagnostics == []
+    assert values["10"][0].value == 50.0
+    assert values["-20"][0].value == 50.0
+    assert values["-21"][0].value == 60.0
+
+
+@pytest.mark.asyncio
 async def test_success_partial():
     """Scenario 9: Mix of processed and error variables."""
     provider = FakePiDataProvider(
