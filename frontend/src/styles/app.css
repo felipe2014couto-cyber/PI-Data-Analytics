@@ -362,6 +362,38 @@ body {
   box-shadow: inset 0 calc(-1 * var(--bs-accordion-border-width)) 0 var(--piad-border);
 }
 
+.named-filters-panel .named-filter-section {
+  border-bottom: 1px solid var(--piad-border);
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.named-filters-panel .named-filter-section:last-of-type {
+  border-bottom: 0;
+  margin-bottom: 0;
+}
+
+.named-filters-panel .named-filter-section-title {
+  color: var(--piad-blue);
+  font-weight: 700;
+  margin-bottom: 0.65rem;
+}
+
+.named-filters-panel #named-filters-content {
+  max-height: 72vh;
+  overflow-y: auto;
+}
+
+.named-filters-panel .form-label {
+  font-size: 0.82rem;
+  margin-bottom: 0.2rem;
+}
+
+.named-filters-panel .form-control,
+.named-filters-panel .form-select {
+  min-height: 31px;
+}
+
 @media (max-width: 991.98px) {
   .app-sidebar {
     position: fixed;

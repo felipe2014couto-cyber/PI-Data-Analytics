@@ -13,7 +13,9 @@ def _normalize_tag_name(value: str) -> str:
 
 class PiTagBase(BaseModel):
     equipment_id: int = Field(gt=0)
-    section_id: int = Field(gt=0)
+    # None means that the tag belongs to the whole equipment, not to a
+    # specific section.
+    section_id: Optional[int] = Field(default=None, gt=0)
     variable_type_id: int = Field(gt=0)
     pi_server: str = Field(min_length=1, max_length=128)
     pi_tag_name: str = Field(min_length=1, max_length=255)
@@ -136,7 +138,7 @@ class PiTagResponse(BaseModel):
 
     id: int
     equipment_id: int
-    section_id: int
+    section_id: Optional[int] = None
     variable_type_id: int
     pi_server: str
     pi_tag_name: str

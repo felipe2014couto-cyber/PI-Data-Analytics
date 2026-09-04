@@ -15,6 +15,9 @@ class SectionBase(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     active: bool = True
+    width_tag_id: Optional[int] = Field(default=None, gt=0)
+    um_tag_id: Optional[int] = Field(default=None, gt=0)
+    thickness_tag_id: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("code")
     @classmethod
@@ -51,6 +54,9 @@ class SectionUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     active: Optional[bool] = None
+    width_tag_id: Optional[int] = Field(default=None, gt=0)
+    um_tag_id: Optional[int] = Field(default=None, gt=0)
+    thickness_tag_id: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("code")
     @classmethod
@@ -90,5 +96,8 @@ class SectionResponse(BaseModel):
     name: str
     description: Optional[str] = None
     active: bool
+    width_tag_id: Optional[int] = None
+    um_tag_id: Optional[int] = None
+    thickness_tag_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime

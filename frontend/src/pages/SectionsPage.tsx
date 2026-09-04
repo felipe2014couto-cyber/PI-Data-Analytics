@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal, Form, Button, Table } from "react-bootstrap";
 
-import { equipmentsApi, sectionsApi } from "../api";
-import type { Equipment, Section, SectionCreate, SectionUpdate } from "../types";
+import { equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
+import type { Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
 import { ActiveBadge } from "../components/ActiveBadge";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { EmptyState } from "../components/EmptyState";
@@ -14,6 +14,17 @@ import { Pagination } from "../components/Pagination";
 import { formatDateTime } from "../utils/format";
 
 const PAGE_SIZE = 10;
+type AnalysisTagKind = "width" | "um" | "thickness";
+
+const ANALYSIS_TAG_TYPE_ALIASES: Record<AnalysisTagKind, string[]> = {
+  width: ["largura", "width"],
+  um: ["um", "codigo um", "código um", "unidade material"],
+  thickness: ["espessura", "thickness"],
+};
+
+function normalizeTypeLabel(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
 
 interface FormState {
   equipment_id: string;
@@ -21,6 +32,9 @@ interface FormState {
   name: string;
   description: string;
   active: boolean;
+  width_tag_id: string;
+  um_tag_id: string;
+  thickness_tag_id: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -29,6 +43,9 @@ const EMPTY_FORM: FormState = {
   name: "",
   description: "",
   active: true,
+  width_tag_id: "",
+  um_tag_id: "",
+  thickness_tag_id: "",
 };
 
 export function SectionsPage() {
@@ -44,6 +61,9 @@ export function SectionsPage() {
 
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [loadingEquipments, setLoadingEquipments] = useState(false);
+  const [piTags, setPiTags] = useState<PiTag[]>([]);
+  const [loadingPiTags, setLoadingPiTags] = useState(false);
+  const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
 
   const [showFormModal, setShowFormModal] = useState(false);
   const [editing, setEditing] = useState<Section | null>(null);
@@ -99,8 +119,31 @@ export function SectionsPage() {
     }
   };
 
+  const loadPiTags = async () => {
+    setLoadingPiTags(true);
+    try {
+      const response = await piTagsApi.list({ page: 1, page_size: 200, active: true });
+      setPiTags(response.items ?? []);
+    } catch (err) {
+      setError(err);
+    } finally {
+      setLoadingPiTags(false);
+    }
+  };
+
+  const loadVariableTypes = async () => {
+    try {
+      const response = await variableTypesApi.list({ page: 1, page_size: 200, active: true });
+      setVariableTypes(response.items ?? []);
+    } catch (err) {
+      setError(err);
+    }
+  };
+
   useEffect(() => {
     void loadEquipments();
+    void loadPiTags();
+    void loadVariableTypes();
   }, []);
 
   useEffect(() => {
@@ -130,6 +173,9 @@ export function SectionsPage() {
       name: item.name,
       description: item.description ?? "",
       active: item.active,
+      width_tag_id: item.width_tag_id ? String(item.width_tag_id) : "",
+      um_tag_id: item.um_tag_id ? String(item.um_tag_id) : "",
+      thickness_tag_id: item.thickness_tag_id ? String(item.thickness_tag_id) : "",
     });
     setFormError(null);
     setShowFormModal(true);
@@ -151,6 +197,9 @@ export function SectionsPage() {
           name: form.name.trim(),
           description: form.description.trim() || null,
           active: form.active,
+          width_tag_id: form.width_tag_id ? Number(form.width_tag_id) : null,
+          um_tag_id: form.um_tag_id ? Number(form.um_tag_id) : null,
+          thickness_tag_id: form.thickness_tag_id ? Number(form.thickness_tag_id) : null,
         };
         await sectionsApi.update(editing.id, update);
         setSuccessMessage("Secao atualizada com sucesso.");
@@ -161,6 +210,9 @@ export function SectionsPage() {
           name: form.name.trim(),
           description: form.description.trim() || null,
           active: form.active,
+          width_tag_id: null,
+          um_tag_id: null,
+          thickness_tag_id: null,
         };
         await sectionsApi.create(payload);
         setSuccessMessage("Secao criada com sucesso.");
@@ -205,6 +257,35 @@ export function SectionsPage() {
     equipments.forEach((equipment) => map.set(equipment.id, equipment));
     return map;
   }, [equipments]);
+
+  const analysisTagOptions = useMemo(() => {
+    const equipmentId = Number(form.equipment_id);
+    const sectionId = editing?.id;
+    const selectedIds = new Set([form.width_tag_id, form.um_tag_id, form.thickness_tag_id].filter(Boolean));
+    const variableTypeById = new Map(variableTypes.map((type) => [type.id, type]));
+    const tagMatchesKind = (tag: PiTag, kind: AnalysisTagKind) => {
+      const variableType = variableTypeById.get(tag.variable_type_id);
+      if (!variableType) return false;
+      const labels = [variableType.code, variableType.name].map(normalizeTypeLabel);
+      return ANALYSIS_TAG_TYPE_ALIASES[kind].some((alias) => labels.includes(normalizeTypeLabel(alias)));
+    };
+    const tagOptionsFor = (kind: AnalysisTagKind) => piTags.filter((tag) =>
+      tag.equipment_id === equipmentId &&
+      (tag.section_id === null || tag.section_id === sectionId || selectedIds.has(String(tag.id))) &&
+      tagMatchesKind(tag, kind),
+    );
+    return {
+      width: tagOptionsFor("width"),
+      um: tagOptionsFor("um"),
+      thickness: tagOptionsFor("thickness"),
+    };
+  }, [editing?.id, form.equipment_id, form.thickness_tag_id, form.um_tag_id, form.width_tag_id, piTags, variableTypes]);
+
+  const tagLabel = (tagId: number | null) => {
+    if (!tagId) return "—";
+    const tag = piTags.find((item) => item.id === tagId);
+    return tag?.display_name ?? tag?.pi_tag_name ?? `Tag #${tagId}`;
+  };
 
   return (
     <div data-testid="sections-page">
@@ -291,6 +372,7 @@ export function SectionsPage() {
                   <th>Codigo</th>
                   <th>Nome</th>
                   <th>Descricao</th>
+                  <th>Tags de análise</th>
                   <th>Status</th>
                   <th>Atualizado em</th>
                   <th className="text-end">Acoes</th>
@@ -303,6 +385,11 @@ export function SectionsPage() {
                     <td className="fw-semibold">{item.code}</td>
                     <td>{item.name}</td>
                     <td>{item.description || "-"}</td>
+                    <td className="small">
+                      <div><strong>Largura:</strong> {tagLabel(item.width_tag_id)}</div>
+                      <div><strong>UM:</strong> {tagLabel(item.um_tag_id)}</div>
+                      <div><strong>Espessura:</strong> {tagLabel(item.thickness_tag_id)}</div>
+                    </td>
                     <td>
                       <ActiveBadge active={item.active} />
                     </td>
@@ -402,6 +489,58 @@ export function SectionsPage() {
                 maxLength={500}
               />
             </Form.Group>
+            <div className="border rounded p-3 mb-3 bg-light">
+              <h6 className="mb-1">Tags para análise da seção</h6>
+              <Form.Text className="d-block text-muted mb-3">
+                Selecione as tags PI de largura, UM e espessura usadas nas análises desta seção.
+              </Form.Text>
+              {!editing ? (
+                <div className="small text-muted mb-0">
+                  Salve a seção primeiro; depois abra a edição para vincular as tags cadastradas nela.
+                </div>
+              ) : loadingPiTags ? (
+                <div className="small text-muted">Carregando tags...</div>
+              ) : (
+                <>
+                  <Form.Group className="mb-3" controlId="section-width-tag">
+                    <Form.Label>Tag de largura</Form.Label>
+                    <Form.Select
+                      value={form.width_tag_id}
+                      onChange={(event) => setForm((prev) => ({ ...prev, width_tag_id: event.target.value }))}
+                    >
+                      <option value="">Não selecionar</option>
+                      {analysisTagOptions.width.map((tag) => (
+                        <option key={tag.id} value={tag.id}>{tag.display_name} — {tag.pi_tag_name}</option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+                  <Form.Group className="mb-3" controlId="section-um-tag">
+                    <Form.Label>Tag de UM</Form.Label>
+                    <Form.Select
+                      value={form.um_tag_id}
+                      onChange={(event) => setForm((prev) => ({ ...prev, um_tag_id: event.target.value }))}
+                    >
+                      <option value="">Não selecionar</option>
+                      {analysisTagOptions.um.map((tag) => (
+                        <option key={tag.id} value={tag.id}>{tag.display_name} — {tag.pi_tag_name}</option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+                  <Form.Group controlId="section-thickness-tag">
+                    <Form.Label>Tag de espessura</Form.Label>
+                    <Form.Select
+                      value={form.thickness_tag_id}
+                      onChange={(event) => setForm((prev) => ({ ...prev, thickness_tag_id: event.target.value }))}
+                    >
+                      <option value="">Não selecionar</option>
+                      {analysisTagOptions.thickness.map((tag) => (
+                        <option key={tag.id} value={tag.id}>{tag.display_name} — {tag.pi_tag_name}</option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+                </>
+              )}
+            </div>
             <Form.Check
               type="switch"
               id="section-active"

@@ -237,7 +237,7 @@ export function PiTagsPage() {
     setEditing(item);
     setForm({
       equipment_id: String(item.equipment_id),
-      section_id: String(item.section_id),
+      section_id: item.section_id === null ? "" : String(item.section_id),
       variable_type_id: String(item.variable_type_id),
       pi_server: item.pi_server,
       pi_tag_name: item.pi_tag_name,
@@ -268,12 +268,12 @@ export function PiTagsPage() {
     setFormError(null);
     try {
       const equipmentId = Number(form.equipment_id);
-      const sectionId = Number(form.section_id);
+      const sectionId = form.section_id ? Number(form.section_id) : null;
       const variableTypeId = Number(form.variable_type_id);
       if (!Number.isFinite(equipmentId) || equipmentId <= 0) {
         throw new Error("Selecione um equipamento valido.");
       }
-      if (!Number.isFinite(sectionId) || sectionId <= 0) {
+      if (sectionId !== null && (!Number.isFinite(sectionId) || sectionId <= 0)) {
         throw new Error("Selecione uma secao valida.");
       }
       if (!Number.isFinite(variableTypeId) || variableTypeId <= 0) {
@@ -639,7 +639,7 @@ export function PiTagsPage() {
                       />
                     </td>
                     <td>{equipmentMap.get(item.equipment_id)?.code ?? item.equipment_id}</td>
-                    <td>{sectionMap.get(item.section_id)?.code ?? item.section_id}</td>
+                    <td>{item.section_id === null ? "Equipamento inteiro" : sectionMap.get(item.section_id)?.code ?? item.section_id}</td>
                     <td>{variableTypeMap.get(item.variable_type_id)?.code ?? item.variable_type_id}</td>
                     <td>{item.pi_server}</td>
                     <td className="fw-semibold">{item.pi_tag_name}</td>
@@ -739,10 +739,9 @@ export function PiTagsPage() {
                   <Form.Select
                     value={form.section_id}
                     onChange={(event) => setForm((prev) => ({ ...prev, section_id: event.target.value }))}
-                    required
                     disabled={!form.equipment_id}
                   >
-                    <option value="">Selecione...</option>
+                    <option value="">Equipamento inteiro</option>
                     {formSections.map((section) => (
                       <option key={section.id} value={section.id}>
                         {section.code} - {section.name}
@@ -750,7 +749,7 @@ export function PiTagsPage() {
                     ))}
                   </Form.Select>
                   <Form.Text className="text-muted">
-                    Apenas secoes do equipamento selecionado.
+                    Selecione uma seção ou deixe &quot;Equipamento inteiro&quot; para disponibilizar a variável em todas as seções deste equipamento.
                   </Form.Text>
                 </Form.Group>
               </div>

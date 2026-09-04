@@ -27,6 +27,9 @@ export const sectionFixture: Section = {
   name: "Forno",
   description: null,
   active: true,
+  width_tag_id: null,
+  um_tag_id: null,
+  thickness_tag_id: null,
   created_at: "2026-01-01T00:00:00",
   updated_at: "2026-01-01T00:00:00",
 };

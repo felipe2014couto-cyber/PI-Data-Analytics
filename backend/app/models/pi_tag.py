@@ -34,9 +34,9 @@ class PiTag(Base, TimestampMixin):
         ForeignKey("equipments.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    section_id: Mapped[int] = mapped_column(
+    section_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("sections.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
     variable_type_id: Mapped[int] = mapped_column(
         ForeignKey("variable_types.id", ondelete="RESTRICT"),

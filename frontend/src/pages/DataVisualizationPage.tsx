@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Button, Card, Col, Row } from "react-bootstrap";
+import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
 
 import { equipmentsApi, piApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
 import { ApiError } from "../api/http";
@@ -94,6 +94,7 @@ interface FiltersState {
   targetPointsPerTag: number;
   ignoreBadQuality: boolean;
   visualization: VisualizationType;
+  filtersEnabled: boolean;
   filterConfiguration: DataFilterConfiguration;
 }
 
@@ -116,6 +117,7 @@ const INITIAL_FILTERS: FiltersState = {
   targetPointsPerTag: 10000,
   ignoreBadQuality: true,
   visualization: "automatic",
+  filtersEnabled: true,
   filterConfiguration: INITIAL_FILTER_CONFIG,
 };
 
@@ -267,10 +269,52 @@ export function DataVisualizationPage() {
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const variableTypeMap = useMemo(() => new Map(variableTypes.map((v) => [v.id, v])), [variableTypes]);
 
+  // As tags vinculadas à seção/equipamento são séries auxiliares: entram na
+  // consulta para que os filtros de largura, UM e espessura possam mascarar
+  // as demais séries, mas não aparecem como curvas adicionais no gráfico.
+  const analysisTagIds = useMemo(() => {
+    const candidateSections = sections.filter((section) => {
+      if (filters.sectionId) return section.id === filters.sectionId;
+      return filters.equipmentId !== null && section.equipment_id === filters.equipmentId;
+    });
+    const resolveUniqueTagId = (tagIds: Array<number | null>) => {
+      const uniqueTagIds = Array.from(new Set(
+        tagIds.filter((tagId): tagId is number => tagId !== null && tags.some((tag) => tag.id === tagId)),
+      ));
+      return uniqueTagIds.length === 1 ? uniqueTagIds[0] : null;
+    };
+
+    return {
+      width: resolveUniqueTagId(candidateSections.map((section) => section.width_tag_id)),
+      um: resolveUniqueTagId(candidateSections.map((section) => section.um_tag_id)),
+      thickness: resolveUniqueTagId(candidateSections.map((section) => section.thickness_tag_id)),
+    };
+  }, [filters.equipmentId, filters.sectionId, sections, tags]);
+
+  const analysisContextTagIds = useMemo(
+    () => new Set(Object.values(analysisTagIds).filter((tagId): tagId is number => tagId !== null)),
+    [analysisTagIds],
+  );
+  const analysisHiddenTagIds = useMemo(
+    () => new Set(
+      Array.from(analysisContextTagIds).filter((tagId) => !selectedTagIds.includes(tagId)),
+    ),
+    [analysisContextTagIds, selectedTagIds],
+  );
+  const queryTagIds = useMemo(
+    () => Array.from(new Set([...selectedTagIds, ...analysisContextTagIds])),
+    [analysisContextTagIds, selectedTagIds],
+  );
+
   const tagOptions: TagOption[] = useMemo(() => {
     return tags
       .filter((tag) => tag.active)
-      .map((tag) => buildTagOption(tag, equipmentMap.get(tag.equipment_id), sectionMap.get(tag.section_id), variableTypeMap.get(tag.variable_type_id)));
+      .map((tag) => buildTagOption(
+        tag,
+        equipmentMap.get(tag.equipment_id),
+        tag.section_id === null ? undefined : sectionMap.get(tag.section_id),
+        variableTypeMap.get(tag.variable_type_id),
+      ));
   }, [tags, equipmentMap, sectionMap, variableTypeMap]);
 
   const filteredTagOptions = useMemo(() => {
@@ -281,7 +325,7 @@ export function DataVisualizationPage() {
       }
       if (filters.sectionId) {
         const section = sectionMap.get(filters.sectionId);
-        if (!section || option.sectionCode !== section.code) return false;
+        if (!section || (option.sectionId !== null && option.sectionId !== filters.sectionId)) return false;
       }
       if (filters.variableTypeId) {
         const variableType = variableTypeMap.get(filters.variableTypeId);
@@ -328,8 +372,9 @@ export function DataVisualizationPage() {
   }, [filters.timePeriod]);
 
   const selectedAssignmentTags = useMemo<AssignmentTag[]>(() => {
-    if (query.timeSeries?.series.some((series) => series.series_instance_id)) {
-      return query.timeSeries.series.map((series) => ({
+    const visibleSeries = query.timeSeries?.series.filter((series) => !analysisHiddenTagIds.has(series.tag_id));
+    if (visibleSeries?.some((series) => series.series_instance_id)) {
+      return visibleSeries.map((series) => ({
         tagId: series.tag_id,
         seriesInstanceId: series.series_instance_id ?? undefined,
         unit: series.unit,
@@ -341,7 +386,7 @@ export function DataVisualizationPage() {
       const tag = tagsById.get(tagId);
       return tag ? [{ tagId, unit: tag.engineering_unit, numeric: tag.data_type === "NUMERIC" }] : [];
     });
-  }, [selectedTagIds, tags, query.timeSeries]);
+  }, [analysisHiddenTagIds, selectedTagIds, tags, query.timeSeries]);
 
   useEffect(() => {
     if (!lookupsLoaded) return;
@@ -357,20 +402,69 @@ export function DataVisualizationPage() {
   }, [query.timeSeries, seriesAssignments]);
 
   const filterResult = useMemo(() => {
-    if (!orderedTimeSeries || !query.timeSeries) return null;
-    return applyDataFilters(orderedTimeSeries, filters.filterConfiguration);
-  }, [orderedTimeSeries, query.timeSeries, filters.filterConfiguration]);
+    if (!filters.filtersEnabled || !orderedTimeSeries || !query.timeSeries) return null;
+    const visibleSeriesKeys = new Set(
+      orderedTimeSeries.series
+        .filter((series) => !analysisHiddenTagIds.has(series.tag_id))
+        .map((series) => series.series_instance_id ?? `tag:${series.tag_id}`),
+    );
+    const crossSeriesRuleIds = new Set(
+      filters.filterConfiguration.rules
+        .filter((rule) => rule.enabled && "tagId" in rule && analysisContextTagIds.has(rule.tagId))
+        .map((rule) => rule.id),
+    );
+    return applyDataFilters(orderedTimeSeries, filters.filterConfiguration, {
+      summarySeriesKeys: visibleSeriesKeys,
+      crossSeriesRuleIds,
+    });
+  }, [analysisContextTagIds, analysisHiddenTagIds, filters.filtersEnabled, orderedTimeSeries, query.timeSeries, filters.filterConfiguration]);
 
   const filteredTimeSeries: TimeSeries | null = useMemo(() => {
-    return filterResult?.filteredTimeSeries ?? orderedTimeSeries;
-  }, [filterResult, orderedTimeSeries]);
+    const source = filterResult?.filteredTimeSeries ?? orderedTimeSeries;
+    if (!source) return null;
+    return {
+      ...source,
+      series: source.series.filter((series) => !analysisHiddenTagIds.has(series.tag_id)),
+    };
+  }, [analysisHiddenTagIds, filterResult, orderedTimeSeries]);
+
+  const chartTimeSeries: TimeSeries | null = useMemo(() => {
+    if (!filteredTimeSeries || !filterResult || filterResult.summary.removedPoints === 0) {
+      return filteredTimeSeries;
+    }
+    const filteredBySeries = new Map(
+      filteredTimeSeries.series.map((series) => [
+        series.series_instance_id ?? `tag:${series.tag_id}`,
+        new Map(series.points.map((point) => [point.timestamp, point])),
+      ]),
+    );
+    return {
+      ...filteredTimeSeries,
+      series: filteredTimeSeries.series.map((series) => {
+        const seriesKey = series.series_instance_id ?? `tag:${series.tag_id}`;
+        const keptPoints = filteredBySeries.get(seriesKey);
+        const originalSeries = orderedTimeSeries?.series.find(
+          (candidate) => (candidate.series_instance_id ?? `tag:${candidate.tag_id}`) === seriesKey,
+        );
+        if (!keptPoints || !originalSeries) return series;
+        return {
+          ...series,
+          points: originalSeries.points.map((point) =>
+            keptPoints.has(point.timestamp)
+              ? keptPoints.get(point.timestamp)!
+              : { ...point, value: null, filtered_out: true },
+          ),
+        };
+      }),
+    };
+  }, [filterResult, filteredTimeSeries, orderedTimeSeries]);
 
   const chartGroups = useMemo(() => {
-    if (!filteredTimeSeries) return null;
-    return buildChartDataGroups(filteredTimeSeries, {
+    if (!chartTimeSeries) return null;
+    return buildChartDataGroups(chartTimeSeries, {
       ignoreBadQuality: false,
     });
-  }, [filteredTimeSeries]);
+  }, [chartTimeSeries]);
   const chart = chartGroups?.summary ?? null;
   const visualizationPlan = useMemo(
     () => (chartGroups ? resolveVisualization(chartGroups, filters.visualization) : null),
@@ -464,8 +558,9 @@ export function DataVisualizationPage() {
   );
 
   const seriesConfigurationTags = useMemo<SeriesConfigurationTag[]>(() => {
-    if (query.timeSeries?.series.some((series) => series.series_instance_id)) {
-      return query.timeSeries.series.map((series) => ({
+    const visibleSeries = query.timeSeries?.series.filter((series) => !analysisHiddenTagIds.has(series.tag_id));
+    if (visibleSeries?.some((series) => series.series_instance_id)) {
+      return visibleSeries.map((series) => ({
         tagId: series.tag_id,
         seriesInstanceId: series.series_instance_id ?? undefined,
         displayName: series.display_name,
@@ -479,10 +574,12 @@ export function DataVisualizationPage() {
       const option = optionsById.get(tag.tagId);
       return option ? [{ tagId: tag.tagId, displayName: option.displayName, tagName: option.tagName, unit: tag.unit, numeric: tag.numeric }] : [];
     });
-  }, [tagOptions, effectiveAssignmentTags, query.timeSeries]);
+  }, [analysisHiddenTagIds, tagOptions, effectiveAssignmentTags, query.timeSeries]);
 
   const visualSeriesOptions = useMemo<VisualSeriesOption[]>(() => {
-    if (query.timeSeries) return query.timeSeries.series.map((series) => ({
+    if (query.timeSeries) return query.timeSeries.series
+      .filter((series) => !analysisHiddenTagIds.has(series.tag_id))
+      .map((series) => ({
       seriesInstanceId: series.series_instance_id ?? `tag:${series.tag_id}`,
       label: `${series.display_name} (${series.tag_name})`,
       numeric: series.points.some((point) => typeof point.value === "number" && Number.isFinite(point.value)),
@@ -493,7 +590,45 @@ export function DataVisualizationPage() {
       label: `${tag.display_name} (${tag.pi_tag_name})`,
       numeric: tag.data_type === "NUMERIC",
     }));
-  }, [query.timeSeries, selectedTagIds, tags]);
+  }, [analysisHiddenTagIds, query.timeSeries, selectedTagIds, tags]);
+
+  const advancedFilterTagOptions = useMemo(() => {
+    const visibleOptions = selectedAssignmentTags.map((tag) => {
+      const piTag = tags.find((item) => item.id === tag.tagId);
+      const resultSeries = query.timeSeries?.series.find((series) =>
+        (series.series_instance_id ?? `tag:${series.tag_id}`) === assignmentIdentity(tag),
+      );
+      return {
+        id: tag.tagId,
+        seriesInstanceId: tag.seriesInstanceId,
+        displayName: resultSeries?.display_name ?? piTag?.display_name ?? `Tag ${tag.tagId}`,
+        tagName: resultSeries?.tag_name ?? piTag?.pi_tag_name ?? "",
+        dataType: piTag?.data_type ?? "NUMERIC",
+      };
+    });
+    const linkedOptions = (Object.entries(analysisTagIds) as Array<["width" | "um" | "thickness", number | null]>)
+      .filter((entry): entry is ["width" | "um" | "thickness", number] => entry[1] !== null)
+      .map(([analysisRole, tagId]) => {
+        const piTag = tags.find((tag) => tag.id === tagId);
+        const resultSeries = query.timeSeries?.series.find((series) => series.tag_id === tagId);
+        if (!piTag && !resultSeries) return null;
+        return {
+          id: tagId,
+          analysisRole,
+          seriesInstanceId: resultSeries?.series_instance_id ?? undefined,
+          displayName: resultSeries?.display_name ?? piTag?.display_name ?? `Tag ${tagId}`,
+          tagName: resultSeries?.tag_name ?? piTag?.pi_tag_name ?? "",
+          dataType: piTag?.data_type ?? "NUMERIC",
+        };
+      })
+      .filter((option): option is NonNullable<typeof option> => option !== null);
+    if (linkedOptions.length === 0) return visibleOptions;
+    const linkedIds = new Set(linkedOptions.map((option) => option.id));
+    return [
+      ...linkedOptions,
+      ...visibleOptions.filter((option) => !linkedIds.has(option.id)),
+    ];
+  }, [analysisTagIds, query.timeSeries, selectedAssignmentTags, tags]);
 
   const handleEquipmentChange = (id: number | null) => {
     setFilters((prev) => ({ ...prev, equipmentId: id, sectionId: null }));
@@ -561,7 +696,7 @@ export function DataVisualizationPage() {
       visualRules: INITIAL_VISUAL_RULES,
     };
     const restored = normalizeVisualConfigurationDocument(document, defaults, APPLICATION_TIMEZONE);
-    setFilters(restored.filters);
+    setFilters({ ...restored.filters, filtersEnabled: restored.filters.filtersEnabled ?? true });
     setSelectedTagIds(restored.selectedTagIds);
     setSeriesAssignments(restored.seriesAssignments);
     setMetricConfiguration(restored.metricConfiguration);
@@ -641,7 +776,7 @@ export function DataVisualizationPage() {
     try {
       const result = comparison.type === "disabled" ? await timeSeriesApi.query(
         {
-          tag_ids: selectedTagIds,
+          tag_ids: queryTagIds,
           start_time: resolvedPeriod.startTime,
           end_time: resolvedPeriod.endTime,
           mode: filters.mode,
@@ -658,14 +793,14 @@ export function DataVisualizationPage() {
           {
             context_id: "A",
             context_label: "Contexto A — Referência",
-            tag_ids: selectedTagIds,
+            tag_ids: queryTagIds,
             start_time: resolvedPeriod.startTime,
             end_time: resolvedPeriod.endTime,
           },
           {
             context_id: "B",
             context_label: "Contexto B — Comparação",
-            tag_ids: comparison.type === "periods" ? selectedTagIds : comparison.contextBTagIds,
+            tag_ids: comparison.type === "periods" ? queryTagIds : comparison.contextBTagIds,
             start_time: comparison.type === "periods" ? new Date(comparison.contextBStart).toISOString() : resolvedPeriod.startTime,
             end_time: comparison.type === "periods" ? new Date(comparison.contextBEnd).toISOString() : resolvedPeriod.endTime,
           },
@@ -850,6 +985,15 @@ export function DataVisualizationPage() {
                 Verificando PI...
               </span>
             )}
+            <Form.Check
+              type="switch"
+              id="filters-enabled-switch"
+              label="Filtros"
+              checked={filters.filtersEnabled}
+              onChange={(event) => setFilters((prev) => ({ ...prev, filtersEnabled: event.target.checked }))}
+              className="small mb-0"
+              data-testid="filters-enabled-switch"
+            />
             <Button
               variant="outline-secondary"
               size="sm"
@@ -979,19 +1123,8 @@ export function DataVisualizationPage() {
                 advancedFilters={
                   <AdvancedFiltersPanel
                     configuration={filters.filterConfiguration}
-                    tagOptions={selectedAssignmentTags.map((tag) => {
-                      const piTag = tags.find((t) => t.id === tag.tagId);
-                      const resultSeries = query.timeSeries?.series.find((series) =>
-                        (series.series_instance_id ?? `tag:${series.tag_id}`) === assignmentIdentity(tag),
-                      );
-                      return {
-                        id: tag.tagId,
-                        seriesInstanceId: tag.seriesInstanceId,
-                        displayName: resultSeries?.display_name ?? piTag?.display_name ?? `Tag ${tag.tagId}`,
-                        tagName: resultSeries?.tag_name ?? piTag?.pi_tag_name ?? "",
-                        dataType: piTag?.data_type ?? "NUMERIC",
-                      };
-                    })}
+                    enabled={filters.filtersEnabled}
+                    tagOptions={advancedFilterTagOptions}
                     summary={filterResult?.summary ?? null}
                     ruleResults={filterResult?.ruleResults ?? []}
                     hasData={query.timeSeries !== null}
@@ -1252,7 +1385,7 @@ export function DataVisualizationPage() {
                 mode={filters.mode}
                 filterSummary={filterResult?.summary ?? null}
                 queryExecution={query.timeSeries?.query_execution ?? null}
-                seriesMeta={query.timeSeries?.series ?? []}
+                seriesMeta={filteredTimeSeries?.series ?? []}
               />
             </div>
           ) : null}

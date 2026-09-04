@@ -240,6 +240,35 @@ describe("Numeric filters", () => {
     expect(result.filteredTimeSeries.series[0].points.filter((p) => typeof p.value === "number")).toHaveLength(0);
     expect(result.filteredTimeSeries.series[0].points).toHaveLength(NON_NUMERIC_COUNT);
   });
+
+  it("uses a linked series as a timestamp mask for the other series", () => {
+    const data = ts([
+      series(10, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 1040 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 1060 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 1100 },
+      ], "mm"),
+      series(20, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 1 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 2 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 3 },
+      ]),
+    ]);
+    const result = applyDataFilters(data, {
+      ...EMPTY_CONFIG,
+      rules: [{
+        id: "width-range",
+        kind: "numeric",
+        enabled: true,
+        tagId: 10,
+        operator: "between",
+        value: 1040,
+        secondValue: 1080,
+      }],
+    }, { crossSeriesRuleIds: new Set(["width-range"]) });
+    expect(result.filteredTimeSeries.series[0].points.map((item) => item.value)).toEqual([1040, 1060]);
+    expect(result.filteredTimeSeries.series[1].points.map((item) => item.value)).toEqual([1, 2]);
+  });
 });
 
 describe("Text filters", () => {
@@ -332,6 +361,43 @@ describe("Text filters", () => {
     const result = applyDataFilters(data, config);
     // No string equals "42"; only number 42 remains
     expect(result.filteredTimeSeries.series[0].points).toHaveLength(NON_STRING_COUNT);
+  });
+});
+
+describe("Cross-series analysis filters", () => {
+  it("combines width, UM and thickness masks on the same timestamps", () => {
+    const data = ts([
+      series(10, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 1040 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 1060 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 1100 },
+      ]),
+      series(11, [
+        { timestamp: "2026-01-01T00:00:00Z", value: "UM-1" },
+        { timestamp: "2026-01-01T00:01:00Z", value: "UM-1" },
+        { timestamp: "2026-01-01T00:02:00Z", value: "UM-2" },
+      ]),
+      series(12, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 2.5 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 3.5 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 2.5 },
+      ]),
+      series(20, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 1 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 2 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 3 },
+      ]),
+    ]);
+    const result = applyDataFilters(data, {
+      ...EMPTY_CONFIG,
+      rules: [
+        { id: "width", kind: "numeric", enabled: true, tagId: 10, operator: "between", value: 1040, secondValue: 1080 },
+        { id: "um", kind: "text", enabled: true, tagId: 11, operator: "equal", value: "UM-1", caseSensitive: false },
+        { id: "thickness", kind: "numeric", enabled: true, tagId: 12, operator: "between", value: 2, secondValue: 4 },
+      ],
+    }, { crossSeriesRuleIds: new Set(["width", "um", "thickness"]) });
+
+    expect(result.filteredTimeSeries.series.find((item) => item.tag_id === 20)?.points.map((item) => item.value)).toEqual([1, 2]);
   });
 });
 

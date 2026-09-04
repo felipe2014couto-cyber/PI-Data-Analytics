@@ -196,6 +196,7 @@ export function validateFilterConfiguration(
 export function applyDataFilters(
   timeSeries: TimeSeries,
   configuration: DataFilterConfiguration,
+  options: { summarySeriesKeys?: Set<string>; crossSeriesRuleIds?: Set<string> } = {},
 ): FilterApplicationResult {
   const errors: FilterRuleError[] = validateFilterConfiguration(configuration);
   const validRuleIds = new Set(
@@ -230,6 +231,12 @@ export function applyDataFilters(
   }
 
   const filteredSeries: TimeSeriesSeries[] = [];
+  const pointMapsBySeries = new Map(
+    timeSeries.series.map((series) => [
+      series.series_instance_id ?? `tag:${series.tag_id}`,
+      new Map(series.points.map((point) => [point.timestamp, point])),
+    ]),
+  );
   const ruleResultsMap = new Map<string, number>();
   for (const rule of configuration.rules) {
     ruleResultsMap.set(rule.id, 0);
@@ -246,26 +253,32 @@ export function applyDataFilters(
   for (const series of timeSeries.series) {
     const seriesKey = series.series_instance_id ?? `tag:${series.tag_id}`;
     const tagRules = rulesByTag.get(seriesKey) ?? [];
+    const crossSeriesRules = [...numericRules, ...textRules].filter(
+      (rule) => options.crossSeriesRuleIds?.has(rule.id) === true &&
+        (rule.seriesInstanceId ?? `tag:${rule.tagId}`) !== seriesKey,
+    );
+    const applicableTagRules = [...tagRules, ...crossSeriesRules];
+    const countsForSummary = !options.summarySeriesKeys || options.summarySeriesKeys.has(seriesKey);
     const newPoints: TimeSeriesPoint[] = [];
     const excludedPoints: TimeSeriesPoint[] = [];
 
     for (const point of series.points) {
-      totalReceived += 1;
+      if (countsForSummary) totalReceived += 1;
       let removed = false;
 
       if (quality.excludeBad && !point.good) {
         removed = true;
-        removedByQuality += 1;
+        if (countsForSummary) removedByQuality += 1;
         excludedPoints.push(point);
       }
       if (!removed && quality.excludeQuestionable && point.questionable) {
         removed = true;
-        removedByQuality += 1;
+        if (countsForSummary) removedByQuality += 1;
         excludedPoints.push(point);
       }
       if (!removed && quality.excludeSubstituted && point.substituted) {
         removed = true;
-        removedByQuality += 1;
+        if (countsForSummary) removedByQuality += 1;
         excludedPoints.push(point);
       }
 
@@ -273,9 +286,11 @@ export function applyDataFilters(
         const day = getSaoPauloWeekday(point.timestamp);
         if (!weekdayRule.days.some((d) => WEEKDAY_NAMES[d] === day)) {
           removed = true;
-          removedByDateTime += 1;
-          const count = ruleResultsMap.get(weekdayRule.id) ?? 0;
-          ruleResultsMap.set(weekdayRule.id, count + 1);
+          if (countsForSummary) {
+            removedByDateTime += 1;
+            const count = ruleResultsMap.get(weekdayRule.id) ?? 0;
+            ruleResultsMap.set(weekdayRule.id, count + 1);
+          }
           excludedPoints.push(point);
         }
       }
@@ -290,37 +305,55 @@ export function applyDataFilters(
         const end = parseTime(timeRangeRule.endTime)!;
         if (!isTimeInRange(hour, minute, start.hour, start.minute, end.hour, end.minute)) {
           removed = true;
-          removedByDateTime += 1;
-          const count = ruleResultsMap.get(timeRangeRule.id) ?? 0;
-          ruleResultsMap.set(timeRangeRule.id, count + 1);
+          if (countsForSummary) {
+            removedByDateTime += 1;
+            const count = ruleResultsMap.get(timeRangeRule.id) ?? 0;
+            ruleResultsMap.set(timeRangeRule.id, count + 1);
+          }
           excludedPoints.push(point);
         }
       }
 
       if (!removed) {
-        for (const rule of tagRules) {
+        for (const rule of applicableTagRules) {
           if (rule.kind === "numeric" && isValidNumericConfig(rule)) {
-            if (typeof point.value === "number" && Number.isFinite(point.value)) {
-              if (!numericMatches(point.value, rule.operator, rule.value, rule.secondValue)) {
-                removed = true;
+            const ruleKey = rule.seriesInstanceId ?? `tag:${rule.tagId}`;
+            const ruleValue = ruleKey === seriesKey
+              ? point.value
+              : pointMapsBySeries.get(ruleKey)?.get(point.timestamp)?.value;
+            const isCrossSeries = ruleKey !== seriesKey;
+            const matches = typeof ruleValue === "number" && Number.isFinite(ruleValue)
+              ? numericMatches(ruleValue, rule.operator, rule.value, rule.secondValue)
+              : !isCrossSeries;
+            if (!matches) {
+              removed = true;
+              if (countsForSummary) {
                 removedByNumeric += 1;
                 const count = ruleResultsMap.get(rule.id) ?? 0;
                 ruleResultsMap.set(rule.id, count + 1);
-                excludedPoints.push(point);
-                break;
               }
+              excludedPoints.push(point);
+              break;
             }
           }
           if (rule.kind === "text" && isValidTextConfig(rule)) {
-            if (typeof point.value === "string") {
-              if (!textMatches(point.value, rule.operator, rule.value, rule.caseSensitive)) {
-                removed = true;
+            const ruleKey = rule.seriesInstanceId ?? `tag:${rule.tagId}`;
+            const ruleValue = ruleKey === seriesKey
+              ? point.value
+              : pointMapsBySeries.get(ruleKey)?.get(point.timestamp)?.value;
+            const isCrossSeries = ruleKey !== seriesKey;
+            const matches = typeof ruleValue === "string"
+              ? textMatches(ruleValue, rule.operator, rule.value, rule.caseSensitive)
+              : !isCrossSeries;
+            if (!matches) {
+              removed = true;
+              if (countsForSummary) {
                 removedByText += 1;
                 const count = ruleResultsMap.get(rule.id) ?? 0;
                 ruleResultsMap.set(rule.id, count + 1);
-                excludedPoints.push(point);
-                break;
               }
+              excludedPoints.push(point);
+              break;
             }
           }
         }
@@ -333,9 +366,11 @@ export function applyDataFilters(
             if (rule.valueType === "number" && typeof point.value === "number") {
               if (point.value === rule.value) {
                 removed = true;
-                removedByExclusion += 1;
-                const count = ruleResultsMap.get(rule.id) ?? 0;
-                ruleResultsMap.set(rule.id, count + 1);
+                if (countsForSummary) {
+                  removedByExclusion += 1;
+                  const count = ruleResultsMap.get(rule.id) ?? 0;
+                  ruleResultsMap.set(rule.id, count + 1);
+                }
                 excludedPoints.push(point);
                 break;
               }
@@ -346,9 +381,11 @@ export function applyDataFilters(
                 : point.value.toLocaleLowerCase("pt-BR") === (rule.value as string).toLocaleLowerCase("pt-BR");
               if (matches) {
                 removed = true;
-                removedByExclusion += 1;
-                const count = ruleResultsMap.get(rule.id) ?? 0;
-                ruleResultsMap.set(rule.id, count + 1);
+                if (countsForSummary) {
+                  removedByExclusion += 1;
+                  const count = ruleResultsMap.get(rule.id) ?? 0;
+                  ruleResultsMap.set(rule.id, count + 1);
+                }
                 excludedPoints.push(point);
                 break;
               }
@@ -356,9 +393,11 @@ export function applyDataFilters(
             if (rule.valueType === "boolean" && typeof point.value === "boolean") {
               if (point.value === rule.value) {
                 removed = true;
-                removedByExclusion += 1;
-                const count = ruleResultsMap.get(rule.id) ?? 0;
-                ruleResultsMap.set(rule.id, count + 1);
+                if (countsForSummary) {
+                  removedByExclusion += 1;
+                  const count = ruleResultsMap.get(rule.id) ?? 0;
+                  ruleResultsMap.set(rule.id, count + 1);
+                }
                 excludedPoints.push(point);
                 break;
               }
@@ -369,7 +408,7 @@ export function applyDataFilters(
 
       if (!removed) {
         newPoints.push(point);
-        totalRemaining += 1;
+        if (countsForSummary) totalRemaining += 1;
       }
     }
 
@@ -407,4 +446,3 @@ export function applyDataFilters(
     errors,
   };
 }
-

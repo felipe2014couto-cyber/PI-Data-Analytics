@@ -8,6 +8,7 @@ export interface TagOption {
   displayName: string;
   tagName: string;
   equipmentCode: string;
+  sectionId: number | null;
   sectionCode: string;
   variableTypeCode: string;
   unit: string | null;
@@ -35,7 +36,8 @@ export function buildTagOption(
     displayName: tag.display_name,
     tagName: tag.pi_tag_name,
     equipmentCode: equipment?.code ?? `EQ-${tag.equipment_id}`,
-    sectionCode: section?.code ?? `SEC-${tag.section_id}`,
+    sectionId: tag.section_id,
+    sectionCode: section?.code ?? (tag.section_id === null ? "EQUIPAMENTO" : `SEC-${tag.section_id}`),
     variableTypeCode: variableType?.code ?? `VT-${tag.variable_type_id}`,
     unit: tag.engineering_unit,
     validationStatus: tag.validation_status,

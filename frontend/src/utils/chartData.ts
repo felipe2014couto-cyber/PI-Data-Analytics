@@ -49,7 +49,7 @@ export interface ChartSeries {
   points: Array<[number, number | null]>;
   qualitySeries: Array<[number, ChartQuality]>;
   valueKind: ChartValueKind;
-  statePoints: Array<[number, number]>;
+  statePoints: Array<[number, number | null]>;
   stateValues: string[];
   stateQualitySeries: Array<[number, ChartQuality]>;
 }
@@ -157,7 +157,7 @@ export function buildChartData(
     const color = PALETTE[index % PALETTE.length];
     const points: Array<[number, number | null]> = [];
     const qualitySeries: Array<[number, ChartQuality]> = [];
-    const statePoints: Array<[number, number]> = [];
+    const statePoints: Array<[number, number | null]> = [];
     const stateValues: string[] = [];
     const stateQualitySeries: Array<[number, ChartQuality]> = [];
     const originalTimestamps: string[] = [];
@@ -188,6 +188,16 @@ export function buildChartData(
       const pointValueKind = classifyValue(point.value);
       seriesValueKind = mergeValueKinds(seriesValueKind, pointValueKind);
       valueKind = mergeValueKinds(valueKind, pointValueKind);
+      if (pointValueKind === "empty" && point.filtered_out) {
+        // Preserve gaps created by filters (and null PI samples). This keeps
+        // the state chart from connecting values across rejected timestamps.
+        points.push([time, null]);
+        statePoints.push([time, null]);
+        stateValues.push("");
+        stateQualitySeries.push([time, classifyQuality(point)]);
+        previousState = null;
+        continue;
+      }
       if (isNumericValue(point.value)) {
         points.push([time, point.value]);
         qualitySeries.push([time, classifyQuality(point)]);
@@ -223,6 +233,7 @@ export function buildChartData(
         : Date.parse(timeSeries.end_time);
     if (
       statePoints.length > 0 &&
+      statePoints[statePoints.length - 1][1] !== null &&
       Number.isFinite(seriesEndTime) &&
       seriesEndTime > statePoints[statePoints.length - 1][0]
     ) {

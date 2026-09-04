@@ -294,6 +294,25 @@ describe("chart data builder", () => {
     expect(chart.series[0].stateValues).toEqual(["B", "A", "A"]);
   });
 
+  it("keeps filtered timestamps as gaps in textual state charts", () => {
+    const textual: TimeSeries = {
+      ...sampleTimeSeries,
+      end_time: "2026-07-15T00:03:00Z",
+      series: [{
+        ...sampleTimeSeries.series[0],
+        points: [
+          { timestamp: "2026-07-15T00:00:00Z", value: "A", good: true, questionable: false, substituted: false },
+          { timestamp: "2026-07-15T00:01:00Z", value: null, filtered_out: true, good: true, questionable: false, substituted: false },
+          { timestamp: "2026-07-15T00:02:00Z", value: "B", good: true, questionable: false, substituted: false },
+        ],
+      }],
+    };
+
+    const chart = buildChartData(textual, { ignoreBadQuality: false });
+
+    expect(chart.series[0].statePoints).toContainEqual([Date.parse("2026-07-15T00:01:00Z"), null]);
+  });
+
   it("applies the bad-quality filter to states and counts discarded points", () => {
     const textual: TimeSeries = {
       ...sampleTimeSeries,

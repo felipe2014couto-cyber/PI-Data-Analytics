@@ -33,6 +33,9 @@ export interface Section {
   name: string;
   description: string | null;
   active: boolean;
+  width_tag_id: number | null;
+  um_tag_id: number | null;
+  thickness_tag_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -43,6 +46,9 @@ export interface SectionCreate {
   name: string;
   description?: string | null;
   active?: boolean;
+  width_tag_id?: number | null;
+  um_tag_id?: number | null;
+  thickness_tag_id?: number | null;
 }
 
 export interface SectionUpdate {
@@ -51,6 +57,9 @@ export interface SectionUpdate {
   name?: string;
   description?: string | null;
   active?: boolean;
+  width_tag_id?: number | null;
+  um_tag_id?: number | null;
+  thickness_tag_id?: number | null;
 }
 
 export interface VariableType {
@@ -83,7 +92,7 @@ export interface VariableTypeUpdate {
 export interface PiTag {
   id: number;
   equipment_id: number;
-  section_id: number;
+  section_id: number | null;
   variable_type_id: number;
   pi_server: string;
   pi_tag_name: string;
@@ -104,7 +113,7 @@ export interface PiTag {
 
 export interface PiTagCreate {
   equipment_id: number;
-  section_id: number;
+  section_id?: number | null;
   variable_type_id: number;
   pi_server: string;
   pi_tag_name: string;
@@ -119,7 +128,7 @@ export interface PiTagCreate {
 
 export interface PiTagUpdate {
   equipment_id?: number;
-  section_id?: number;
+  section_id?: number | null;
   variable_type_id?: number;
   pi_server?: string;
   pi_tag_name?: string;
@@ -301,6 +310,7 @@ export interface VisualConfigurationSidebarState {
     targetPointsPerTag: number;
     ignoreBadQuality: boolean;
     visualization: VisualizationType;
+    filtersEnabled?: boolean;
     filterConfiguration: DataFilterConfiguration;
   };
   selectedTagIds: number[];
@@ -377,6 +387,7 @@ export interface TimeSeriesPoint {
   questionable: boolean;
   substituted: boolean;
   elapsed_ms?: number | null;
+  filtered_out?: boolean;
 }
 
 export interface TimeSeriesSeries {

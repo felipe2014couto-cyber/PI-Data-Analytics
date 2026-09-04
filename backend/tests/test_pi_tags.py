@@ -40,6 +40,37 @@ def test_create_pi_tag_starts_pending_without_webid(client: TestClient) -> None:
     assert body["validated_at"] is None
 
 
+def test_pi_tag_can_be_assigned_to_entire_equipment(client: TestClient) -> None:
+    deps = _setup_dependencies(client)
+    response = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": deps["equipment"]["id"],
+            "section_id": None,
+            "variable_type_id": deps["variable_type"]["id"],
+            "pi_server": "PISRV01",
+            "pi_tag_name": "RB3.GLOBAL.UM",
+            "display_name": "UM do equipamento",
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["section_id"] is None
+
+    update = client.put(
+        f"/api/pi-tags/{response.json()['id']}",
+        json={"section_id": deps["section"]["id"]},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["section_id"] == deps["section"]["id"]
+
+    update = client.put(
+        f"/api/pi-tags/{response.json()['id']}",
+        json={"section_id": None},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["section_id"] is None
+
+
 def test_duplicate_pi_tag_in_same_server(client: TestClient) -> None:
     deps = _setup_dependencies(client)
     payload = {
