@@ -11,6 +11,7 @@ from app.integrations.pi.manager import (
     PiDataProvider,
     get_pi_data_provider,
 )
+from app.services.database_time_series_service import DatabaseTimeSeriesService
 from app.services.pi_long_range_service import PiLongRangeService
 from app.services.pi_norm_limits_service import PiNormLimitsService
 from app.services.pi_service import PiService
@@ -51,6 +52,13 @@ def get_norm_limits_service(
     provider: Optional[PiDataProvider] = Depends(get_pi_provider),
 ) -> PiNormLimitsService:
     return PiNormLimitsService(provider=provider, session_factory=SessionLocal)
+
+
+def get_db_time_series_service(
+    db: Session = Depends(get_db_session),
+    pi_service: PiService = Depends(get_pi_service),
+) -> DatabaseTimeSeriesService:
+    return DatabaseTimeSeriesService(db, pi_service=pi_service)
 
 
 def get_query_registry_dep() -> QueryRegistry:

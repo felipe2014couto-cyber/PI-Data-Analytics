@@ -1,0 +1,55 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb-ha:pg18.4-ts2.27.1@sha256:7c253207091a191a9aea5d1dee8816512f3aca22d169905e0bc08795ffac9752
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set outside the repository}
+      POSTGRES_DB: ${POSTGRES_DB:-pi_analytics}
+      PI_APP_USER: ${PI_APP_USER:-pi_app}
+      PI_APP_PASSWORD: ${PI_APP_PASSWORD:?PI_APP_PASSWORD must be set outside the repository}
+    volumes:
+      - timescale_data:/var/lib/postgresql
+      - ./ops/timescaledb/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${TIMESCALEDB_BIND_PORT:-6543}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [pi_internal]
+
+  backup:
+    image: timescale/timescaledb-ha:pg18.4-ts2.27.1@sha256:7c253207091a191a9aea5d1dee8816512f3aca22d169905e0bc08795ffac9752
+    profiles: [backup]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      PGHOST: timescaledb
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set outside the repository}
+      PGDATABASE: ${POSTGRES_DB:-pi_analytics}
+    volumes:
+      - timescale_backups:/backup
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      stamp=$$(date -u +%Y%m%dT%H%M%SZ)
+      pg_dump --format=custom --file="/backup/pi_analytics_$${stamp}.dump" "$${PGDATABASE}"
+      sha256sum "/backup/pi_analytics_$${stamp}.dump" | tee "/backup/pi_analytics_$${stamp}.sha256"
+      stat --printf='bytes=%s\n' "/backup/pi_analytics_$${stamp}.dump" | tee "/backup/pi_analytics_$${stamp}.size"
+    networks: [pi_internal]
+
+volumes:
+  timescale_data:
+    name: pi_analytics_timescale_data
+  timescale_backups:
+    name: pi_analytics_timescale_backups
+
+networks:
+  pi_internal:
+    name: pi_analytics_internal
+    internal: true

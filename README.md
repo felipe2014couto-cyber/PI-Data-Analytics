@@ -61,8 +61,11 @@ usuarios. Esses modulos estao previstos para fases futuras.
 
 ### Banco
 
-- SQLite (arquivo local `backend/pi_analytics_data.db`);
-- Apenas dados cadastrais. Nenhuma tabela de valores historicos.
+- PostgreSQL 18 / TimescaleDB (instancia principal `pi_analytics`);
+- Driver de alto desempenho `psycopg` (v3);
+- Armazenamento temporal em `pi_samples_timescale`, hypertable TimescaleDB com chunk inicial de um dia e chave primaria composta `(tag_id, ts)`;
+- `pi_samples` mantido intacto como tabela vanilla legada durante a janela de rollback;
+- SQLite mantido somente como fixture local congelada (`backend/pi_analytics_data.db`).
 
 ## Estrutura de pastas
 
@@ -74,14 +77,15 @@ project-root/
       core/               # Configuracao, excecoes, logging
       database/           # Engine e sessao SQLAlchemy
       integrations/pi/    # Cliente e provedor do PI Web API
-      models/             # Modelos ORM
+      models/             # Modelos ORM (incluindo timescale.py)
       repositories/       # Acesso a dados
       schemas/            # Schemas Pydantic
-      services/           # Regras de negocio
+      services/           # Regras de negocio (incluindo database_time_series_service.py)
+      workers/            # Daemons (ingestao, backfill, capacidade, delecao)
       main.py             # Entrypoint FastAPI
-    alembic/              # Migrations
-    scripts/              # Seed e utilitarios
-    tests/                # Testes pytest (com fake provider)
+    alembic/              # Migrations (0001 a 0010)
+    scripts/              # Seed, migracao SQLite->PG e daemon de workers
+    tests/                # Testes pytest e suite e2e
     requirements.txt
     requirements-dev.txt
     .env.example
@@ -132,23 +136,43 @@ project-root/
    cp .env.example .env
    ```
 
+   Preencha `DATABASE_URL` com a string de conexao do PostgreSQL (ex: `postgresql+psycopg://pi_app:pi_app_secret@localhost:5432/pi_analytics`).
    Preencha `PI_WEB_API_BASE_URL` e `PI_DATA_SERVER_NAME` com os dados do
    seu ambiente. Para autenticacao basica, preencha tambem
    `PI_WEB_API_USERNAME` e `PI_WEB_API_PASSWORD`.
 
-4. Executar as migrations:
+4. Executar as migrations do Alembic:
 
    ```bash
    alembic upgrade head
    ```
 
-5. Executar o seed (idempotente):
+5. Migrar os cadastros existentes do SQLite para o PostgreSQL (se aplicavel):
+
+   ```bash
+   python scripts/migrate_sqlite_to_postgres.py
+   ```
+
+6. Iniciar os workers de ingestao, backfill e monitoramento (em terminal ou supervisor/systemd separado):
+
+   ```bash
+   # Executar todos os workers concorrentes em loop:
+   python scripts/run_workers.py --worker all
+
+   # Ou executar um worker especifico (ex: apenas ingestao):
+   python scripts/run_workers.py --worker ingestion --interval 10
+
+   # Ou executar um ciclo unico (util para cron jobs ou testes):
+   python scripts/run_workers.py --worker all --once
+   ```
+
+7. Executar o seed inicial (se aplicavel):
 
    ```bash
    python scripts/seed.py
    ```
 
-6. Iniciar o backend:
+8. Iniciar o backend FastAPI:
 
    ```bash
    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -182,6 +206,43 @@ project-root/
    ```
 
    Aplicacao disponivel em <http://localhost:5173>.
+
+## Arquitetura de Dados & Workers TimescaleDB
+
+O PI Data Analytics adota o TimescaleDB / PostgreSQL como unica fonte da verdade da aplicacao para cadastros e series historicas de medicoes industriais.
+
+### Fluxo de Dados e Workers
+
+```
+flowchart LR
+    PI["PI System / PI Web API"] -->|"recorded em lotes; ciclo de 10 s"| W["Worker de ingestao"]
+    W -->|"UPSERT idempotente"| TS["TimescaleDB (pi_samples_timescale)"]
+    TS -->|"trechos cobertos"| BE["Backend FastAPI"]
+    BE -->|"JSON/CSV pelos endpoints atuais"| FE["Frontend React existente"]
+    MON["Monitor de capacidade"] --> TS
+    MON -->|"alerta, pausa e retencao de emergencia"| W
+```
+
+1. **Coleta Industrial**: O PI Web API atua como a fonte original das medicoes industriais.
+2. **Ingestao Continua (`IngestionWorker`)**: Coleta em lotes para tags ativas a cada 10 segundos, gravando em `pi_samples_timescale` com `INSERT ... ON CONFLICT (tag_id, ts) DO UPDATE` idempotente e atualizando o watermark em `pi_ingestion_state`. Possui protecao por advisory lock de sessao.
+3. **Carga Historica (`BackfillWorker`)**: Processa retroativamente janelas historicas diarias (ate 370 dias) com checkpointing persistente em `pi_backfill_jobs`, evitando reprocessamento redundante.
+4. **Monitor de Capacidade (`CapacityService`)**: Avalia continuamente o consumo fisico de disco (`pg_database_size`). Pausa novos jobs de backfill ao atingir 40 GB e executa retencao emergencial caso atinja 50 GB.
+5. **Purga Assincrona (`DeletionWorker`)**: Quando uma tag com amostras e excluida, seu status passa para `DELETION_PENDING`. O worker purga as series em fatias temporais sem causar locks de tabela e finaliza a exclusao cadastral.
+6. **Backend FastAPI**: Servido via `DatabaseTimeSeriesService`, consultando somente trechos cobertos de `pi_samples_timescale`, buscando lacunas no PI Web API e retornando a fonte como `timescaledb`, `pi_web_api` ou `hybrid`.
+
+### Variaveis de Ambiente do TimescaleDB
+
+| Variavel | Padrao | Descricao |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg://pi_app@localhost:6543/pi_analytics` | URL de conexao sem senha |
+| `DATABASE_PASSWORD` | — | Senha do usuário de aplicação, somente por variável/secret |
+| `TIMESCALEDB_CAPACITY_LIMIT_GB` | `50.0` | Limite rigido de disco para acionamento de poda emergencial |
+| `TIMESCALEDB_WARNING_LIMIT_GB` | `40.0` | Limite de alerta que suspende novos jobs de backfill |
+| `INGESTION_CYCLE_SECONDS` | `10` | Intervalo de polling da ingestao continua em segundos |
+| `INGESTION_OVERLAP_SECONDS` | `30` | Janela de sobreposicao retroativa para prevenir perda de eventos |
+| `BACKFILL_CHUNK_DAYS` | `1` | Tamanho da janela em dias para cada lote de backfill historico |
+| `BACKFILL_MAX_DAYS` | `370` | Alcance retroativo maximo para carga historica |
+| `DELETION_BATCH_DAYS` | `30` | Fatiamento temporal em dias por ciclo de purga assincrona |
 
 ### Períodos da visualização de dados
 

@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     app_name: str = Field(default="PI Analytics Data")
     app_env: str = Field(default="development")
     app_debug: bool = Field(default=False)
-    database_url: str = Field(default="sqlite:///./pi_analytics_data.db")
+    # Production connects to the dedicated TimescaleDB service. Tests and
+    # local migration fixtures may override this explicitly with SQLite.
+    database_url: str = Field(default="postgresql+psycopg://pi_app@localhost:6543/pi_analytics")
+    database_password: SecretStr | None = Field(default=None)
     frontend_origin: str = Field(default="http://localhost:5173")
     auth_jwt_secret: SecretStr | None = Field(default=None)
     auth_jwt_expire_minutes: int = Field(default=60, ge=5, le=1440)
@@ -232,6 +235,46 @@ class Settings(BaseSettings):
     pi_cep_cleanup_interval_seconds: int = Field(default=60)
     pi_cep_recorded_max_points_per_tag: int = Field(default=10000)
     pi_cep_recorded_max_total_points: int = Field(default=100000)
+
+    # TimescaleDB & Workers
+    timescaledb_capacity_limit_gb: float = Field(
+        default=50.0,
+        description="Capacidade maxima de disco para TimescaleDB em GB antes de bloqueio e descarte de emergencia.",
+    )
+    timescaledb_warning_limit_gb: float = Field(
+        default=40.0,
+        description="Limite de alerta de capacidade em GB para pausar backfill.",
+    )
+    ingestion_cycle_seconds: float = Field(
+        default=10.0,
+        ge=1.0,
+        le=300.0,
+        description="Intervalo em segundos entre ciclos do worker de ingestao live.",
+    )
+    ingestion_overlap_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Janela de sobreposicao retroativa para compensar latencia de gravacao no PI Web API.",
+    )
+    backfill_chunk_days: int = Field(
+        default=1,
+        ge=1,
+        le=30,
+        description="Tamanho em dias de cada bloco processado no backfill historico.",
+    )
+    backfill_max_days: int = Field(
+        default=370,
+        ge=1,
+        le=3650,
+        description="Periodo maximo permitido para carga historica (politica de retencao).",
+    )
+    deletion_batch_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Tamanho em dias dos blocos de purga assincrona de tags.",
+    )
 
     def get_cors_origins(self) -> list[str]:
         if self.cors_origins:

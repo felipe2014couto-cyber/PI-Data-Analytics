@@ -467,4 +467,10 @@ class PiService:
             mode=request.mode,
             series=series,
             errors=errors,
+            query_execution={
+                "strategy": "pi_web_api",
+                "source": "pi_web_api",
+                "complete": not errors,
+                "partial": bool(errors),
+            },
         )

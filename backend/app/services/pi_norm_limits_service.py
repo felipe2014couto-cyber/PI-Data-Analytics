@@ -216,6 +216,49 @@ class PiNormLimitsService:
             self.series = series
             self.errors = errors
 
+    def _try_fetch_from_db(
+        self,
+        tag_name: str,
+        start_time: datetime,
+        end_time: datetime,
+        max_count: int,
+    ) -> Optional[List[PiTagNormLimitPoint]]:
+        """Attempt to fetch limit points directly from the TimescaleDB hypertable."""
+        try:
+            session_ctx = self.session_factory() if self.session_factory else None
+            db = session_ctx or self.db
+            if not db:
+                return None
+            try:
+                from app.models.pi_tag import PiTag
+                tag = db.query(PiTag).filter(PiTag.pi_tag_name == tag_name).first()
+                if not tag:
+                    return None
+                from sqlalchemy import text
+                rows = db.execute(
+                    text(
+                        "SELECT ts, value_double FROM pi_samples_timescale WHERE tag_id = :tag_id AND source_mode = 'RECORDED' AND ts >= :start_time AND ts < :end_time ORDER BY ts ASC LIMIT :max_count"
+                    ),
+                    {"tag_id": tag.id, "start_time": start_time, "end_time": end_time, "max_count": max_count},
+                ).mappings().all()
+                if not rows:
+                    return None
+                pts = []
+                for r in rows:
+                    ts = r["ts"]
+                    if isinstance(ts, str):
+                        ts = datetime.fromisoformat(ts)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    val = float(r["value_double"]) if r["value_double"] is not None else None
+                    pts.append(PiTagNormLimitPoint(timestamp=ts, value=val))
+                return pts
+            finally:
+                if session_ctx:
+                    session_ctx.close()
+        except Exception:
+            return None
+
     async def _fetch_one(
         self,
         provider: PiDataProvider,
@@ -227,6 +270,14 @@ class PiNormLimitsService:
         interval: Optional[str],
         max_count: int,
     ) -> "PiNormLimitsService._FetchResult":
+        # 1. Check if database has samples for this limit tag
+        db_pts = self._try_fetch_from_db(tag_name, start_time, end_time, max_count)
+        if db_pts is not None and len(db_pts) > 0:
+            return self._FetchResult(
+                series=PiTagNormLimitSeries(tag_name=tag_name, points=db_pts),
+                errors=[],
+            )
+
         path = _path_for(pi_server, tag_name)
         try:
             point = await provider.resolve_point(path)

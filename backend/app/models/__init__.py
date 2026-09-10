@@ -6,6 +6,13 @@ from app.models.pi_tag import PiTag, PiTagDataType, PiTagValidationStatus
 from app.models.user import User, UserRole
 from app.models.visual_configuration import VisualConfiguration, VisualConfigurationVersion
 from app.models.cep_variable import CepVariable
+from app.models.postgres import (
+    PiBackfillJob,
+    PiIngestionState,
+    PiSample,
+    PiTagDeletionJob,
+    PiIngestionCoverage
+)
 
 __all__ = [
     "Equipment",
@@ -19,4 +26,9 @@ __all__ = [
     "VisualConfiguration",
     "VisualConfigurationVersion",
     "CepVariable",
+    "PiSample",
+    "PiIngestionCoverage",
+    "PiIngestionState",
+    "PiBackfillJob",
+    "PiTagDeletionJob",
 ]

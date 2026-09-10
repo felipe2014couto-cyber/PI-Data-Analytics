@@ -401,6 +401,14 @@ class PiWebApiDataProvider(PiDataProvider):
 
                 backoff = min(2 ** (attempt - 1), 5)
                 backoff *= random.uniform(0.5, 1.5)
+                retry_after = None
+                if isinstance(exc.details, dict):
+                    try:
+                        retry_after = float(exc.details.get("retry_after"))
+                    except (TypeError, ValueError):
+                        retry_after = None
+                if retry_after is not None:
+                    backoff = max(backoff, min(retry_after, 60.0))
 
                 logger.warning(
                     "PI request failed (attempt %s/%s), "

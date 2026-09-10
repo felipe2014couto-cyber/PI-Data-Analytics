@@ -11,8 +11,13 @@ from typing import List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import get_long_range_service, get_pi_service, get_query_registry_dep
-from app.core.config import settings as app_settings
+from app.api.deps import (
+    get_db_time_series_service,
+    get_long_range_service,
+    get_pi_service,
+    get_query_registry_dep,
+)
+from app.core.config import get_settings
 from app.core.exceptions import QueryCancelledError, QueryLimitExceededError
 from app.schemas.pi import (
     ComparisonContextResult,
@@ -24,6 +29,7 @@ from app.schemas.pi import (
     TimeSeriesRequest,
 )
 from app.services.cache import VisualCache, WebIdCache
+from app.services.database_time_series_service import DatabaseTimeSeriesService
 from app.services.pi_long_range_service import PiLongRangeService
 from app.services.pi_service import PiService
 from app.services.query_registry import QueryRegistry, get_query_registry
@@ -65,10 +71,10 @@ def _normalize_tag_ids(values: Union[List[int], List[str], None]) -> List[int]:
         deduped.append(tag_id)
     if not deduped:
         return []
-    if len(deduped) > app_settings.pi_query_max_tags:
+    if len(deduped) > get_settings().pi_query_max_tags:
         raise QueryLimitExceededError(
             "Quantidade de tags excede o limite configurado.",
-            details={"requested": len(deduped), "limit": app_settings.pi_query_max_tags},
+            details={"requested": len(deduped), "limit": get_settings().pi_query_max_tags},
         )
     return deduped
 
@@ -84,7 +90,7 @@ async def cancel_time_series(
     return {"query_id": query_id, "cancelled": cancelled, "message": "Consulta cancelada." if cancelled else "Consulta ja finalizada ou inexistente."}
 
 
-@router.get("", response_model=TimeSeries, summary="Consultar series temporais no PI Web API")
+@router.get("", response_model=TimeSeries, summary="Consultar series temporais no PI Web API / TimescaleDB")
 async def get_time_series(
     tag_ids: List[Union[int, str]] = Query(
         ...,
@@ -105,6 +111,7 @@ async def get_time_series(
     query_id: Optional[str] = Query(None, description="ID da consulta para cancelamento."),
     service: PiService = Depends(get_pi_service),
     long_service: PiLongRangeService = Depends(get_long_range_service),
+    db_service: DatabaseTimeSeriesService = Depends(get_db_time_series_service),
     registry: QueryRegistry = Depends(get_query_registry_dep),
 ) -> TimeSeries:
     ids = _normalize_tag_ids(tag_ids)
@@ -119,6 +126,16 @@ async def get_time_series(
         resolution_mode=resolution_mode,
         target_points_per_tag=target_points_per_tag,
     )
+
+    # TimescaleDB resolves covered ranges and PI resolves only real gaps.  A
+    # database failure is explicit and observable; it must not silently change
+    # the meaning of the query.
+    try:
+        db_result = await db_service.fetch_time_series(ts_request)
+        return db_result
+    except Exception as exc:
+        logger.exception("timescaledb_query_failed query_id=%s; using explicit PI fallback", qid)
+        logger.warning("timescaledb_fallback_alert query_id=%s reason=%s", qid, type(exc).__name__)
 
     if resolution_mode is None and target_points_per_tag is None:
         result = await service.fetch_time_series(ts_request)
@@ -309,7 +326,7 @@ async def export_time_series_csv(
     parsed_start = _parse_iso(start_time)
     parsed_end = _parse_iso(end_time)
 
-    max_days = app_settings.pi_query_max_period_days
+    max_days = get_settings().pi_query_max_period_days
     if (parsed_end - parsed_start).total_seconds() > max_days * 86400:
         raise HTTPException(
             status_code=400,

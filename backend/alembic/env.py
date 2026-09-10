@@ -13,7 +13,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.database_url)
+current_url = config.get_main_option("sqlalchemy.url")
+if not current_url or current_url == "sqlite:///./pi_analytics_data.db":
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata
 

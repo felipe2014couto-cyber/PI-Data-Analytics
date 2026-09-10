@@ -21,7 +21,7 @@ def upgrade() -> None:
         sa.Column("normalized_username", sa.String(length=64), nullable=False),
         sa.Column("password_hash", sa.String(length=512), nullable=False),
         sa.Column("role", sa.Enum("ADMIN", "USER", name="userrole", native_enum=False, length=16), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("auth_version", sa.Integer(), nullable=False, server_default=sa.text("1")),
         sa.Column("last_login_at", sa.DateTime(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),

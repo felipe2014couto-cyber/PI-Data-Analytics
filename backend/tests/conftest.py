@@ -48,7 +48,10 @@ from app.models import (  # noqa: E402,E401
 from app.api.deps import get_current_user, validate_csrf  # noqa: E402
 from app.services.pi_norm_limits_service import PiNormLimitsService  # noqa: E402
 from app.services.pi_service import PiService  # noqa: E402
+from app.core.security import hash_password  # noqa: E402
 from tests.pi_fakes import FakePiDataProvider  # noqa: E402
+
+_ADMIN_TEST_HASH = hash_password("admin")
 
 engine = create_engine(
     os.environ["DATABASE_URL"],
@@ -125,12 +128,13 @@ def client(fake_provider):
     app.dependency_overrides[get_pi_provider] = _provider_override
     app.dependency_overrides[get_pi_service] = _service_override
     app.dependency_overrides[get_norm_limits_service] = _norm_limits_override
+
     def _authenticated_user():
         db = TestingSessionLocal()
         try:
             user = db.query(User).filter(User.normalized_username == "test-admin").first()
             if not user:
-                user = User(username="test-admin", normalized_username="test-admin", password_hash="test-hash", role=UserRole.ADMIN, is_active=True, auth_version=1, must_change_password=False)
+                user = User(username="test-admin", normalized_username="test-admin", password_hash=_ADMIN_TEST_HASH, role=UserRole.ADMIN, is_active=True, auth_version=1, must_change_password=False)
                 db.add(user); db.commit(); db.refresh(user)
             db.expunge(user)
             return user
@@ -147,6 +151,17 @@ def client(fake_provider):
 def _clean_tables(db_session):
     for table in reversed(Base.metadata.sorted_tables):
         db_session.execute(table.delete())
+    db_session.commit()
+    user = User(
+        username="test-admin",
+        normalized_username="test-admin",
+        password_hash=_ADMIN_TEST_HASH,
+        role=UserRole.ADMIN,
+        is_active=True,
+        auth_version=1,
+        must_change_password=False,
+    )
+    db_session.add(user)
     db_session.commit()
     yield
 
