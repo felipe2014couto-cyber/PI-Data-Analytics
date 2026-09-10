@@ -12,6 +12,7 @@ from app.integrations.pi.manager import (
     get_pi_data_provider,
 )
 from app.services.pi_long_range_service import PiLongRangeService
+from app.services.pi_norm_limits_service import PiNormLimitsService
 from app.services.pi_service import PiService
 from app.services.query_registry import QueryRegistry, get_query_registry
 from app.core.config import settings
@@ -46,6 +47,12 @@ def get_long_range_service(
     return PiLongRangeService(db, provider=provider)
 
 
+def get_norm_limits_service(
+    provider: Optional[PiDataProvider] = Depends(get_pi_provider),
+) -> PiNormLimitsService:
+    return PiNormLimitsService(provider=provider, session_factory=SessionLocal)
+
+
 def get_query_registry_dep() -> QueryRegistry:
     return get_query_registry()
 
@@ -53,14 +60,17 @@ def get_query_registry_dep() -> QueryRegistry:
 DbSession = Depends(get_db_session)
 
 
-def get_authenticated_user(request: Request, db: Session = Depends(get_db_session)) -> User:
+def get_authenticated_user(request: Request) -> User:
     token = request.cookies.get(settings.auth_cookie_name)
     if not token: raise AuthenticationError()
     try: claims = decode_access_token(token)
     except (jwt.PyJWTError, ValueError): raise AuthenticationError()
-    user = db.get(User, claims.get("sub"))
-    if not user or not user.is_active or user.auth_version != claims.get("auth_version"): raise AuthenticationError()
-    return user
+    user_id = claims.get("sub")
+    with SessionLocal() as session:
+        user = session.get(User, user_id)
+        if not user or not user.is_active or user.auth_version != claims.get("auth_version"): raise AuthenticationError()
+        session.expunge(user)
+        return user
 
 
 def get_current_user(user: User = Depends(get_authenticated_user)) -> User:

@@ -260,7 +260,7 @@ describe("chart data builder", () => {
     const chart = buildChartData(textual, { ignoreBadQuality: false });
     const value = chart.series[0].stateValues[2];
 
-    expect(chart.valueKind).toBe("textual");
+    expect(chart.valueKind).toBe("categorical");
     expect(chart.categories).toEqual(["P304I", "P316B", "600", "500.5", "true"]);
     expect(value).toBe("600");
     expect(typeof value).toBe("string");
@@ -516,7 +516,7 @@ describe("chart data builder", () => {
     const series = groups.summary.series[0];
     const numericString = groups.textual[0].series[0].stateValues[2];
 
-    expect(series.valueKind).toBe("textual");
+    expect(series.valueKind).toBe("categorical");
     expect(series.numeric).toBe(0);
     expect(series.nonNumeric).toBe(3);
     expect(series.dropped).toBe(1);

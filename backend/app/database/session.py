@@ -14,6 +14,11 @@ engine = create_engine(
     connect_args=connect_args,
     future=True,
     echo=False,
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=10,
+    pool_pre_ping=True,
+    pool_recycle=1800,
 )
 
 SessionLocal = sessionmaker(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PersistablePageState } from "../src/utils/visualConfiguration";
 import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument } from "../src/utils/visualConfiguration";
+import { stripRetiredNamedFilterRules } from "../src/components/AdvancedFiltersPanel";
 import { resolveTimePeriod } from "../src/utils/timePeriod";
 
 const state = (): PersistablePageState => ({
@@ -80,4 +81,48 @@ describe("estado persistente da configuração visual", () => {
     expect(restored.selectedTagIds).toEqual(defaults.selectedTagIds);
     expect(restored.visualRules.enabled).toBe(false);
   });
+
+  it("remove apenas regras named-filter de campos aposentados ao restaurar", () => {
+    const original = state();
+    original.filters.filterConfiguration = {
+      quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
+      rules: [
+        { id: "named-filter:reprocess", kind: "text", tagId: 500, seriesInstanceId: undefined, operator: "contains", value: "Sim", enabled: true, caseSensitive: false },
+        { id: "named-filter:eventType", kind: "text", tagId: 501, seriesInstanceId: undefined, operator: "contains", value: "Operacional", enabled: true, caseSensitive: false },
+        { id: "named-filter:lengthAbsoluteMin", kind: "numeric", tagId: 502, seriesInstanceId: undefined, operator: "greaterThanOrEqual", value: 0, secondValue: null, enabled: true },
+        { id: "named-filter:shift", kind: "text", tagId: 13, seriesInstanceId: undefined, operator: "contains", value: "1º turno", enabled: true, caseSensitive: false },
+        { id: "rule-generic", kind: "numeric", tagId: 999, seriesInstanceId: undefined, operator: "equal", value: 5, secondValue: null, enabled: true },
+      ],
+    };
+    const document = buildVisualConfigurationDocument(original);
+    const restored = normalizeVisualConfigurationDocument(document, state(), "America/Sao_Paulo");
+    const cleanedRules = stripRetiredNamedFilterRules(restored.filters.filterConfiguration!.rules);
+    const ids = cleanedRules.map((r) => r.id);
+    expect(ids).not.toContain("named-filter:reprocess");
+    expect(ids).not.toContain("named-filter:eventType");
+    expect(ids).not.toContain("named-filter:lengthAbsoluteMin");
+    expect(ids).toContain("named-filter:shift");
+    expect(ids).toContain("rule-generic");
+  });
+
+  it("abre configuração antiga sem o campo de modelo aplicando Base Unidade como compatibilidade", () => {
+    const defaults = state();
+    const legacyDoc = buildVisualConfigurationDocument(defaults);
+    // Remove o campo analysisModel simulando documento antigo
+    delete (legacyDoc.sidebar_state?.filters as Record<string, unknown>).analysisModel;
+    const restored = normalizeVisualConfigurationDocument(legacyDoc, defaults, "America/Sao_Paulo");
+    expect(restored.filters.analysisModel).toBe("unit");
+    expect(restored.filters.timeAnalysisRule).toBeUndefined();
+  });
+
+  it("restaura configuração com Base Cíclica e regra Padrão preservadas", () => {
+    const custom = state();
+    custom.filters.analysisModel = "cyclic";
+    custom.filters.timeAnalysisRule = "DEFAULT";
+    const doc = buildVisualConfigurationDocument(custom);
+    const restored = normalizeVisualConfigurationDocument(doc, state(), "America/Sao_Paulo");
+    expect(restored.filters.analysisModel).toBe("cyclic");
+    expect(restored.filters.timeAnalysisRule).toBe("DEFAULT");
+  });
 });
+

@@ -207,6 +207,7 @@ export interface PiTagValidationBatchResponse {
 }
 
 export type TimeSeriesMode = "recorded" | "interpolated";
+export type TimeAnalysisRule = "DEFAULT" | "MEDIA" | "MAXIMO" | "MIN" | "OOC";
 export type ComparisonType = "periods" | "equipments" | "categories";
 
 export type TimezoneId = "America/Sao_Paulo";
@@ -248,7 +249,6 @@ export interface SeriesAssignment {
 }
 
 export type VisualLineStyle = "solid" | "dashed" | "dotted";
-export type ColorRuleOperator = "<" | "<=" | ">" | ">=" | "==" | "between" | "outside";
 
 export interface VisualLimitLine {
   id: string;
@@ -260,32 +260,39 @@ export interface VisualLimitLine {
   visible: boolean;
 }
 
-export interface VisualRange {
-  id: string;
-  lower: number;
-  upper: number;
-  label: string;
-  color: string;
-  opacity: number;
-  visible: boolean;
-}
-
-export interface VisualColorRule {
-  id: string;
-  operator: ColorRuleOperator;
-  value: number | null;
-  lower: number | null;
-  upper: number | null;
-  color: string;
-  label: string;
+export interface VisualNormLimitConfiguration {
   enabled: boolean;
+  lowerColor: string;
+  upperColor: string;
+  lineStyle: VisualLineStyle;
+  width: number;
 }
 
 export interface SeriesVisualConfiguration {
   seriesInstanceId: string;
   limits: VisualLimitLine[];
-  ranges: VisualRange[];
-  rules: VisualColorRule[];
+  normLimit: VisualNormLimitConfiguration | null;
+}
+
+export interface PiTagNormLimitPoint {
+  timestamp: string;
+  value: number | null;
+}
+
+export interface PiTagNormLimitSeries {
+  tag_name: string | null;
+  points: PiTagNormLimitPoint[];
+}
+
+export interface PiTagNormLimitsResponse {
+  source_tag_id: number;
+  start_time: string;
+  end_time: string;
+  mode: "recorded" | "interpolated";
+  interval: string | null;
+  lower: PiTagNormLimitSeries;
+  upper: PiTagNormLimitSeries;
+  errors: string[];
 }
 
 export interface VisualRulesState {
@@ -310,6 +317,7 @@ export interface VisualConfigurationSidebarState {
     targetPointsPerTag: number;
     ignoreBadQuality: boolean;
     visualization: VisualizationType;
+    timeAnalysisRule?: TimeAnalysisRule;
     filtersEnabled?: boolean;
     filterConfiguration: DataFilterConfiguration;
   };

@@ -45,10 +45,24 @@ export function normalizeVisualConfigurationDocument(
       visualRules: document.visual_rules,
     });
   }
+  const savedModel = saved.filters?.analysisModel;
+  const analysisModel =
+    savedModel === "unit" || savedModel === "cyclic" || savedModel === "oee" || savedModel === "downtime" || savedModel === "quality"
+      ? savedModel
+      : (defaults.filters.analysisModel ?? "unit");
+
   return copy({
     filters: {
       ...defaults.filters,
       ...saved.filters,
+      analysisModel,
+      ...(analysisModel === "cyclic"
+        ? { timeAnalysisRule: "DEFAULT" }
+        : saved.filters?.timeAnalysisRule && saved.filters.timeAnalysisRule !== "DEFAULT"
+        ? { timeAnalysisRule: saved.filters.timeAnalysisRule }
+        : defaults.filters.timeAnalysisRule !== undefined
+        ? { timeAnalysisRule: defaults.filters.timeAnalysisRule }
+        : {}),
       timezone,
       timePeriod: saved.filters.timePeriod ?? defaults.filters.timePeriod,
       filterConfiguration: saved.filters.filterConfiguration ?? defaults.filters.filterConfiguration,

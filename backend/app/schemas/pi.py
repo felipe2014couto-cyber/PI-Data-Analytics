@@ -276,3 +276,36 @@ class TimeSeriesComparison(BaseModel):
     comparison_type: ComparisonType
     contexts: List[ComparisonContextResult]
     metadata: ComparisonMetadata
+
+
+# ---------------------------------------------------------------------- norm limits
+
+
+class PiTagNormLimitPoint(BaseModel):
+    timestamp: datetime
+    value: Optional[float] = None
+
+    @field_validator("timestamp")
+    @classmethod
+    def _ensure_utc(cls, value: datetime) -> datetime:
+        from datetime import timezone
+
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
+class PiTagNormLimitSeries(BaseModel):
+    tag_name: Optional[str] = None
+    points: List[PiTagNormLimitPoint] = Field(default_factory=list)
+
+
+class PiTagNormLimitsResponse(BaseModel):
+    source_tag_id: int
+    start_time: datetime
+    end_time: datetime
+    mode: TimeSeriesMode
+    interval: Optional[str] = None
+    lower: PiTagNormLimitSeries
+    upper: PiTagNormLimitSeries
+    errors: List[str] = Field(default_factory=list)

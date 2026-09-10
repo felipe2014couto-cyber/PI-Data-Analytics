@@ -23,6 +23,7 @@ interface AdvancedFiltersPanelProps {
   summary: FilterApplicationSummary | null;
   ruleResults: FilterRuleResult[];
   hasData: boolean;
+  initialExpanded?: boolean;
   onChange: (configuration: DataFilterConfiguration) => void;
 }
 
@@ -48,8 +49,6 @@ const FIELD_GROUPS: FilterGroup[] = [
     fields: [
       { key: "steelModel", label: "Modelo do Aço", control: "select", options: STEEL_MODELS },
       { key: "umCode", label: "Código UM", control: "text" },
-      { key: "umSequenceCode", label: "Código UM-SEQ", control: "text" },
-      { key: "genealogyCode", label: "Código UM Genealogia", control: "text" },
       { key: "thicknessMin", label: "Espessura mínima", control: "number" },
       { key: "thicknessMax", label: "Espessura máxima", control: "number" },
       { key: "widthMin", label: "Largura mínima", control: "number" },
@@ -62,43 +61,6 @@ const FIELD_GROUPS: FilterGroup[] = [
     title: "Produção e operação",
     fields: [
       { key: "shift", label: "Turno", control: "select", options: ["1º turno", "2º turno", "3º turno"] },
-      { key: "reprocess", label: "Reprocesso", control: "select", options: ["Sim", "Não"] },
-      { key: "furnace", label: "Forno", control: "text" },
-      { key: "deviation", label: "Desvio", control: "select", options: ["Sim", "Não"] },
-      { key: "lineStatus", label: "Status Linha", control: "select", options: ["Operando", "Parada", "Indisponível"] },
-      { key: "backwardMaterialRemoval", label: "Retirada Matéria Trás", control: "select", options: ["Sim", "Não"] },
-      { key: "coilMovement", label: "Movimentação Bobinas", control: "select", options: ["Sim", "Não"] },
-      { key: "reheating", label: "Relaminação", control: "select", options: ["Sim", "Não"] },
-    ],
-  },
-  {
-    key: "quality",
-    title: "Defeitos e qualidade",
-    fields: [
-      { key: "defectMachine", label: "Máquina Defeito", control: "text" },
-      { key: "defectCode", label: "Código Defeito", control: "text" },
-      { key: "defectDescription", label: "Descrição Defeito", control: "text" },
-      { key: "defectCriticality", label: "Criticidade Defeito", control: "select", options: ["Baixa", "Média", "Alta", "Crítica"] },
-    ],
-  },
-  {
-    key: "events",
-    title: "Paradas e eventos",
-    fields: [
-      { key: "eventType", label: "Tipo de Evento", control: "select", options: ["Operacional", "Qualidade", "Manutenção", "Processo"] },
-      { key: "stopCode", label: "Código de Parada", control: "text" },
-      { key: "stopNatureCode", label: "Código Natureza Parada", control: "text" },
-      { key: "responsibleTeamCode", label: "Código Equipe Responsável", control: "text" },
-    ],
-  },
-  {
-    key: "input",
-    title: "Características de entrada e composição",
-    fields: [
-      { key: "inputThicknessMin", label: "Espessura mínima entrada", control: "number" },
-      { key: "inputThicknessMax", label: "Espessura máxima entrada", control: "number" },
-      { key: "carbonMin", label: "Teor de carbono mínimo", control: "number" },
-      { key: "carbonMax", label: "Teor de carbono máximo", control: "number" },
     ],
   },
   {
@@ -107,8 +69,6 @@ const FIELD_GROUPS: FilterGroup[] = [
     fields: [
       { key: "lengthPercentMin", label: "Comprimento mínimo %", control: "number" },
       { key: "lengthPercentMax", label: "Comprimento máximo %", control: "number" },
-      { key: "lengthAbsoluteMin", label: "Comprimento mínimo absoluto", control: "number" },
-      { key: "lengthAbsoluteMax", label: "Comprimento máximo absoluto", control: "number" },
     ],
   },
 ];
@@ -124,38 +84,50 @@ const ANALYSIS_ROLE_BY_FIELD: Partial<Record<string, "width" | "um" | "thickness
 const FIELD_ALIASES: Record<string, string[]> = {
   steelModel: ["modelo aço", "modelo do aço", "steel"],
   umCode: ["codigo um", "código um"],
-  umSequenceCode: ["um-seq", "um seq"],
-  genealogyCode: ["genealogia", "um genealogia"],
   thicknessMin: ["espessura mínima", "espessura min", "espessura"],
   thicknessMax: ["espessura máxima", "espessura max", "espessura"],
   widthMin: ["largura mínima", "largura min", "largura"],
   widthMax: ["largura máxima", "largura max", "largura"],
   group: ["grupo"],
   shift: ["turno"],
-  reprocess: ["reprocesso"],
-  furnace: ["forno"],
-  deviation: ["desvio"],
-  lineStatus: ["status linha", "status da linha"],
-  backwardMaterialRemoval: ["retirada matéria trás", "retirada materia tras"],
-  coilMovement: ["movimentação bobinas", "movimentacao bobinas"],
-  reheating: ["relaminação", "relaminacao"],
-  defectMachine: ["máquina defeito", "maquina defeito"],
-  defectCode: ["código defeito", "codigo defeito"],
-  defectDescription: ["descrição defeito", "descricao defeito"],
-  defectCriticality: ["criticidade defeito"],
-  eventType: ["tipo de evento"],
-  stopCode: ["código de parada", "codigo de parada"],
-  stopNatureCode: ["natureza parada", "natureza da parada"],
-  responsibleTeamCode: ["equipe responsável", "equipe responsavel"],
-  inputThicknessMin: ["espessura mínima entrada", "espessura minima entrada"],
-  inputThicknessMax: ["espessura máxima entrada", "espessura maxima entrada"],
-  carbonMin: ["carbono mínimo", "carbono minimo"],
-  carbonMax: ["carbono máximo", "carbono maximo"],
   lengthPercentMin: ["comprimento mínimo %", "comprimento minimo %"],
   lengthPercentMax: ["comprimento máximo %", "comprimento maximo %"],
-  lengthAbsoluteMin: ["comprimento mínimo absoluto", "comprimento minimo absoluto"],
-  lengthAbsoluteMax: ["comprimento máximo absoluto", "comprimento maximo absoluto"],
 };
+
+export const RETIRED_NAMED_FILTER_FIELDS: readonly string[] = [
+  "umSequenceCode",
+  "genealogyCode",
+  "reprocess",
+  "furnace",
+  "deviation",
+  "lineStatus",
+  "backwardMaterialRemoval",
+  "coilMovement",
+  "reheating",
+  "defectMachine",
+  "defectCode",
+  "defectDescription",
+  "defectCriticality",
+  "eventType",
+  "stopCode",
+  "stopNatureCode",
+  "responsibleTeamCode",
+  "inputThicknessMin",
+  "inputThicknessMax",
+  "carbonMin",
+  "carbonMax",
+  "lengthAbsoluteMin",
+  "lengthAbsoluteMax",
+];
+
+export function stripRetiredNamedFilterRules<T extends { id: string }>(rules: T[]): T[] {
+  return rules.filter((rule) => {
+    if (typeof rule.id !== "string") return true;
+    if (!rule.id.startsWith("named-filter:")) return true;
+    const fieldKey = rule.id.slice("named-filter:".length);
+    return !RETIRED_NAMED_FILTER_FIELDS.includes(fieldKey);
+  });
+}
 
 function normalize(value: string): string {
   return value
@@ -234,9 +206,10 @@ export function AdvancedFiltersPanel({
   tagOptions,
   summary,
   hasData,
+  initialExpanded = true,
   onChange,
 }: AdvancedFiltersPanelProps) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(initialExpanded);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [applied, setApplied] = useState(false);
   const [unmappedFields, setUnmappedFields] = useState<string[]>([]);

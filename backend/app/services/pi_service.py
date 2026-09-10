@@ -280,7 +280,13 @@ class PiService:
                     details={"pi_tag_id": tag_id},
                 )
             self._ensure_active(tag)
+            tag._meta_equipment_code = tag.equipment.code if tag.equipment else None
+            tag._meta_section_code = tag.section.code if tag.section else None
+            tag._meta_variable_type_code = tag.variable_type.code if tag.variable_type else None
+            tag._meta_unit = tag.engineering_unit or (tag.variable_type.unit if tag.variable_type else None)
             tags.append(tag)
+        if self.db:
+            self.db.rollback()
         return tags
 
     def _resolve_max_count(self, request: TimeSeriesRequest) -> int:
@@ -302,8 +308,9 @@ class PiService:
             tag.validation_status = PiTagValidationStatus.VALID
             tag.validation_message = "Tag resolvida automaticamente durante consulta."
             tag.validated_at = datetime.utcnow()
-            self.db.commit()
-            self.db.refresh(tag)
+            if self.db:
+                self.db.commit()
+                self.db.rollback()
             return point
         # Failed resolution: keep status updated if it was an INVALID response.
         if isinstance(error, PiTagNotFoundError):
@@ -311,14 +318,16 @@ class PiService:
             tag.validation_status = PiTagValidationStatus.INVALID
             tag.validation_message = "Tag nao encontrada no PI Web API."
             tag.validated_at = datetime.utcnow()
-            self.db.commit()
-            self.db.refresh(tag)
+            if self.db:
+                self.db.commit()
+                self.db.rollback()
         elif error is not None:
             tag.validation_status = PiTagValidationStatus.ERROR
             tag.validation_message = error.safe_message
             tag.validated_at = datetime.utcnow()
-            self.db.commit()
-            self.db.refresh(tag)
+            if self.db:
+                self.db.commit()
+                self.db.rollback()
         return None
 
     async def _resolve_if_needed(self, tag: PiTag) -> Optional[PiPoint]:
@@ -337,6 +346,8 @@ class PiService:
     ) -> TimeSeriesSeries:
         provider = self._resolve_provider()
         await self._resolve_if_needed(tag)
+        if self.db:
+            self.db.rollback()
         if not tag.pi_web_id:
             raise PiTagNotFoundError(
                 "WebId nao disponivel para a tag.",
@@ -361,8 +372,11 @@ class PiService:
         except PiTagNotFoundError:
             # Try re-resolving once with the current name.
             tag.pi_web_id = None
-            self.db.commit()
+            if self.db:
+                self.db.commit()
             point = await self._ensure_web_id(tag)
+            if self.db:
+                self.db.rollback()
             if point is None or not tag.pi_web_id:
                 raise
             if request.mode == "recorded":
@@ -390,9 +404,10 @@ class PiService:
         request: TimeSeriesRequest,
         values: Iterable,
     ) -> TimeSeriesSeries:
-        equipment: Optional[Equipment] = tag.equipment
-        section: Optional[Section] = tag.section
-        variable_type: Optional[VariableType] = tag.variable_type
+        equipment_code = getattr(tag, "_meta_equipment_code", None) or (tag.equipment.code if tag.equipment else None)
+        section_code = getattr(tag, "_meta_section_code", None) or (tag.section.code if tag.section else None)
+        variable_type_code = getattr(tag, "_meta_variable_type_code", None) or (tag.variable_type.code if tag.variable_type else None)
+        unit = getattr(tag, "_meta_unit", None) or tag.engineering_unit
         points = [
             TimeSeriesPoint(
                 timestamp=v.timestamp.astimezone(timezone.utc),
@@ -407,10 +422,10 @@ class PiService:
             tag_id=tag.id,
             tag_name=tag.pi_tag_name,
             display_name=tag.display_name,
-            equipment=equipment.code if equipment else None,
-            section=section.code if section else None,
-            variable_type=variable_type.code if variable_type else None,
-            unit=tag.engineering_unit,
+            equipment=equipment_code,
+            section=section_code,
+            variable_type=variable_type_code,
+            unit=unit,
             points=points,
         )
 

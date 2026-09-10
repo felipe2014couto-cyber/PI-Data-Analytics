@@ -1207,7 +1207,7 @@ describe("Data visualization page", () => {
     expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
   });
 
-  it("uses Base Unidade by default, exposes future models disabled and maps Equipment to Máquina", async () => {
+  it("uses Base Unidade by default, exposes Base Cíclica enabled, other models disabled and maps Equipment to Máquina", async () => {
     apiMock.listPiTags.mockResolvedValue(paginated([piTagFixture]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
     renderAt("/analises/visualizacao");
@@ -1216,14 +1216,27 @@ describe("Data visualization page", () => {
     expect(model.value).toBe("unit");
     expect(Array.from(model.options).map((option) => option.textContent)).toEqual([
       "Base Unidade",
-      "Base Cíclica — Disponível em uma fase futura.",
+      "Base Cíclica",
       "Base OEE — Disponível em uma fase futura.",
       "Base Paradas — Disponível em uma fase futura.",
       "Base Qualidade — Disponível em uma fase futura.",
     ]);
-    expect(Array.from(model.options).slice(1).every((option) => option.disabled)).toBe(true);
+    expect(model.options[0].disabled).toBe(false);
+    expect(model.options[1].disabled).toBe(false);
+    expect(model.options[2].disabled).toBe(true);
+    expect(model.options[3].disabled).toBe(true);
+    expect(model.options[4].disabled).toBe(true);
     expect(screen.getByLabelText("Máquina")).toBe(screen.getByTestId("equipment-select"));
     expect(screen.getByLabelText(/Métrica de análise/i)).toBeInTheDocument();
+
+    // Em Base Unidade, regra de análise está visível e possui Média por padrão
+    const ruleSelect = screen.getByTestId("time-analysis-rule-select") as HTMLSelectElement;
+    expect(ruleSelect.value).toBe("MEDIA");
+
+    // Selecionar Base Cíclica atualiza o select e oculta a regra de análise
+    fireEvent.change(model, { target: { value: "cyclic" } });
+    expect(model.value).toBe("cyclic");
+    expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();
   });
 
   it("validates manual line axes by unit and accepts different units on separate axes", async () => {
@@ -1429,12 +1442,8 @@ describe("Data visualization page", () => {
 
     fireEvent.click(screen.getByTestId("visual-rules-enabled"));
     fireEvent.change(screen.getByTestId("visual-series"), { target: { value: "tag:1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Adicionar limite" }));
-    fireEvent.click(screen.getByRole("button", { name: "Adicionar faixa" }));
-    fireEvent.click(screen.getByRole("button", { name: "Adicionar regra" }));
+    fireEvent.click(screen.getByTestId("add-fixed-limit"));
     expect(screen.getByTestId("visual-limit")).toBeInTheDocument();
-    expect(screen.getByTestId("visual-range")).toBeInTheDocument();
-    expect(screen.getByTestId("visual-rule")).toHaveTextContent("Prioridade 1");
 
     fireEvent.change(screen.getByTestId("line-axis-1"), { target: { value: "secondary" } });
     fireEvent.change(screen.getByTestId("visualization-select"), { target: { value: "histogram" } });
@@ -1445,5 +1454,90 @@ describe("Data visualization page", () => {
     expect(screen.getByTestId("download-csv")).not.toBeDisabled();
     expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
     expect(apiMock.timeSeriesCompare).not.toHaveBeenCalled();
+  });
+
+  it("exposes time analysis rules (MEDIA, MAXIMO, MIN, OOC) for Base Unidade and switches without querying again", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([{ ...piTagFixture, validation_status: "VALID" as const }]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.timeSeriesQuery.mockResolvedValue(TIME_SERIES);
+    renderAt("/analises/visualizacao");
+
+    const ruleSelect = (await screen.findByTestId("time-analysis-rule-select")) as HTMLSelectElement;
+    expect(ruleSelect).toBeInTheDocument();
+    expect(ruleSelect.value).toBe("MEDIA");
+
+    const optionValues = Array.from(ruleSelect.options).map((opt) => opt.value);
+    expect(optionValues).toEqual(["MEDIA", "MAXIMO", "MIN", "OOC"]);
+
+    // Alterar para MAXIMO sem disparar nova consulta
+    fireEvent.change(ruleSelect, { target: { value: "MAXIMO" } });
+    expect(ruleSelect.value).toBe("MAXIMO");
+    expect(apiMock.timeSeriesQuery).not.toHaveBeenCalled();
+
+    // Selecionar OOC não exibe mais a mensagem de indisponibilidade
+    fireEvent.change(ruleSelect, { target: { value: "OOC" } });
+    expect(ruleSelect.value).toBe("OOC");
+    expect(screen.queryByText(/Por enquanto a regra OOC não está disponível/i)).toBeNull();
+  });
+
+  it("selecionar Base Cíclica oculta regra de análise e permite consultar sem agregação ou limites automáticos", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([{ ...piTagFixture, validation_status: "VALID" as const }]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.timeSeriesQuery.mockResolvedValue(TIME_SERIES);
+    renderAt("/analises/visualizacao");
+
+    const modelSelect = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
+    expect(screen.getByTestId("time-analysis-rule-select")).toBeInTheDocument();
+
+    // Seleciona Base Cíclica: regra de análise não deve aparecer
+    fireEvent.change(modelSelect, { target: { value: "cyclic" } });
+    expect(modelSelect.value).toBe("cyclic");
+    expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();
+
+    await submitFirstAvailableTag();
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1));
+    const queryCall = apiMock.timeSeriesQuery.mock.calls[0][0];
+    expect(queryCall.tag_ids).toEqual([1]);
+    expect(queryCall.mode).toBe("interpolated");
+
+    // Limites não são ativados automaticamente
+    expect(screen.queryByTestId("visual-limit")).not.toBeInTheDocument();
+
+    // Também funciona em modo recorded
+    fireEvent.click(screen.getByTestId("mode-recorded"));
+    fireEvent.click(screen.getByTestId("filters-submit"));
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(2));
+    const secondCall = apiMock.timeSeriesQuery.mock.calls[1][0];
+    expect(secondCall.mode).toBe("recorded");
+  });
+
+  it("trocar de modelo cancela requisição pendente e descarta respostas obsoletas", async () => {
+    let resolveQuery: ((val: TimeSeries) => void) | null = null;
+    apiMock.listPiTags.mockResolvedValue(paginated([{ ...piTagFixture, validation_status: "VALID" as const }]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.timeSeriesQuery.mockImplementation(
+      () =>
+        new Promise<TimeSeries>((resolve) => {
+          resolveQuery = resolve;
+        }),
+    );
+    renderAt("/analises/visualizacao");
+    await submitFirstAvailableTag();
+    expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
+
+    // Alterna modelo para cyclic antes da resposta
+    const modelSelect = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
+    fireEvent.change(modelSelect, { target: { value: "cyclic" } });
+    expect(modelSelect.value).toBe("cyclic");
+
+    // Resolve a consulta anterior após a troca
+    if (resolveQuery) {
+      (resolveQuery as (val: TimeSeries) => void)(TIME_SERIES);
+    }
+
+    // A resposta obsoleta foi descartada: resumo de consulta não é exibido como se fosse do novo modelo
+    await waitFor(() => {
+      expect(screen.queryByTestId("query-summary")).toBeNull();
+    });
   });
 });

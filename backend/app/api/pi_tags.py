@@ -1,15 +1,22 @@
 """PiTag API endpoints."""
 from typing import Optional
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db_session, get_pi_service
+from app.api.deps import get_db_session, get_norm_limits_service, get_pi_service
 from app.api.pagination import build_paginated_response
 from app.api.query_params import pagination_params
 from app.models.pi_tag import PiTagValidationStatus
-from app.schemas.pi import PiTagValidationBatchRequest, PiTagValidationBatchResponse, PiTagValidationResult
+from app.schemas.pi import (
+    PiTagNormLimitsResponse,
+    PiTagValidationBatchRequest,
+    PiTagValidationBatchResponse,
+    PiTagValidationResult,
+    TimeSeriesMode,
+)
 from app.schemas.pi_tag import PiTagCreate, PiTagResponse, PiTagUpdate
+from app.services.pi_norm_limits_service import PiNormLimitsService
 from app.services.pi_service import PiService
 from app.services.pi_tag_service import PiTagService
 
@@ -112,3 +119,35 @@ async def validate_pi_tag(
     service: PiService = Depends(get_pi_service),
 ) -> PiTagValidationResult:
     return await service.validate_tag(pi_tag_id)
+
+
+@router.get(
+    "/{pi_tag_id}/norm-limits",
+    response_model=PiTagNormLimitsResponse,
+    summary="Consultar limites de norma (inferior e superior) da tag",
+)
+async def get_norm_limits(
+    pi_tag_id: int,
+    start_time: str = Query(..., description="Inicio do periodo (ISO 8601)."),
+    end_time: str = Query(..., description="Fim do periodo (ISO 8601)."),
+    mode: TimeSeriesMode = Query("recorded", description="Tipo de consulta."),
+    interval: Optional[str] = Query(None, description="Intervalo (obrigatorio para interpolated)."),
+    max_count: Optional[int] = Query(None, ge=1, le=1_000_000),
+    service: PiNormLimitsService = Depends(get_norm_limits_service),
+) -> PiTagNormLimitsResponse:
+    from datetime import datetime
+
+    def _parse(value: str) -> datetime:
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+
+    return await service.fetch_norm_limits(
+        source_tag_id=pi_tag_id,
+        start_time=_parse(start_time),
+        end_time=_parse(end_time),
+        mode=mode,
+        interval=interval,
+        max_count=max_count,
+    )

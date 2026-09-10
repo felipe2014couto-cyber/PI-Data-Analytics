@@ -8,6 +8,7 @@ import type {
   PiHealth,
   PiTag,
   PiTagCreate,
+  PiTagNormLimitsResponse,
   PiTagUpdate,
   PiTagValidationBatchResponse,
   PiTagValidationResult,
@@ -153,6 +154,26 @@ export const piTagsApi = {
   },
   validateBatch(tagIds?: number[]) {
     return httpClient.post<PiTagValidationBatchResponse>("/pi-tags/validate", { tag_ids: tagIds ?? null });
+  },
+  getNormLimits(
+    id: number,
+    params: {
+      start_time: string;
+      end_time: string;
+      mode: TimeSeriesMode;
+      interval?: string;
+      max_count?: number;
+    },
+    signal?: AbortSignal,
+  ) {
+    const query: Record<string, unknown> = {
+      start_time: params.start_time,
+      end_time: params.end_time,
+      mode: params.mode,
+    };
+    if (params.interval) query.interval = params.interval;
+    if (params.max_count !== undefined) query.max_count = params.max_count;
+    return httpClient.get<PiTagNormLimitsResponse>(`/pi-tags/${id}/norm-limits`, query, signal);
   },
 };
 

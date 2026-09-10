@@ -63,7 +63,15 @@ class UserService:
 
     def change_password(self, user: User, current_password: str, new_password: str) -> None:
         if not verify_password(current_password, user.password_hash): raise AuthenticationError("Senha atual invalida.")
-        user.password_hash = hash_password(new_password); user.must_change_password = False; user.auth_version += 1; self._commit(); self.db.refresh(user)
+        db_user = self.get(user.id)
+        db_user.password_hash = hash_password(new_password)
+        db_user.must_change_password = False
+        db_user.auth_version += 1
+        self._commit()
+        self.db.refresh(db_user)
+        user.password_hash = db_user.password_hash
+        user.must_change_password = False
+        user.auth_version = db_user.auth_version
 
     def reset_password(self, user_id: str, new_password: str) -> User:
         user = self.get(user_id); user.password_hash = hash_password(new_password); user.must_change_password = True; user.auth_version += 1; self._commit(); self.db.refresh(user); return user

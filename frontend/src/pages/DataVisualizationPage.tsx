@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
 
-import { equipmentsApi, piApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
+import { equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
 import { ApiError } from "../api/http";
 import type {
   DataFilterConfiguration,
   Equipment,
   AnalysisModel,
+  TimeAnalysisRule,
   PiHealth,
   PiTag,
   Section,
@@ -21,6 +22,7 @@ import type {
   VisualizationType,
   VisualRulesState,
   VisualConfigurationDocument,
+  PiTagNormLimitsResponse,
 } from "../types";
 import { DataFiltersPanel } from "../components/DataFiltersPanel";
 import { SeriesAssignmentsPanel, type SeriesConfigurationTag } from "../components/SeriesAssignmentsPanel";
@@ -37,7 +39,7 @@ import { MetricResults } from "../components/MetricResults";
 import { VisualRulesPanel, type VisualSeriesOption } from "../components/VisualRulesPanel";
 import { VisualConfigurationsPanel } from "../components/VisualConfigurationsPanel";
 import { PageHeader } from "../components/PageHeader";
-import { AdvancedFiltersPanel } from "../components/AdvancedFiltersPanel";
+import { AdvancedFiltersPanel, stripRetiredNamedFilterRules } from "../components/AdvancedFiltersPanel";
 import { applyLineAssignments, buildChartDataGroups, resolveVisualization } from "../utils/chartData";
 import { downloadTimeSeriesCsv, buildCsvFilename, buildTimeSeriesCsv, downloadBlob } from "../utils/csv";
 import { applyDataFilters } from "../utils/dataFilters";
@@ -63,6 +65,11 @@ import {
 } from "../utils/seriesAssignments";
 import { calculateMetricResults } from "../utils/analysisMetrics";
 import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument, type PersistablePageState } from "../utils/visualConfiguration";
+import { applyTimeAnalysisRule } from "../utils/timeAnalysisRule";
+import { buildNormLimitSeries, type NormLimitSeries } from "../utils/normLimitSeries";
+import { buildUmChartSeries, type UmChartSeries } from "../utils/umChartSeries";
+import { EMPTY_VISUAL_CONFIGURATION, defaultNormLimitConfig } from "../utils/visualRules";
+import type { ChartSeries } from "../utils/chartData";
 
 const DEFAULT_MAX_COUNT = 2000;
 
@@ -80,6 +87,8 @@ function _generateQueryId(): string {
   });
 }
 
+const NORM_LIMIT_CACHE_LIMIT = 50;
+
 interface FiltersState {
   analysisModel: AnalysisModel;
   equipmentId: number | null;
@@ -94,6 +103,7 @@ interface FiltersState {
   targetPointsPerTag: number;
   ignoreBadQuality: boolean;
   visualization: VisualizationType;
+  timeAnalysisRule: TimeAnalysisRule;
   filtersEnabled: boolean;
   filterConfiguration: DataFilterConfiguration;
 }
@@ -117,6 +127,7 @@ const INITIAL_FILTERS: FiltersState = {
   targetPointsPerTag: 10000,
   ignoreBadQuality: true,
   visualization: "automatic",
+  timeAnalysisRule: "MEDIA",
   filtersEnabled: true,
   filterConfiguration: INITIAL_FILTER_CONFIG,
 };
@@ -188,6 +199,17 @@ export function DataVisualizationPage() {
   const [query, setQuery] = useState<QueryState>(INITIAL_QUERY);
   const [comparison, setComparison] = useState<ComparisonState>(INITIAL_COMPARISON);
   const [visualRules, setVisualRules] = useState<VisualRulesState>(INITIAL_VISUAL_RULES);
+  const [resolvedLimitSeries, setResolvedLimitSeries] = useState<ChartSeries[]>([]);
+  const limitAbortRef = useRef<AbortController | null>(null);
+  const [rawNormResponses, setRawNormResponses] = useState<
+    Record<string, { tag: PiTag; response: PiTagNormLimitsResponse }>
+  >({});
+  const [normLimitErrors, setNormLimitErrors] = useState<Record<string, string>>({});
+  const [normLimitLoading, setNormLimitLoading] = useState<Record<string, boolean>>({});
+  const normLimitAbortRef = useRef<AbortController | null>(null);
+  const normLimitCacheRef = useRef<Map<string, PiTagNormLimitsResponse>>(new Map());
+  const normLimitInFlightRef = useRef<Map<string, Promise<PiTagNormLimitsResponse>>>(new Map());
+  const activeNormContextKeyRef = useRef<string>("");
 
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
@@ -270,8 +292,8 @@ export function DataVisualizationPage() {
   const variableTypeMap = useMemo(() => new Map(variableTypes.map((v) => [v.id, v])), [variableTypes]);
 
   // As tags vinculadas à seção/equipamento são séries auxiliares: entram na
-  // consulta para que os filtros de largura, UM e espessura possam mascarar
-  // as demais séries, mas não aparecem como curvas adicionais no gráfico.
+  // consulta para que os filtros de largura e espessura possam mascarar
+  // as demais séries. A UM é exibida no gráfico (não é ocultada).
   const analysisTagIds = useMemo(() => {
     const candidateSections = sections.filter((section) => {
       if (filters.sectionId) return section.id === filters.sectionId;
@@ -291,8 +313,15 @@ export function DataVisualizationPage() {
     };
   }, [filters.equipmentId, filters.sectionId, sections, tags]);
 
+  // IDs das tags internas que devem permanecer ocultas no gráfico
+  // (somente largura e espessura). A UM é exibida em eixo próprio.
   const analysisContextTagIds = useMemo(
-    () => new Set(Object.values(analysisTagIds).filter((tagId): tagId is number => tagId !== null)),
+    () => {
+      const ids = new Set<number>();
+      if (analysisTagIds.width !== null) ids.add(analysisTagIds.width);
+      if (analysisTagIds.thickness !== null) ids.add(analysisTagIds.thickness);
+      return ids;
+    },
     [analysisTagIds],
   );
   const analysisHiddenTagIds = useMemo(
@@ -302,7 +331,12 @@ export function DataVisualizationPage() {
     [analysisContextTagIds, selectedTagIds],
   );
   const queryTagIds = useMemo(
-    () => Array.from(new Set([...selectedTagIds, ...analysisContextTagIds])),
+    () => {
+      // Tags selecionadas pelo usuário + tags de contexto de largura/espessura (para mascaramento interno)
+      // A UM NÃO entra automaticamente: só entra se o usuário selecioná-la explicitamente em selectedTagIds.
+      const set = new Set<number>([...selectedTagIds, ...analysisContextTagIds]);
+      return Array.from(set);
+    },
     [analysisContextTagIds, selectedTagIds],
   );
 
@@ -429,42 +463,60 @@ export function DataVisualizationPage() {
   }, [analysisHiddenTagIds, filterResult, orderedTimeSeries]);
 
   const chartTimeSeries: TimeSeries | null = useMemo(() => {
+    let baseSeries: TimeSeries | null;
     if (!filteredTimeSeries || !filterResult || filterResult.summary.removedPoints === 0) {
-      return filteredTimeSeries;
+      baseSeries = filteredTimeSeries;
+    } else {
+      const filteredBySeries = new Map(
+        filteredTimeSeries.series.map((series) => [
+          series.series_instance_id ?? `tag:${series.tag_id}`,
+          new Map(series.points.map((point) => [point.timestamp, point])),
+        ]),
+      );
+      baseSeries = {
+        ...filteredTimeSeries,
+        series: filteredTimeSeries.series.map((series) => {
+          const seriesKey = series.series_instance_id ?? `tag:${series.tag_id}`;
+          const keptPoints = filteredBySeries.get(seriesKey);
+          const originalSeries = orderedTimeSeries?.series.find(
+            (candidate) => (candidate.series_instance_id ?? `tag:${candidate.tag_id}`) === seriesKey,
+          );
+          if (!keptPoints || !originalSeries) return series;
+          return {
+            ...series,
+            points: originalSeries.points.map((point) =>
+              keptPoints.has(point.timestamp)
+                ? keptPoints.get(point.timestamp)!
+                : { ...point, value: null, filtered_out: true },
+            ),
+          };
+        }),
+      };
     }
-    const filteredBySeries = new Map(
-      filteredTimeSeries.series.map((series) => [
-        series.series_instance_id ?? `tag:${series.tag_id}`,
-        new Map(series.points.map((point) => [point.timestamp, point])),
-      ]),
-    );
+    if (!baseSeries) return null;
+    if (filters.analysisModel === "cyclic") {
+      return baseSeries;
+    }
+    return applyTimeAnalysisRule(baseSeries, filters.timeAnalysisRule);
+  }, [filterResult, filteredTimeSeries, orderedTimeSeries, filters.timeAnalysisRule, filters.analysisModel]);
+
+  // Extrai a série da UM antes do agrupamento para que ela não seja classificada
+  // como textual e renderizada em gráfico de estados separado. A UM é
+  // renderizada separadamente com eixo próprio dentro do mesmo TimeSeriesChart.
+  const chartTimeSeriesWithoutUm: TimeSeries | null = useMemo(() => {
+    if (!chartTimeSeries || analysisTagIds.um === null) return chartTimeSeries;
     return {
-      ...filteredTimeSeries,
-      series: filteredTimeSeries.series.map((series) => {
-        const seriesKey = series.series_instance_id ?? `tag:${series.tag_id}`;
-        const keptPoints = filteredBySeries.get(seriesKey);
-        const originalSeries = orderedTimeSeries?.series.find(
-          (candidate) => (candidate.series_instance_id ?? `tag:${candidate.tag_id}`) === seriesKey,
-        );
-        if (!keptPoints || !originalSeries) return series;
-        return {
-          ...series,
-          points: originalSeries.points.map((point) =>
-            keptPoints.has(point.timestamp)
-              ? keptPoints.get(point.timestamp)!
-              : { ...point, value: null, filtered_out: true },
-          ),
-        };
-      }),
+      ...chartTimeSeries,
+      series: chartTimeSeries.series.filter((series) => series.tag_id !== analysisTagIds.um),
     };
-  }, [filterResult, filteredTimeSeries, orderedTimeSeries]);
+  }, [chartTimeSeries, analysisTagIds.um]);
 
   const chartGroups = useMemo(() => {
-    if (!chartTimeSeries) return null;
-    return buildChartDataGroups(chartTimeSeries, {
+    if (!chartTimeSeriesWithoutUm) return null;
+    return buildChartDataGroups(chartTimeSeriesWithoutUm, {
       ignoreBadQuality: false,
     });
-  }, [chartTimeSeries]);
+  }, [chartTimeSeriesWithoutUm]);
   const chart = chartGroups?.summary ?? null;
   const visualizationPlan = useMemo(
     () => (chartGroups ? resolveVisualization(chartGroups, filters.visualization) : null),
@@ -592,6 +644,27 @@ export function DataVisualizationPage() {
     }));
   }, [analysisHiddenTagIds, query.timeSeries, selectedTagIds, tags]);
 
+  const piTagById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
+
+  const seriesToPiTag = useMemo(() => {
+    const map = new Map<string, PiTag>();
+    if (query.timeSeries) {
+      for (const s of query.timeSeries.series) {
+        if (analysisHiddenTagIds.has(s.tag_id)) continue;
+        const piTag = piTagById.get(s.tag_id);
+        const instanceId = s.series_instance_id ?? `tag:${s.tag_id}`;
+        if (piTag) map.set(instanceId, piTag);
+      }
+    } else {
+      const selected = new Set(selectedTagIds);
+      for (const tag of tags) {
+        if (!selected.has(tag.id)) continue;
+        map.set(`tag:${tag.id}`, tag);
+      }
+    }
+    return map;
+  }, [analysisHiddenTagIds, piTagById, query.timeSeries, selectedTagIds, tags]);
+
   const advancedFilterTagOptions = useMemo(() => {
     const visibleOptions = selectedAssignmentTags.map((tag) => {
       const piTag = tags.find((item) => item.id === tag.tagId);
@@ -643,7 +716,29 @@ export function DataVisualizationPage() {
   };
 
   const handleTagsChange = (ids: number[]) => {
-    setSelectedTagIds(ids);
+    const tagsById = new Map(tags.map((tag) => [tag.id, tag]));
+    const tagsByName = new Map(tags.map((tag) => [tag.pi_tag_name, tag]));
+    const expanded = new Set(ids);
+    for (const id of ids) {
+      const tag = tagsById.get(id);
+      if (!tag) continue;
+      const lowerName = tag.lower_limit_tag?.trim();
+      if (lowerName) {
+        const lowerTag = tagsByName.get(lowerName);
+        if (lowerTag) expanded.add(lowerTag.id);
+      }
+      const upperName = tag.upper_limit_tag?.trim();
+      if (upperName) {
+        const upperTag = tagsByName.get(upperName);
+        if (upperTag) expanded.add(upperTag.id);
+      }
+    }
+    const merged = Array.from(expanded);
+    if (merged.length === ids.length && merged.every((id, index) => id === ids[index])) {
+      setSelectedTagIds(ids);
+    } else {
+      setSelectedTagIds(merged);
+    }
   };
 
   const handleFilterConfigurationChange = (filterConfiguration: DataFilterConfiguration) => {
@@ -661,7 +756,36 @@ export function DataVisualizationPage() {
     cancelledQueryIdsRef.current.add(qid);
     setCancelling(true);
     abortRef.current?.abort();
-    timeSeriesApi.cancelQuery(qid).catch(() => {});
+    void Promise.resolve(timeSeriesApi.cancelQuery(qid)).catch(() => {});
+  };
+
+  const handleAnalysisModelChange = (analysisModel: AnalysisModel) => {
+    if (analysisModel === filters.analysisModel) return;
+
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    if (queryIdRef.current) {
+      const qid = queryIdRef.current;
+      if (!cancelledQueryIdsRef.current.has(qid)) {
+        cancelledQueryIdsRef.current.add(qid);
+        void Promise.resolve(timeSeriesApi.cancelQuery(qid)).catch(() => {});
+      }
+      queryIdRef.current = null;
+    }
+    requestSeqRef.current += 1;
+    setCancelling(false);
+
+    setFilters((prev) => ({
+      ...prev,
+      analysisModel,
+      timeAnalysisRule:
+        analysisModel === "cyclic"
+          ? "DEFAULT"
+          : prev.timeAnalysisRule === "DEFAULT"
+          ? "MEDIA"
+          : prev.timeAnalysisRule,
+    }));
   };
 
   const handleClear = () => {
@@ -696,7 +820,17 @@ export function DataVisualizationPage() {
       visualRules: INITIAL_VISUAL_RULES,
     };
     const restored = normalizeVisualConfigurationDocument(document, defaults, APPLICATION_TIMEZONE);
-    setFilters({ ...restored.filters, filtersEnabled: restored.filters.filtersEnabled ?? true });
+    const baseFilterConfiguration = restored.filters.filterConfiguration ?? { quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false }, rules: [] };
+    const cleanedFilterConfiguration = {
+      ...baseFilterConfiguration,
+      rules: stripRetiredNamedFilterRules(baseFilterConfiguration.rules),
+    };
+    setFilters({
+      ...restored.filters,
+      timeAnalysisRule: restored.filters.timeAnalysisRule ?? "DEFAULT",
+      filtersEnabled: restored.filters.filtersEnabled ?? true,
+      filterConfiguration: cleanedFilterConfiguration,
+    });
     setSelectedTagIds(restored.selectedTagIds);
     setSeriesAssignments(restored.seriesAssignments);
     setMetricConfiguration(restored.metricConfiguration);
@@ -707,7 +841,7 @@ export function DataVisualizationPage() {
   };
 
   const computeValidationError = (): string | null => {
-    if (filters.analysisModel !== "unit") return "O modelo selecionado ainda não está disponível.";
+    if (filters.analysisModel !== "unit" && filters.analysisModel !== "cyclic") return "O modelo selecionado ainda não está disponível.";
     if (!filters.equipmentId) return "Selecione uma máquina.";
     if (!selectedTagIds.length) return "Selecione ao menos uma tag.";
     if (comparison.type === "periods") {
@@ -904,6 +1038,347 @@ export function DataVisualizationPage() {
   const chartStart = resolvedForResult ? new Date(resolvedForResult.startTime) : new Date(0);
   const chartEnd = resolvedForResult ? new Date(resolvedForResult.endTime) : new Date(0);
 
+  const selectedSeriesInstanceId = visualRules.selectedSeriesInstanceId;
+  const selectedPiTagForNorm = selectedSeriesInstanceId ? seriesToPiTag.get(selectedSeriesInstanceId) ?? null : null;
+
+  const normEnabledSeriesKey = useMemo(() => {
+    if (!visualRules.enabled) return "";
+    const list: string[] = [];
+    for (const [instanceId, cfg] of Object.entries(visualRules.bySeries)) {
+      if (cfg.normLimit?.enabled) list.push(instanceId);
+    }
+    return list.sort().join(",");
+  }, [visualRules.enabled, visualRules.bySeries]);
+
+  // Conjunto final de séries com limites de norma ativos. Reflete estritamente
+  // o que o usuário habilitou manualmente no painel visual (inclusive no modo OOC).
+  const effectiveNormEnabledKey = normEnabledSeriesKey;
+
+  const effectiveNormEnabledSeries = useMemo(() => {
+    if (!effectiveNormEnabledKey) return new Set<string>();
+    return new Set<string>(effectiveNormEnabledKey.split(","));
+  }, [effectiveNormEnabledKey]);
+
+  // Constrói a série da UM a partir do chartTimeSeries original somente quando
+  // a tag da UM estiver explicitamente marcada/selecionada pelo usuário em selectedTagIds.
+  const isUmSelected = useMemo(() => {
+    if (analysisTagIds.um === null) return false;
+    return selectedTagIds.includes(analysisTagIds.um);
+  }, [analysisTagIds.um, selectedTagIds]);
+
+  const umChartSeries: UmChartSeries | null = useMemo(() => {
+    if (!isUmSelected || !chartTimeSeries || analysisTagIds.um === null) return null;
+    const umTimeSeries = chartTimeSeries.series.find((series) => series.tag_id === analysisTagIds.um);
+    if (!umTimeSeries) return null;
+    const color = "#0288d1";
+    const endIso = new Date(chartEnd.getTime() + 1).toISOString();
+    return buildUmChartSeries({
+      seriesInstanceId: umTimeSeries.series_instance_id ?? `tag:${umTimeSeries.tag_id}`,
+      tagId: umTimeSeries.tag_id,
+      tagName: umTimeSeries.tag_name,
+      displayName: `UM (${umTimeSeries.tag_name})`,
+      unit: umTimeSeries.unit,
+      color,
+      points: umTimeSeries.points.map((point) => ({
+        timestamp: point.timestamp,
+        value: point.value,
+        good: point.good,
+        questionable: point.questionable,
+        substituted: point.substituted,
+      })),
+      endTimeIso: endIso,
+    });
+  }, [isUmSelected, chartTimeSeries, analysisTagIds.um, chartEnd]);
+
+  const handleAddNormLimit = useCallback((seriesInstanceId: string) => {
+    setVisualRules((current) => {
+      const cfg = current.bySeries[seriesInstanceId] ?? EMPTY_VISUAL_CONFIGURATION(seriesInstanceId);
+      if (cfg.normLimit?.enabled) return current;
+      return {
+        ...current,
+        bySeries: {
+          ...current.bySeries,
+          [seriesInstanceId]: { ...cfg, normLimit: defaultNormLimitConfig() },
+        },
+      };
+    });
+  }, []);
+
+  const handleRemoveNormLimit = useCallback((seriesInstanceId: string) => {
+    setVisualRules((current) => {
+      const cfg = current.bySeries[seriesInstanceId];
+      if (!cfg) return current;
+      const nextCfg: typeof cfg = { ...cfg, normLimit: null };
+      return {
+        ...current,
+        bySeries: { ...current.bySeries, [seriesInstanceId]: nextCfg },
+      };
+    });
+    setRawNormResponses((current) => {
+      if (!(seriesInstanceId in current)) return current;
+      const { [seriesInstanceId]: _drop, ...rest } = current;
+      return rest;
+    });
+    setNormLimitErrors((current) => {
+      const { [seriesInstanceId]: _drop, ...rest } = current;
+      return rest;
+    });
+  }, []);
+
+  const effectiveNormQuery = useMemo(() => {
+    if (!resolvedForResult || !effectiveNormEnabledKey) {
+      return {
+        key: "",
+        startTimeIso: "",
+        endTimeIso: "",
+        mode: filters.mode,
+        interval: filters.mode === "interpolated" ? filters.interval : undefined,
+        items: [] as Array<{
+          instanceId: string;
+          tagId: number;
+          displayName: string;
+          cacheKey: string;
+        }>,
+      };
+    }
+
+    const startTimeIso = chartStart.toISOString();
+    const endTimeIso = chartEnd.toISOString();
+    const interval = filters.mode === "interpolated" ? filters.interval : undefined;
+    const sortedIds = effectiveNormEnabledKey.split(",").filter(Boolean);
+
+    const items = sortedIds
+      .map((instanceId) => {
+        const piTag = seriesToPiTag.get(instanceId);
+        const tagId = piTag?.id ?? 0;
+        const lowerRef = piTag?.lower_limit_tag ?? "";
+        const upperRef = piTag?.upper_limit_tag ?? "";
+        const cacheKey = `${filters.analysisModel}|${tagId}|${lowerRef}|${upperRef}|${startTimeIso}|${endTimeIso}|${filters.mode}|${interval ?? ""}`;
+        return {
+          instanceId,
+          tagId,
+          displayName: piTag?.display_name ?? instanceId,
+          cacheKey,
+        };
+      })
+      .filter((item) => item.tagId > 0);
+
+    const key =
+      `${filters.mode}|${interval ?? ""}|${startTimeIso}|${endTimeIso}|` +
+      items.map((it) => `${it.instanceId}:${it.cacheKey}`).join(";");
+
+    return {
+      key,
+      startTimeIso,
+      endTimeIso,
+      mode: filters.mode,
+      interval,
+      items,
+    };
+  }, [
+    resolvedForResult,
+    effectiveNormEnabledKey,
+    seriesToPiTag,
+    chartStart,
+    chartEnd,
+    filters.analysisModel,
+    filters.mode,
+    filters.interval,
+  ]);
+
+  useEffect(() => {
+    normLimitAbortRef.current?.abort();
+    if (!effectiveNormQuery.key || effectiveNormQuery.items.length === 0) {
+      setRawNormResponses((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      setNormLimitErrors((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      setNormLimitLoading((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+
+    const currentKey = effectiveNormQuery.key;
+    activeNormContextKeyRef.current = currentKey;
+
+    const controller = new AbortController();
+    normLimitAbortRef.current = controller;
+
+    const loadingMap: Record<string, boolean> = {};
+    for (const item of effectiveNormQuery.items) {
+      if (!normLimitCacheRef.current.has(item.cacheKey)) {
+        loadingMap[item.instanceId] = true;
+      }
+    }
+    setNormLimitLoading(loadingMap);
+
+    void (async () => {
+      try {
+        const nextData: Record<string, { tag: PiTag; response: PiTagNormLimitsResponse }> = {};
+        const nextErrors: Record<string, string> = {};
+
+        await Promise.all(
+          effectiveNormQuery.items.map(async (item) => {
+            if (controller.signal.aborted || activeNormContextKeyRef.current !== currentKey) {
+              return;
+            }
+            try {
+              let response: PiTagNormLimitsResponse | undefined = normLimitCacheRef.current.get(item.cacheKey);
+              if (!response) {
+                let inFlight = normLimitInFlightRef.current.get(item.cacheKey);
+                if (!inFlight) {
+                  inFlight = piTagsApi
+                    .getNormLimits(
+                      item.tagId,
+                      {
+                        start_time: effectiveNormQuery.startTimeIso,
+                        end_time: effectiveNormQuery.endTimeIso,
+                        mode: effectiveNormQuery.mode,
+                        interval: effectiveNormQuery.interval,
+                      },
+                      controller.signal,
+                    )
+                    .then((res) => {
+                      const cache = normLimitCacheRef.current;
+                      if (cache.has(item.cacheKey)) {
+                        cache.delete(item.cacheKey);
+                      } else if (cache.size >= NORM_LIMIT_CACHE_LIMIT) {
+                        const oldestKey = cache.keys().next().value;
+                        if (oldestKey !== undefined) cache.delete(oldestKey);
+                      }
+                      cache.set(item.cacheKey, res);
+                      return res;
+                    })
+                    .finally(() => {
+                      normLimitInFlightRef.current.delete(item.cacheKey);
+                    });
+                  normLimitInFlightRef.current.set(item.cacheKey, inFlight);
+                }
+                response = await inFlight;
+              }
+
+              if (controller.signal.aborted || activeNormContextKeyRef.current !== currentKey) {
+                return;
+              }
+
+              const tag = seriesToPiTag.get(item.instanceId);
+              if (tag) {
+                nextData[item.instanceId] = { tag, response };
+              }
+              if (response.errors?.length) {
+                nextErrors[item.instanceId] = `${item.displayName}: ${response.errors.join(" ")}`;
+              }
+            } catch (err) {
+              if (controller.signal.aborted || activeNormContextKeyRef.current !== currentKey) {
+                return;
+              }
+              nextErrors[item.instanceId] = `${item.displayName}: ${
+                err instanceof ApiError ? err.message : "Não foi possível consultar os limites de norma."
+              }`;
+            }
+          }),
+        );
+
+        if (controller.signal.aborted || activeNormContextKeyRef.current !== currentKey) {
+          return;
+        }
+
+        setRawNormResponses(nextData);
+        setNormLimitErrors(nextErrors);
+        setNormLimitLoading({});
+      } catch {
+        // already handled per-entry
+      }
+    })();
+
+    return () => {
+      controller.abort();
+    };
+  }, [effectiveNormQuery, seriesToPiTag]);
+
+  const normLimitSeries = useMemo<NormLimitSeries[]>(() => {
+    if (effectiveNormEnabledSeries.size === 0) return [];
+    const out: NormLimitSeries[] = [];
+    for (const instanceId of effectiveNormEnabledSeries) {
+      const entry = rawNormResponses[instanceId];
+      if (!entry) continue;
+      const { tag, response } = entry;
+      const cfg = visualRules.bySeries[instanceId];
+      const configNorm = cfg?.normLimit ?? defaultNormLimitConfig();
+      const targetSeries = numericChart?.series.find(
+        (s) => (s.seriesInstanceId ?? `tag:${s.tagId}`) === instanceId,
+      );
+      const yAxisIndex = targetSeries?.yAxisIndex ?? 0;
+      out.push(
+        buildNormLimitSeries({
+          seriesInstanceId: instanceId,
+          tagName: tag.pi_tag_name,
+          mainDisplayName: tag.display_name,
+          lowerTagName: response.lower.tag_name ?? tag.lower_limit_tag ?? null,
+          upperTagName: response.upper.tag_name ?? tag.upper_limit_tag ?? null,
+          yAxisIndex,
+          lineStyle: configNorm.lineStyle,
+          width: configNorm.width,
+          lowerColor: configNorm.lowerColor,
+          upperColor: configNorm.upperColor,
+          lowerPoints: response.lower.points,
+          upperPoints: response.upper.points,
+          startTimeIso: chartStart.toISOString(),
+          endTimeIso: chartEnd.toISOString(),
+        }),
+      );
+    }
+    return out;
+  }, [
+    effectiveNormEnabledSeries,
+    rawNormResponses,
+    visualRules.bySeries,
+    numericChart,
+    chartStart,
+    chartEnd,
+  ]);
+
+  const normLimitRuntime = useMemo(() => {
+    const map: Record<
+      string,
+      {
+        status: "idle" | "loading" | "ready" | "error";
+        error: string | null;
+        lowerTagName: string | null;
+        upperTagName: string | null;
+      }
+    > = {};
+    for (const s of normLimitSeries) {
+      map[s.seriesInstanceId] = { status: "ready", error: null, lowerTagName: s.tagName, upperTagName: s.tagName };
+    }
+    for (const [instanceId, message] of Object.entries(normLimitErrors)) {
+      const existing = map[instanceId] ?? {
+        status: "error" as const,
+        error: null,
+        lowerTagName: null,
+        upperTagName: null,
+      };
+      map[instanceId] = { ...existing, status: "error", error: message };
+    }
+    for (const [instanceId, loading] of Object.entries(normLimitLoading)) {
+      if (loading && !map[instanceId]) {
+        map[instanceId] = { status: "loading", error: null, lowerTagName: null, upperTagName: null };
+      }
+    }
+    return map;
+  }, [normLimitSeries, normLimitErrors, normLimitLoading]);
+
+  const displayedNormLimitSeries = normLimitSeries;
+
+  const allPimsTagLimits = useMemo(() => {
+    return [];
+  }, [visualRules]);
+
+  useEffect(() => {
+    // Pims-tag legacy limits were replaced by norm limits; nothing to resolve here.
+    if (allPimsTagLimits.length === 0) {
+      limitAbortRef.current?.abort();
+      setResolvedLimitSeries([]);
+    }
+  }, [allPimsTagLimits]);
+
   const equipmentTitle = selectedEquipment?.code ?? "Máquina";
 
   const handleCsvComplete = useCallback(async () => {
@@ -1007,7 +1482,7 @@ export function DataVisualizationPage() {
               size="sm"
               className="btn-piad-primary"
               onClick={handleSubmit}
-              disabled={query.loading || Boolean(periodPreview.error) || filters.analysisModel !== "unit"}
+              disabled={query.loading || Boolean(periodPreview.error) || (filters.analysisModel !== "unit" && filters.analysisModel !== "cyclic")}
               data-testid="filters-submit-top"
             >
               <i className="bi bi-search me-1" /> {query.loading ? "Consultando..." : "Consultar"}
@@ -1068,7 +1543,9 @@ export function DataVisualizationPage() {
                 timePeriodError={periodPreview.error}
                 timePeriodSummary={periodPreview.resolved ? formatResolvedTimePeriod(periodPreview.resolved) : null}
                 analysisModel={filters.analysisModel}
-                onAnalysisModelChange={(analysisModel) => setFilters((prev) => ({ ...prev, analysisModel }))}
+                onAnalysisModelChange={handleAnalysisModelChange}
+                timeAnalysisRule={filters.timeAnalysisRule}
+                onTimeAnalysisRuleChange={(timeAnalysisRule) => setFilters((prev) => ({ ...prev, timeAnalysisRule }))}
                 mode={filters.mode}
                 onModeChange={(mode) => setFilters((prev) => ({ ...prev, mode }))}
                 interval={filters.interval}
@@ -1112,7 +1589,25 @@ export function DataVisualizationPage() {
                     }}
                   />
                 }
-                visualConfiguration={<VisualRulesPanel state={visualRules} series={visualSeriesOptions} onChange={setVisualRules} />}
+                visualConfiguration={
+                  <VisualRulesPanel
+                    state={visualRules}
+                    series={visualSeriesOptions}
+                    onChange={setVisualRules}
+                    onAddNormLimit={handleAddNormLimit}
+                    onRemoveNormLimit={handleRemoveNormLimit}
+                    normLimits={normLimitRuntime}
+                    selectedPiTag={
+                      selectedPiTagForNorm
+                        ? {
+                            id: selectedPiTagForNorm.id,
+                            lowerLimitTag: selectedPiTagForNorm.lower_limit_tag ?? null,
+                            upperLimitTag: selectedPiTagForNorm.upper_limit_tag ?? null,
+                          }
+                        : null
+                    }
+                  />
+                }
                 metricConfiguration={
                   <MetricConfigurationPanel
                     configuration={metricConfiguration}
@@ -1122,6 +1617,7 @@ export function DataVisualizationPage() {
                 }
                 advancedFilters={
                   <AdvancedFiltersPanel
+                    initialExpanded={false}
                     configuration={filters.filterConfiguration}
                     enabled={filters.filtersEnabled}
                     tagOptions={advancedFilterTagOptions}
@@ -1205,6 +1701,16 @@ export function DataVisualizationPage() {
                       {showBothCharts ? (
                         <h5 className="mb-2">Séries numéricas</h5>
                       ) : null}
+                      {Object.keys(normLimitErrors).length > 0 ? (
+                        <Alert variant="warning" className="py-2 mb-2" data-testid="limit-errors">
+                          <div className="fw-semibold mb-1">Limites com problema</div>
+                          <ul className="mb-0 ps-3">
+                            {Object.entries(normLimitErrors).map(([limitId, message]) => (
+                              <li key={limitId}>{message}</li>
+                            ))}
+                          </ul>
+                        </Alert>
+                      ) : null}
                       <TimeSeriesChart
                         chart={numericChart}
                         equipment={equipmentTitle}
@@ -1216,6 +1722,9 @@ export function DataVisualizationPage() {
                           filters.visualization === "line" ? "Linha temporal" : undefined
                         }
                         visualRules={visualRules}
+                        limitSeries={resolvedLimitSeries}
+                        normLimitSeries={displayedNormLimitSeries}
+                        umSeries={umChartSeries}
                       />
                     </div>
                   ) : null}

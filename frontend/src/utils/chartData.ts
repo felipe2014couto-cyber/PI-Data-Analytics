@@ -24,7 +24,7 @@ export const PALETTE = [
   "#e64a19",
 ];
 
-export type ChartValueKind = "numeric" | "textual" | "mixed" | "empty";
+export type ChartValueKind = "numeric" | "textual" | "categorical" | "mixed" | "empty";
 
 export type ChartQuality = 0 | 1 | 2 | 3;
 
@@ -106,8 +106,11 @@ function classifyValue(value: TimeSeriesPoint["value"]): ChartValueKind {
   if (isNumericValue(value)) {
     return "numeric";
   }
-  if (typeof value === "string" || typeof value === "boolean") {
-    return "textual";
+  if (typeof value === "boolean") {
+    return "categorical";
+  }
+  if (typeof value === "string") {
+    return "categorical";
   }
   return "empty";
 }
@@ -298,7 +301,7 @@ export function buildChartDataGroups(
     (_, index) => summary.series[index]?.valueKind === "numeric",
   );
   const textualSeries = timeSeries.series.filter(
-    (_, index) => summary.series[index]?.valueKind === "textual",
+    (_, index) => summary.series[index]?.valueKind === "textual" || summary.series[index]?.valueKind === "categorical",
   );
 
   return {

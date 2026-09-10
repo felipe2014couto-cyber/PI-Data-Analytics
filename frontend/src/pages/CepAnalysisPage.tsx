@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Badge, Button, Card, Col, Form, Modal, ProgressBar, Row, Table } from "react-bootstrap";
 import type { EChartsOption } from "echarts";
 
@@ -110,6 +110,7 @@ function CepVariableSeriesPanel({
   loading: boolean;
   error: string | null;
 }) {
+  const seriesChartOption = useMemo(() => (series ? buildCepSeriesChartOption(series) : null), [series]);
   if (loading) return <div className="text-muted py-3">Carregando série...</div>;
   if (error) return <Alert variant="danger" className="mb-0">{error}</Alert>;
   if (!series) return null;
@@ -125,7 +126,7 @@ function CepVariableSeriesPanel({
       {series.points.length === 0 ? (
         <Alert variant="secondary" className="mb-0">A tag não possui pontos Interpolated no período.</Alert>
       ) : (
-        <EChartsWrapper option={buildCepSeriesChartOption(series)} height={360} />
+        seriesChartOption ? <EChartsWrapper option={seriesChartOption} height={360} /> : null
       )}
     </div>
   );

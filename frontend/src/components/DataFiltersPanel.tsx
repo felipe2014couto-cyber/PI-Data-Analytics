@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 
 import { TagMultiSelect, type TagOption } from "./TagMultiSelect";
 import { APPLICATION_TIMEZONE, TIME_PRESET_OPTIONS } from "../utils/timePeriod";
-import type { AnalysisModel, TimePeriod, TimePreset, TimeSeriesMode, VisualizationType } from "../types";
+import type { AnalysisModel, TimeAnalysisRule, TimePeriod, TimePreset, TimeSeriesMode, VisualizationType } from "../types";
 
 export type { TagOption };
 
@@ -50,6 +50,9 @@ interface DataFiltersPanelProps {
 
   analysisModel: AnalysisModel;
   onAnalysisModelChange: (model: AnalysisModel) => void;
+
+  timeAnalysisRule: TimeAnalysisRule;
+  onTimeAnalysisRuleChange: (rule: TimeAnalysisRule) => void;
 
   mode: TimeSeriesMode;
   onModeChange: (mode: TimeSeriesMode) => void;
@@ -109,6 +112,8 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
     timePeriodSummary,
     analysisModel,
     onAnalysisModelChange,
+    timeAnalysisRule,
+    onTimeAnalysisRuleChange,
     mode,
     onModeChange,
     interval,
@@ -276,13 +281,31 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
           onChange={(event) => onAnalysisModelChange(event.target.value as AnalysisModel)}
           data-testid="analysis-model">
           <option value="unit">Base Unidade</option>
-          <option value="cyclic" disabled>Base Cíclica — Disponível em uma fase futura.</option>
+          <option value="cyclic">Base Cíclica</option>
           <option value="oee" disabled>Base OEE — Disponível em uma fase futura.</option>
           <option value="downtime" disabled>Base Paradas — Disponível em uma fase futura.</option>
           <option value="quality" disabled>Base Qualidade — Disponível em uma fase futura.</option>
         </Form.Select>
-        <Form.Text className="text-muted">Somente Base Unidade está disponível nesta etapa.</Form.Text>
+        <Form.Text className="text-muted">Modelos disponíveis: Base Unidade e Base Cíclica.</Form.Text>
       </Form.Group>
+
+      {analysisModel === "unit" ? (
+        <Form.Group controlId="time-analysis-rule">
+          <Form.Label>Regra de análise</Form.Label>
+          <Form.Select
+            value={timeAnalysisRule}
+            onChange={(event) =>
+              onTimeAnalysisRuleChange(event.target.value as TimeAnalysisRule)
+            }
+            data-testid="time-analysis-rule-select"
+          >
+            <option value="MEDIA">Média</option>
+            <option value="MAXIMO">Máximo</option>
+            <option value="MIN">Mínimo</option>
+            <option value="OOC">OOC</option>
+          </Form.Select>
+        </Form.Group>
+      ) : null}
 
       <Form.Group controlId="equipment-select">
         <Form.Label>Máquina</Form.Label>
@@ -531,7 +554,7 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
             variant="primary"
             className="btn-piad-primary"
             onClick={onSubmit}
-            disabled={submitting || Boolean(timePeriodError) || analysisModel !== "unit"}
+            disabled={submitting || Boolean(timePeriodError) || (analysisModel !== "unit" && analysisModel !== "cyclic")}
             type="button"
             data-testid="filters-submit"
           >

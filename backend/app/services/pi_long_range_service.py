@@ -139,6 +139,10 @@ class PiLongRangeService:
                     "A tag esta inativa e nao pode ser consultada.",
                     details={"pi_tag_id": tag.id},
                 )
+            tag._meta_equipment_code = tag.equipment.code if tag.equipment else None
+            tag._meta_section_code = tag.section.code if tag.section else None
+            tag._meta_variable_type_code = tag.variable_type.code if tag.variable_type else None
+            tag._meta_unit = tag.engineering_unit
             tags.append(tag)
         return tags
 
@@ -158,8 +162,10 @@ class PiLongRangeService:
             if point is None:
                 raise PiTagNotFoundError()
             tag.pi_web_id = point.web_id
-            self.db.commit()
-            self.db.refresh(tag)
+            if self.db:
+                self.db.commit()
+                self.db.refresh(tag)
+                self.db.rollback()
             return point.web_id
 
         try:
@@ -245,6 +251,8 @@ class PiLongRangeService:
         web_ids, errors, web_id_map, webid_cache_hits, webid_cache_misses = (
             await self._resolve_web_ids(tags, timings, query_id=query_id)
         )
+        if self.db:
+            self.db.rollback()
 
         if not web_ids:
             elapsed = time.monotonic() - started_at
@@ -715,17 +723,18 @@ class PiLongRangeService:
             )
             for v in values
         ]
-        equipment = tag.equipment
-        section = tag.section
-        variable_type = tag.variable_type
+        equipment_code = getattr(tag, "_meta_equipment_code", None) or (tag.equipment.code if tag.equipment else None)
+        section_code = getattr(tag, "_meta_section_code", None) or (tag.section.code if tag.section else None)
+        variable_type_code = getattr(tag, "_meta_variable_type_code", None) or (tag.variable_type.code if tag.variable_type else None)
+        unit = getattr(tag, "_meta_unit", None) or tag.engineering_unit
         return TimeSeriesSeries(
             tag_id=tag.id,
             tag_name=tag.pi_tag_name,
             display_name=tag.display_name,
-            equipment=equipment.code if equipment else None,
-            section=section.code if section else None,
-            variable_type=variable_type.code if variable_type else None,
-            unit=tag.engineering_unit,
+            equipment=equipment_code,
+            section=section_code,
+            variable_type=variable_type_code,
+            unit=unit,
             points=points,
         )
 

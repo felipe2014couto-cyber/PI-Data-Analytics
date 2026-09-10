@@ -32,7 +32,7 @@ from app.core.config import get_settings  # noqa: E402
 get_settings.cache_clear()
 
 from app.api import deps  # noqa: E402
-from app.api.deps import get_db_session, get_pi_provider, get_pi_service  # noqa: E402
+from app.api.deps import get_db_session, get_norm_limits_service, get_pi_provider, get_pi_service  # noqa: E402
 from app.database.session import Base, get_db  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import (  # noqa: E402,E401
@@ -46,6 +46,7 @@ from app.models import (  # noqa: E402,E401
     UserRole,
 )
 from app.api.deps import get_current_user, validate_csrf  # noqa: E402
+from app.services.pi_norm_limits_service import PiNormLimitsService  # noqa: E402
 from app.services.pi_service import PiService  # noqa: E402
 from tests.pi_fakes import FakePiDataProvider  # noqa: E402
 
@@ -113,10 +114,17 @@ def client(fake_provider):
     ):
         return PiService(db, provider=provider)
 
+    def _norm_limits_override(
+        db=Depends(_db_override),
+        provider=Depends(_provider_override),
+    ):
+        return PiNormLimitsService(db, provider=provider)
+
     app.dependency_overrides[get_db] = _db_override
     app.dependency_overrides[get_db_session] = _db_override
     app.dependency_overrides[get_pi_provider] = _provider_override
     app.dependency_overrides[get_pi_service] = _service_override
+    app.dependency_overrides[get_norm_limits_service] = _norm_limits_override
     def _authenticated_user():
         db = TestingSessionLocal()
         try:
