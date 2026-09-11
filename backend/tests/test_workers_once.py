@@ -22,6 +22,21 @@ def test_dispatch_once(monkeypatch, selection):
             mock.assert_not_awaited()
 
 
+def test_worker_runner_manages_pi_provider_lifecycle(monkeypatch):
+    startup = AsyncMock()
+    shutdown = AsyncMock()
+    ingestion = AsyncMock()
+    monkeypatch.setattr(run_workers, "startup_pi_provider", startup)
+    monkeypatch.setattr(run_workers, "shutdown_pi_provider", shutdown)
+    monkeypatch.setattr(run_workers, "run_ingestion_loop", ingestion)
+
+    asyncio.run(run_workers.main("ingestion", 7, once=True))
+
+    startup.assert_awaited_once()
+    shutdown.assert_awaited_once()
+    ingestion.assert_awaited_once_with(7, once=True)
+
+
 @pytest.mark.parametrize("module", [ingestion_worker, backfill_worker, deletion_worker])
 def test_once_exits_without_sleep(monkeypatch, module):
     factory = MagicMock()
