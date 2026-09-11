@@ -12,14 +12,14 @@ services:
       - timescale_data:/var/lib/postgresql
       - ./ops/timescaledb/init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "${TIMESCALEDB_BIND_PORT:-6543}:5432"
+      - "127.0.0.1:${TIMESCALEDB_BIND_PORT:-6543}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 30s
-    networks: [pi_internal]
+    networks: [pi_internal, pi_host]
 
   backup:
     image: timescale/timescaledb-ha:pg18.4-ts2.27.1@sha256:7c253207091a191a9aea5d1dee8816512f3aca22d169905e0bc08795ffac9752
@@ -50,6 +50,10 @@ volumes:
     name: pi_analytics_timescale_backups
 
 networks:
+  pi_host:
+    name: pi_analytics_host
+    driver: bridge
+    internal: false
   pi_internal:
     name: pi_analytics_internal
     internal: true
