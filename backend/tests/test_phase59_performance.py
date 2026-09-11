@@ -148,11 +148,13 @@ class TestTagCountImpact:
     def test_document_with_10_tags_stores_correctly(self, client: TestClient):
         doc = {
             "schema_version": 1,
-            "selectedTagIds": list(range(1, 11)),
-            "seriesAssignments": [
-                {"tagId": i, "order": i - 1, "lineAxis": "primary"}
-                for i in range(1, 11)
-            ],
+            "sidebar_state": {
+                "selectedTagIds": list(range(1, 11)),
+                "seriesAssignments": [
+                    {"tagId": i, "order": i - 1, "lineAxis": "primary"}
+                    for i in range(1, 11)
+                ],
+            },
             "visual_rules": {"enabled": False, "selectedSeriesInstanceId": "", "bySeries": {}},
         }
         r = client.post("/api/visual-configurations", json={"name": "10-tags", "document": doc})
@@ -160,7 +162,7 @@ class TestTagCountImpact:
         cfg_id = r.json()["id"]
         r2 = client.get(f"/api/visual-configurations/{cfg_id}")
         assert r2.status_code == 200
-        assert len(r2.json()["document"]["selectedTagIds"]) == 10
+        assert len(r2.json()["document"]["sidebar_state"]["selectedTagIds"]) == 10
 
     def test_document_with_100_series_rules(self, client: TestClient):
         by_series = {f"series-{i}": {"limits": {"LIE": 0, "LSE": 100}} for i in range(100)}
@@ -174,9 +176,10 @@ class TestTagCountImpact:
     def test_large_sidebar_state_persists(self, client: TestClient):
         doc = {
             "schema_version": 1,
-            "selectedTagIds": list(range(1, 11)),
             "sidebar_state": {
                 "filters": {"preset": "P7D", "mode": "recorded", "interval": "10s"},
+                "selectedTagIds": list(range(1, 11)),
+                "seriesAssignments": [],
                 "selectedEquipmentIds": list(range(1, 21)),
             },
             "visual_rules": {"enabled": False, "selectedSeriesInstanceId": "", "bySeries": {}},

@@ -1,31 +1,36 @@
 """Test configuration and fixtures."""
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-TEST_DB_PATH = ROOT / "tests" / "_test_pads.db"
-if TEST_DB_PATH.exists():
-    try:
-        TEST_DB_PATH.unlink()
-    except OSError:
-        pass
+TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="pi-analytics-tests-"))
+TEST_DB_PATH = TEST_DB_DIR / "database.sqlite3"
+TEST_DATABASE_URL = f"sqlite:///{TEST_DB_PATH}"
 
-os.environ.setdefault("DATABASE_URL", f"sqlite:///{TEST_DB_PATH}")
-os.environ.setdefault("APP_DEBUG", "false")
-os.environ.setdefault("PI_WEB_API_BASE_URL", "")
-os.environ.setdefault("PI_DATA_SERVER_NAME", "")
-os.environ.setdefault("AUTH_JWT_SECRET", "test-only-secret-that-is-at-least-thirty-two-characters")
+# Test execution must never inherit a real database URL from the shell or a
+# developer .env.  This assignment is intentional (not setdefault): every
+# pytest process receives an isolated SQLite database created for this run.
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+os.environ["APP_DEBUG"] = "false"
+os.environ["PI_WEB_API_BASE_URL"] = ""
+os.environ["PI_DATA_SERVER_NAME"] = ""
+os.environ["AUTH_JWT_SECRET"] = "test-only-secret-that-is-at-least-thirty-two-characters"
+
+if not TEST_DATABASE_URL.startswith("sqlite:///") or Path(TEST_DB_PATH).parent != TEST_DB_DIR:
+    raise RuntimeError("Refusing to run tests: database is not the isolated SQLite test database.")
 
 from app.core.config import get_settings  # noqa: E402
 
@@ -45,7 +50,8 @@ from app.models import (  # noqa: E402,E401
     User,
     UserRole,
 )
-from app.api.deps import get_current_user, validate_csrf  # noqa: E402
+from app.api.deps import get_authenticated_user, get_current_user, validate_csrf  # noqa: E402
+from app.core.config import settings  # noqa: E402
 from app.services.pi_norm_limits_service import PiNormLimitsService  # noqa: E402
 from app.services.pi_service import PiService  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
@@ -56,7 +62,9 @@ _ADMIN_TEST_HASH = hash_password("admin")
 engine = create_engine(
     os.environ["DATABASE_URL"],
     connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
+    # A file-backed test database must use one connection per session/thread;
+    # StaticPool shares a sqlite handle across concurrent TestClient requests.
+    poolclass=NullPool,
     future=True,
 )
 TestingSessionLocal = sessionmaker(
@@ -81,6 +89,8 @@ def _create_schema():
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+    engine.dispose()
+    shutil.rmtree(TEST_DB_DIR)
 
 
 @pytest.fixture()
@@ -100,6 +110,22 @@ def fake_provider():
 @pytest.fixture()
 def client(fake_provider):
     app = create_app()
+
+    # Only HTTP-client tests need the conventional authenticated principal.
+    # Keeping it out of the autouse fixture leaves first-admin tests with an
+    # actually empty user table and makes test ordering irrelevant.
+    with TestingSessionLocal() as db:
+        if db.query(User).filter(User.normalized_username == "test-admin").first() is None:
+            db.add(User(
+                username="test-admin",
+                normalized_username="test-admin",
+                password_hash=_ADMIN_TEST_HASH,
+                role=UserRole.ADMIN,
+                is_active=True,
+                auth_version=1,
+                must_change_password=False,
+            ))
+            db.commit()
 
     def _db_override():
         db = TestingSessionLocal()
@@ -129,7 +155,13 @@ def client(fake_provider):
     app.dependency_overrides[get_pi_service] = _service_override
     app.dependency_overrides[get_norm_limits_service] = _norm_limits_override
 
-    def _authenticated_user():
+    def _authenticated_user(request: Request):
+        # Keep the convenient implicit test-admin for legacy endpoint tests,
+        # but honor a real session cookie when a test explicitly logs in as a
+        # different user.  Removing this override still exercises the real
+        # authentication dependency and returns 401 without a cookie.
+        if request.cookies.get(settings.auth_cookie_name):
+            return get_authenticated_user(request)
         db = TestingSessionLocal()
         try:
             user = db.query(User).filter(User.normalized_username == "test-admin").first()
@@ -151,17 +183,6 @@ def client(fake_provider):
 def _clean_tables(db_session):
     for table in reversed(Base.metadata.sorted_tables):
         db_session.execute(table.delete())
-    db_session.commit()
-    user = User(
-        username="test-admin",
-        normalized_username="test-admin",
-        password_hash=_ADMIN_TEST_HASH,
-        role=UserRole.ADMIN,
-        is_active=True,
-        auth_version=1,
-        must_change_password=False,
-    )
-    db_session.add(user)
     db_session.commit()
     yield
 

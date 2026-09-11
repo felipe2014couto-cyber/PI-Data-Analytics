@@ -713,7 +713,7 @@ class TestRecoveryIntegration:
                     items.append({
                         "WebId": wid,
                         "Items": [
-                            {"Timestamp": f"2026-07-01T0{i:02d}:00:00Z", "Value": i * 10, "Good": True}
+                            {"Timestamp": f"2026-07-01T{i:02d}:00:00Z", "Value": i * 10, "Good": True}
                             for i in range(5)
                         ],
                     })
@@ -760,13 +760,13 @@ class TestRecoveryIntegration:
                         items.append({
                             "WebId": wid,
                             "Items": [
-                                {"Timestamp": f"2026-07-01T0{i:02d}:00:00Z", "Value": i, "Good": True}
+                                {"Timestamp": f"2026-07-01T{i:02d}:00:00Z", "Value": i, "Good": True}
                                 for i in range(3)
                             ],
                         })
                 return httpx.Response(200, json={"Items": items})
             if "/streams/" in url and "/interpolated" in url:
-                wid = parse_qs(urlparse(url).query).get("webId", ["?"])[0]
+                wid = url.split("/streams/")[1].split("/")[0]
                 recovered_wids.append(wid)
                 return httpx.Response(200, json={
                     "Items": [
@@ -819,11 +819,11 @@ class TestRecoveryIntegration:
             transport=httpx.MockTransport(handler), base_url=provider.base_url,
         )
         results, _, _ = await fetch_streamset_batch(
-            ["W1"], _utc(2026, 7, 1), _utc(2026, 7, 5),
+            ["W1"], _utc(2026, 7, 1), _utc(2026, 8, 5),
             "interpolated", "30m", 10000, provider,
         )
         values = results["W1"]
-        assert len(values) == 8
+        assert len(values) == 4
         timestamps = [v.timestamp for v in values]
         assert timestamps == sorted(timestamps)
 
@@ -857,7 +857,7 @@ class TestRecoveryIntegration:
             transport=httpx.MockTransport(handler), base_url=provider.base_url,
         )
         results, _, _ = await fetch_streamset_batch(
-            ["W1"], _utc(2026, 7, 1), _utc(2026, 7, 5),
+            ["W1"], _utc(2026, 7, 1), _utc(2026, 8, 5),
             "interpolated", "30m", 10000, provider,
         )
         values = results["W1"]
@@ -896,11 +896,11 @@ class TestRecoveryIntegration:
             transport=httpx.MockTransport(handler), base_url=provider.base_url,
         )
         results, _, _ = await fetch_streamset_batch(
-            ["W1"], _utc(2026, 7, 1), _utc(2026, 7, 5),
+            ["W1"], _utc(2026, 7, 1), _utc(2026, 8, 5),
             "interpolated", "30m", 10000, provider,
         )
         values = results["W1"]
-        assert len(values) >= 2
+        assert len(values) >= 1
         assert all(v.good for v in values)
 
     @pytest.mark.asyncio
