@@ -226,7 +226,7 @@ class DatabaseTimeSeriesService:
             equipment=tag.equipment.code if tag.equipment else None,
             section=tag.section.code if tag.section else None,
             variable_type=tag.variable_type.code if tag.variable_type else None,
-            unit=tag.engineering_unit,
+            unit=getattr(tag, "_meta_unit", None) or tag.engineering_unit,
             points=points,
             source_point_count=len(points),
             returned_point_count=len(points),
