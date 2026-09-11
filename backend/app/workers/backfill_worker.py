@@ -112,16 +112,21 @@ async def backfill_tag_interval(
                     point for point in (result.series[0].points if result.series else [])
                     if start <= point.timestamp.astimezone(timezone.utc) < end
                 ]
+                # PI can return the same event more than once at a boundary;
+                # collapse it before a single INSERT ... ON CONFLICT statement.
+                points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
                 if points:
                     insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
-                    stmt = insert_factory(PiSample).values([_record(tag_id, point, mode) for point in points])
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=["tag_id", "ts", "source_mode"],
-                        set_={column: getattr(stmt.excluded, column) for column in (
-                            "value_type", "value_double", "value_boolean", "value_text", "good", "questionable", "substituted", "source_mode"
-                        )},
-                    )
-                    db.execute(stmt)
+                    records = [_record(tag_id, point, mode) for point in points]
+                    for offset in range(0, len(records), 500):
+                        stmt = insert_factory(PiSample).values(records[offset:offset + 500])
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=["tag_id", "ts", "source_mode"],
+                            set_={column: getattr(stmt.excluded, column) for column in (
+                                "value_type", "value_double", "value_boolean", "value_text", "good", "questionable", "substituted", "source_mode"
+                            )},
+                        )
+                        db.execute(stmt)
                 CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
                 job.next_start = end
                 job.checkpoint_start = end

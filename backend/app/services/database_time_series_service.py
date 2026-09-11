@@ -158,27 +158,29 @@ class DatabaseTimeSeriesService:
         interval_seconds: Optional[int],
     ) -> None:
         points = self._clip_points(points, start, end)
+        points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
         if not points:
             CoverageService.record_coverage(self.db, tag.id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
             return
         records = [self._record(tag.id, point, mode) for point in points]
         insert_factory = pg_insert if self.db.bind is not None and self.db.bind.dialect.name == "postgresql" else sqlite_insert
-        stmt = insert_factory(PiSample).values(records)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["tag_id", "ts", "source_mode"],
-            set_={
-                "value_type": stmt.excluded.value_type,
-                "value_double": stmt.excluded.value_double,
-                "value_text": stmt.excluded.value_text,
-                "value_boolean": stmt.excluded.value_boolean,
-                "good": stmt.excluded.good,
-                "questionable": stmt.excluded.questionable,
-                "substituted": stmt.excluded.substituted,
-                "source_mode": stmt.excluded.source_mode,
-                "ingested_at": stmt.excluded.ingested_at,
-            },
-        )
-        self.db.execute(stmt)
+        for offset in range(0, len(records), 500):
+            stmt = insert_factory(PiSample).values(records[offset:offset + 500])
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["tag_id", "ts", "source_mode"],
+                set_={
+                    "value_type": stmt.excluded.value_type,
+                    "value_double": stmt.excluded.value_double,
+                    "value_text": stmt.excluded.value_text,
+                    "value_boolean": stmt.excluded.value_boolean,
+                    "good": stmt.excluded.good,
+                    "questionable": stmt.excluded.questionable,
+                    "substituted": stmt.excluded.substituted,
+                    "source_mode": stmt.excluded.source_mode,
+                    "ingested_at": stmt.excluded.ingested_at,
+                },
+            )
+            self.db.execute(stmt)
         CoverageService.record_coverage(self.db, tag.id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
 
     @staticmethod

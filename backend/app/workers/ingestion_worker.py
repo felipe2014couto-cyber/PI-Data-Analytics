@@ -72,18 +72,20 @@ async def _ingest_tag(tag_id: int, now: datetime) -> tuple[int, int]:
             point for point in (result.series[0].points if result.series else [])
             if start <= point.timestamp.astimezone(timezone.utc) < now
         ]
+        points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
         if points:
             records = [_record(tag.id, point, mode) for point in points]
             insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
-            stmt = insert_factory(PiSample).values(records)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["tag_id", "ts", "source_mode"],
-                set_={column: getattr(stmt.excluded, column) for column in (
-                    "value_type", "value_double", "value_boolean", "value_text",
-                    "good", "questionable", "substituted", "source_mode",
-                )},
-            )
-            db.execute(stmt)
+            for offset in range(0, len(records), 500):
+                stmt = insert_factory(PiSample).values(records[offset:offset + 500])
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["tag_id", "ts", "source_mode"],
+                    set_={column: getattr(stmt.excluded, column) for column in (
+                        "value_type", "value_double", "value_boolean", "value_text",
+                        "good", "questionable", "substituted", "source_mode",
+                    )},
+                )
+                db.execute(stmt)
             max_ts = max(point.timestamp for point in points).astimezone(timezone.utc)
         else:
             max_ts = watermark
