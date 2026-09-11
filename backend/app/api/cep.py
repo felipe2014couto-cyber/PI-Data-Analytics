@@ -14,17 +14,19 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db_session, get_pi_provider, get_query_registry_dep
+from app.api.deps import get_db_session, get_query_registry_dep
 from app.core.config import settings
 from app.core.exceptions import (
     ConflictError,
+    HistoricalDataNotLoadedError,
     NotFoundError,
     TimeRangeInvalidError,
     ValidationError,
 )
-from app.integrations.pi.provider import PiDataProvider
+from app.database.session import SessionLocal
 from app.models.cep_variable import CepVariable
 from app.schemas.cep_analysis import (
     CepAnalysisAccepted,
@@ -46,6 +48,8 @@ from app.services.cep_query_store import (
     get_cep_query_store,
 )
 from app.services.query_registry import QueryRegistry
+from app.services.coverage_service import CoverageService, normalize_mode
+from app.services.timescale_cep_provider import TimescaleCepProvider
 
 logger = logging.getLogger("pi_analytics_data.api.cep")
 
@@ -196,6 +200,49 @@ def _load_and_materialize(
     )
 
 
+def _validate_historical_coverage(db: Session, materialized: MaterializedAnalysisData) -> None:
+    """Reject CEP requests whose required Timescale ranges are incomplete."""
+    modes = [("interpolated", materialized.request.interpolated_interval)]
+    if materialized.request.include_recorded:
+        modes.append(("recorded", None))
+    affected: list[dict] = []
+    for mode, interval in modes:
+        interval_seconds = None
+        if interval:
+            unit = interval[-1]
+            interval_seconds = int(interval[:-1]) * {"s": 1, "m": 60, "h": 3600}[unit]
+        requested_mode, interval_seconds = normalize_mode(mode, interval_seconds)
+        for item in materialized.unique_tags:
+            row = db.execute(
+                text("SELECT id FROM pi_tags WHERE pi_server = :server AND pi_tag_name = :name"),
+                {"server": item.pi_server, "name": item.pi_tag_name},
+            ).first()
+            if row is None:
+                affected.append({"tag_id": item.id, "tag_name": item.pi_tag_name, "mode": mode, "intervals": []})
+                continue
+            missing = CoverageService.get_missing_intervals(
+                db, int(row[0]), materialized.request.start_time, materialized.request.end_time,
+                requested_mode, interval_seconds,
+            )
+            if missing:
+                affected.append({
+                    "tag_id": item.id,
+                    "tag_name": item.pi_tag_name,
+                    "mode": mode,
+                    "intervals": [{"start": start.isoformat(), "end": end.isoformat()} for start, end in missing],
+                })
+    if affected:
+        raise HistoricalDataNotLoadedError(details={
+            "affected_tags": affected,
+            "mode": materialized.request.interpolated_interval,
+            "requested_period": {
+                "start": materialized.request.start_time.isoformat(),
+                "end": materialized.request.end_time.isoformat(),
+            },
+            "reload_available": True,
+        })
+
+
 @router.post(
     "/analyze",
     status_code=202,
@@ -211,7 +258,6 @@ async def create_analysis(
     db: Session = Depends(get_db_session),
     store: CepQueryStore = Depends(get_cep_query_store),
     registry: QueryRegistry = Depends(get_query_registry_dep),
-    provider: PiDataProvider = Depends(get_pi_provider),
 ) -> CepAnalysisAccepted | JSONResponse:
     """Start a new CEP analysis (asynchronous)."""
     # 1. Validate timezone (structural — 422)
@@ -229,6 +275,7 @@ async def create_analysis(
 
     # 4. Load and materialize CepVariable (semantic — 422)
     materialized = _load_and_materialize(db, payload)
+    _validate_historical_coverage(db, materialized)
 
     # 5. Generate query_id
     query_id = str(uuid.uuid4())
@@ -243,7 +290,7 @@ async def create_analysis(
     )
 
     # 7. Create async task (blocked by ready_event)
-    service = CepAnalysisService(provider=provider)
+    service = CepAnalysisService(provider=TimescaleCepProvider(db, materialized.unique_tags, SessionLocal))
     task = asyncio.create_task(
         service.run_analysis(query_id, materialized, store, registry)
     )

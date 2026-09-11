@@ -1,15 +1,18 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.models.equipment import Equipment
 from app.models.pi_tag import PiTag, PiTagDataType
 from app.models.section import Section
 from app.models.variable_type import VariableType
+from app.models.postgres import PiSample
+from app.core.exceptions import HistoricalDataNotLoadedError
 from app.services.coverage_service import CoverageService
 from app.services.database_time_series_service import DatabaseTimeSeriesService
-from app.services.pi_service import PiService
 from app.schemas.pi import TimeSeriesRequest
-from tests.pi_fakes import FakePiDataProvider, make_value
+from tests.pi_fakes import FakePiDataProvider
 
 
 def _tag(db_session):
@@ -54,20 +57,18 @@ def test_coverage_is_semi_open_mode_specific_and_consolidated(db_session):
     assert CoverageService.get_missing_intervals(db_session, tag.id, start, end, "RECORDED") == []
 
 
-def test_hybrid_query_discards_points_at_exclusive_end(db_session):
+def test_historical_query_reads_timescaledb_and_never_calls_pi(db_session):
     tag = _tag(db_session)
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(minutes=1)
-    provider = FakePiDataProvider(recorded={
-        "W-TS": [
-            make_value("2026-01-01T00:00:00Z", 1.0),
-            make_value("2026-01-01T00:01:00Z", 2.0),
-        ],
-    })
-    service = DatabaseTimeSeriesService(db_session, PiService(db_session, provider=provider))
+    provider = FakePiDataProvider()
+    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=1.0, source_mode="RECORDED"))
+    db_session.add(PiSample(tag_id=tag.id, ts=end, value_type="double", value_double=2.0, source_mode="RECORDED"))
+    CoverageService.record_coverage(db_session, tag.id, start, end, "RECORDED")
+    db_session.commit()
+    service = DatabaseTimeSeriesService(db_session, provider)
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
     first = loop.run_until_complete(service.fetch_time_series(TimeSeriesRequest(
         tag_ids=[tag.id], start_time=start, end_time=end, mode="recorded"
     )))
@@ -77,4 +78,21 @@ def test_hybrid_query_discards_points_at_exclusive_end(db_session):
 
     assert [point.timestamp for point in first.series[0].points] == [start]
     assert [point.timestamp for point in second.series[0].points] == [start]
-    assert len(provider.recorded_calls) == 1
+    assert len(provider.recorded_calls) == 0
+
+
+def test_missing_historical_coverage_is_structured_and_does_not_fallback(db_session):
+    tag = _tag(db_session)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(minutes=1)
+    provider = FakePiDataProvider()
+    service = DatabaseTimeSeriesService(db_session, provider)
+    loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+    with pytest.raises(HistoricalDataNotLoadedError) as exc:
+        loop.run_until_complete(service.fetch_time_series(TimeSeriesRequest(
+            tag_ids=[tag.id], start_time=start, end_time=end, mode="recorded"
+        )))
+    assert exc.value.code == "HISTORICAL_DATA_NOT_LOADED"
+    assert exc.value.status_code == 409
+    assert exc.value.details["reload_available"] is True
+    assert provider.recorded_calls == []

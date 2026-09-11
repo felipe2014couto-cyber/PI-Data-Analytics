@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.models.equipment import Equipment
 from app.models.pi_tag import PiTag, PiTagDataType
+from app.models.postgres import PiSample
 from app.models.section import Section
 from app.models.variable_type import VariableType
+from app.services.coverage_service import CoverageService
 from tests.pi_fakes import FakePiDataProvider, make_value
 
 
@@ -48,9 +50,18 @@ def _make_tag(db_session: Session, *, code: str, web_id: str) -> PiTag:
     return tag
 
 
+def _seed_recorded(db_session: Session, tag: PiTag, value: float) -> None:
+    from datetime import UTC, datetime
+    start = datetime(2026, 7, 1, tzinfo=UTC); end = datetime(2026, 7, 1, 1, tzinfo=UTC)
+    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=value, source_mode="RECORDED"))
+    CoverageService.record_coverage(db_session, tag.id, start, end, "RECORDED")
+    db_session.commit()
+
+
 def test_time_series_accepts_repeated_tag_ids(client: TestClient, db_session: Session) -> None:
     _configure_pi()
     tag = _make_tag(db_session, code="RB3.A", web_id="W1")
+    _seed_recorded(db_session, tag, 1.0)
     client.fake_provider._points = {f"\\\\{tag.pi_server}\\{tag.pi_tag_name}": None}  # type: ignore[attr-defined]
     client.fake_provider._recorded = {  # type: ignore[attr-defined]
         "W1": [make_value("2026-07-01T00:00:00Z", 1.0)]
@@ -72,6 +83,7 @@ def test_time_series_accepts_repeated_tag_ids(client: TestClient, db_session: Se
 def test_time_series_accepts_csv_tag_ids(client: TestClient, db_session: Session) -> None:
     _configure_pi()
     tag = _make_tag(db_session, code="RB3.B", web_id="W2")
+    _seed_recorded(db_session, tag, 2.0)
     client.fake_provider._points = {f"\\\\{tag.pi_server}\\{tag.pi_tag_name}": None}  # type: ignore[attr-defined]
     client.fake_provider._recorded = {  # type: ignore[attr-defined]
         "W2": [make_value("2026-07-01T00:00:00Z", 2.0)]

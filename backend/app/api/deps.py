@@ -49,16 +49,14 @@ def get_long_range_service(
 
 
 def get_norm_limits_service(
-    provider: Optional[PiDataProvider] = Depends(get_pi_provider),
 ) -> PiNormLimitsService:
-    return PiNormLimitsService(provider=provider, session_factory=SessionLocal)
+    return PiNormLimitsService(session_factory=SessionLocal)
 
 
 def get_db_time_series_service(
     db: Session = Depends(get_db_session),
-    pi_service: PiService = Depends(get_pi_service),
 ) -> DatabaseTimeSeriesService:
-    return DatabaseTimeSeriesService(db, pi_service=pi_service)
+    return DatabaseTimeSeriesService(db)
 
 
 def get_query_registry_dep() -> QueryRegistry:

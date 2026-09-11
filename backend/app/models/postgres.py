@@ -66,6 +66,8 @@ class PiBackfillJob(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     tag_id = Column(Integer, ForeignKey("pi_tags.id", ondelete="CASCADE"), nullable=False)
+    mode = Column(String(32), nullable=False, default="RECORDED", server_default="RECORDED")
+    interval_seconds = Column(Integer, nullable=True)
     target_start = Column(DateTime(timezone=True), nullable=False)
     target_end = Column(DateTime(timezone=True), nullable=False)
     next_start = Column(DateTime(timezone=True), nullable=True)

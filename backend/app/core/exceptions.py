@@ -141,6 +141,19 @@ class QueryLimitExceededError(AppError):
         super().__init__(message, details)
 
 
+class HistoricalDataNotLoadedError(AppError):
+    """Historical data is not fully covered in TimescaleDB."""
+
+    status_code = 409
+    code = "HISTORICAL_DATA_NOT_LOADED"
+
+    def __init__(self, details: object = None) -> None:
+        super().__init__(
+            "O histórico solicitado ainda não está totalmente carregado. Solicite uma recarga administrativa.",
+            details,
+        )
+
+
 # PI Web API exceptions ---------------------------------------------------
 
 

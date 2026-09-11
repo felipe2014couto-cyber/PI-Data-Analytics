@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import (
+    HistoricalDataNotLoadedError,
     NotFoundError,
     PiNotConfiguredError,
     TagInactiveError,
@@ -161,12 +162,10 @@ class PiNormLimitsService:
                 },
             )
 
-        provider = self._resolve_provider()
         max_count = max_count or settings.pi_query_max_points_per_tag
 
         if lower_name:
             lower = await self._fetch_one(
-                provider=provider,
                 pi_server=pi_server,
                 tag_name=lower_name,
                 start_time=start_time,
@@ -183,7 +182,6 @@ class PiNormLimitsService:
 
         if upper_name:
             upper = await self._fetch_one(
-                provider=provider,
                 pi_server=pi_server,
                 tag_name=upper_name,
                 start_time=start_time,
@@ -221,6 +219,8 @@ class PiNormLimitsService:
         tag_name: str,
         start_time: datetime,
         end_time: datetime,
+        mode: str,
+        interval: Optional[str],
         max_count: int,
     ) -> Optional[List[PiTagNormLimitPoint]]:
         """Attempt to fetch limit points directly from the TimescaleDB hypertable."""
@@ -234,15 +234,27 @@ class PiNormLimitsService:
                 tag = db.query(PiTag).filter(PiTag.pi_tag_name == tag_name).first()
                 if not tag:
                     return None
+                from app.services.coverage_service import CoverageService, normalize_mode
                 from sqlalchemy import text
+                interval_seconds = None
+                if mode == "interpolated":
+                    unit = interval[-1] if interval else "m"
+                    interval_seconds = int(interval[:-1]) * {"s": 1, "m": 60, "h": 3600}[unit]
+                requested_mode, interval_seconds = normalize_mode(mode, interval_seconds)
+                if CoverageService.get_missing_intervals(db, tag.id, start_time, end_time, requested_mode, interval_seconds):
+                    raise HistoricalDataNotLoadedError(details={
+                        "affected_tags": [{"tag_id": tag.id, "tag_name": tag_name, "intervals": []}],
+                        "mode": mode,
+                        "resolution": interval if mode == "interpolated" else None,
+                        "requested_period": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+                        "reload_available": True,
+                    })
                 rows = db.execute(
                     text(
-                        "SELECT ts, value_double FROM pi_samples_timescale WHERE tag_id = :tag_id AND source_mode = 'RECORDED' AND ts >= :start_time AND ts < :end_time ORDER BY ts ASC LIMIT :max_count"
+                        "SELECT ts, value_double, value_boolean, value_text, value_type FROM pi_samples_timescale WHERE tag_id = :tag_id AND source_mode = :mode AND ts >= :start_time AND ts < :end_time ORDER BY ts ASC LIMIT :max_count"
                     ),
-                    {"tag_id": tag.id, "start_time": start_time, "end_time": end_time, "max_count": max_count},
+                    {"tag_id": tag.id, "mode": requested_mode, "start_time": start_time, "end_time": end_time, "max_count": max_count},
                 ).mappings().all()
-                if not rows:
-                    return None
                 pts = []
                 for r in rows:
                     ts = r["ts"]
@@ -250,18 +262,19 @@ class PiNormLimitsService:
                         ts = datetime.fromisoformat(ts)
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
-                    val = float(r["value_double"]) if r["value_double"] is not None else None
+                    val = r["value_double"] if r["value_type"] in {"double", "float", "int"} else r["value_boolean"] if r["value_type"] == "boolean" else r["value_text"]
                     pts.append(PiTagNormLimitPoint(timestamp=ts, value=val))
                 return pts
             finally:
                 if session_ctx:
                     session_ctx.close()
+        except HistoricalDataNotLoadedError:
+            raise
         except Exception:
             return None
 
     async def _fetch_one(
         self,
-        provider: PiDataProvider,
         pi_server: str,
         tag_name: str,
         start_time: datetime,
@@ -270,57 +283,18 @@ class PiNormLimitsService:
         interval: Optional[str],
         max_count: int,
     ) -> "PiNormLimitsService._FetchResult":
-        # 1. Check if database has samples for this limit tag
-        db_pts = self._try_fetch_from_db(tag_name, start_time, end_time, max_count)
-        if db_pts is not None and len(db_pts) > 0:
+        # Historical limits are read exclusively from TimescaleDB.
+        db_pts = self._try_fetch_from_db(tag_name, start_time, end_time, mode, interval, max_count)
+        if db_pts is not None:
             return self._FetchResult(
                 series=PiTagNormLimitSeries(tag_name=tag_name, points=db_pts),
                 errors=[],
             )
 
-        path = _path_for(pi_server, tag_name)
-        try:
-            point = await provider.resolve_point(path)
-        except PiIntegrationError as exc:
-            return self._FetchResult(
-                series=PiTagNormLimitSeries(tag_name=tag_name, points=[]),
-                errors=[f"Tag de limite nao encontrada no PI: {tag_name} ({exc.safe_message})."],
-            )
-        if point is None:
-            return self._FetchResult(
-                series=PiTagNormLimitSeries(tag_name=tag_name, points=[]),
-                errors=[f"Tag de limite nao encontrada no PI: {tag_name}."],
-            )
-        try:
-            if mode == "recorded":
-                response = await provider.get_recorded_values(
-                    point.web_id, start_time, end_time, max_count=max_count
-                )
-                raw = response.values
-            else:
-                response = await provider.get_interpolated_values(
-                    point.web_id,
-                    start_time,
-                    end_time,
-                    interval or "1m",
-                    max_count=max_count,
-                )
-                raw = response.values
-        except PiTagNotFoundError:
-            return self._FetchResult(
-                series=PiTagNormLimitSeries(tag_name=tag_name, points=[]),
-                errors=[f"Tag de limite nao encontrada no PI: {tag_name}."],
-            )
-        except PiIntegrationError as exc:
-            return self._FetchResult(
-                series=PiTagNormLimitSeries(tag_name=tag_name, points=[]),
-                errors=[f"Falha ao consultar a tag de limite {tag_name}: {exc.safe_message}."],
-            )
-        series = PiTagNormLimitSeries(
-            tag_name=tag_name,
-            points=[_normalize_point(raw_point) for raw_point in raw],
-        )
-        errors: List[str] = []
-        if not series.points:
-            errors.append(f"Sem dados para o periodo: {tag_name}.")
-        return self._FetchResult(series=series, errors=errors)
+        raise HistoricalDataNotLoadedError(details={
+            "affected_tags": [{"tag_name": tag_name, "intervals": []}],
+            "mode": mode,
+            "resolution": interval if mode == "interpolated" else None,
+            "requested_period": {"start": start_time.isoformat(), "end": end_time.isoformat()},
+            "reload_available": True,
+        })

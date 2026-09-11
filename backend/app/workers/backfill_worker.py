@@ -30,7 +30,7 @@ BACKFILL_ROUNDS = (
 LOCK_KEY = 2147483002
 
 
-def _record(tag_id: int, point: Any) -> dict[str, Any]:
+def _record(tag_id: int, point: Any, mode: str = "RECORDED") -> dict[str, Any]:
     value_type = "boolean" if isinstance(point.value, bool) else "double" if isinstance(point.value, (int, float)) else "string"
     return {
         "tag_id": tag_id,
@@ -40,7 +40,7 @@ def _record(tag_id: int, point: Any) -> dict[str, Any]:
         "value_boolean": bool(point.value) if value_type == "boolean" else None,
         "value_text": str(point.value) if value_type == "string" and point.value is not None else None,
         "good": point.good, "questionable": point.questionable, "substituted": point.substituted,
-        "source_mode": "RECORDED",
+        "source_mode": mode,
     }
 
 
@@ -68,13 +68,17 @@ async def backfill_tag_interval(
     t0: datetime,
     round_name: str,
     semaphore: asyncio.Semaphore,
+    *,
+    mode: str = "RECORDED",
+    interval_seconds: int | None = None,
+    job_id: int | None = None,
 ) -> bool:
     async with semaphore:
         with SessionLocal() as db:
             tag = db.get(PiTag, tag_id)
             if tag is None or not tag.active:
                 return False
-            job = db.execute(select(PiBackfillJob).where(
+            job = db.get(PiBackfillJob, job_id) if job_id is not None else db.execute(select(PiBackfillJob).where(
                 PiBackfillJob.tag_id == tag_id,
                 PiBackfillJob.round_name == round_name,
                 PiBackfillJob.t0 == t0,
@@ -82,14 +86,25 @@ async def backfill_tag_interval(
                 PiBackfillJob.target_end == end,
             )).scalar_one_or_none()
             if job is None:
-                job = PiBackfillJob(tag_id=tag_id, target_start=start, target_end=end, next_start=start, t0=t0, round_name=round_name, stage="RUNNING", status="RUNNING")
+                job = PiBackfillJob(tag_id=tag_id, mode=mode, interval_seconds=interval_seconds,
+                                    target_start=start, target_end=end, next_start=start,
+                                    t0=t0, round_name=round_name, stage="RUNNING", status="RUNNING")
                 db.add(job)
+            elif job.status == "CANCELLED":
+                return False
+            job.mode = mode
+            job.interval_seconds = interval_seconds
+            job.stage = "RUNNING"
+            job.status = "RUNNING"
             job.attempts = (job.attempts or 0) + 1
             db.commit()
 
             try:
+                request_mode = "interpolated" if mode.startswith("INTERPOLATED_") else "recorded"
+                request_interval = f"{interval_seconds}s" if request_mode == "interpolated" else None
                 result = await _fetch_with_retry(PiService(db), TimeSeriesRequest(
-                    tag_ids=[tag_id], start_time=start, end_time=end, mode="recorded"
+                    tag_ids=[tag_id], start_time=start, end_time=end,
+                    mode=request_mode, interval=request_interval,
                 ))
                 if result.errors or any(bool(s.truncated) for s in result.series):
                     raise RuntimeError("resposta PI parcial/truncada nao gera cobertura completa")
@@ -99,7 +114,7 @@ async def backfill_tag_interval(
                 ]
                 if points:
                     insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
-                    stmt = insert_factory(PiSample).values([_record(tag_id, point) for point in points])
+                    stmt = insert_factory(PiSample).values([_record(tag_id, point, mode) for point in points])
                     stmt = stmt.on_conflict_do_update(
                         index_elements=["tag_id", "ts"],
                         set_={column: getattr(stmt.excluded, column) for column in (
@@ -107,14 +122,14 @@ async def backfill_tag_interval(
                         )},
                     )
                     db.execute(stmt)
-                CoverageService.record_coverage(db, tag_id, start, end, "RECORDED", pi_web_id=tag.pi_web_id)
+                CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
                 job.next_start = end
                 job.checkpoint_start = end
                 job.stage = "READY"
                 job.status = "COMPLETED"
                 job.error_message = None
                 db.commit()
-                logger.info("backfill_window_completed tag_id=%s round=%s start=%s end=%s points=%d", tag_id, round_name, start, end, len(points))
+                logger.info("backfill_window_completed tag_id=%s round=%s mode=%s start=%s end=%s points=%d", tag_id, round_name, mode, start, end, len(points))
                 return True
             except Exception as exc:
                 db.rollback()
@@ -125,8 +140,26 @@ async def backfill_tag_interval(
                     job.error_message = str(exc)[:2000]
                     job.last_error_at = datetime.now(timezone.utc)
                     db.commit()
-                logger.exception("backfill_window_failed tag_id=%s round=%s", tag_id, round_name)
+                logger.exception("backfill_window_failed tag_id=%s round=%s mode=%s", tag_id, round_name, mode)
                 return False
+
+
+async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
+    """Process explicit administrative reload jobs before legacy round-robin work."""
+    semaphore = asyncio.Semaphore(max(1, settings.pi_query_concurrency))
+    if jobs is None:
+        with SessionLocal() as db:
+            jobs = list(db.execute(select(PiBackfillJob).where(
+                PiBackfillJob.status.in_(("PENDING", "RUNNING")),
+                PiBackfillJob.round_name.is_(None),
+            ).order_by(PiBackfillJob.id).limit(100)).all())
+    for job in jobs:
+        await backfill_tag_interval(
+            job.tag_id, job.target_start, job.target_end,
+            job.created_at or datetime.now(timezone.utc), "ADMIN", semaphore,
+            mode=job.mode or "RECORDED", interval_seconds=job.interval_seconds,
+            job_id=job.id,
+        )
 
 
 async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: int, days_to: int) -> None:
@@ -158,6 +191,11 @@ async def run_backfill_loop(*, once: bool = False) -> None:
                     acquired = True
                 tags = db.execute(select(PiTag.id).where(PiTag.active.is_(True)).order_by(PiTag.id)).scalars().all()
                 if acquired:
+                    admin_jobs = list(db.execute(select(PiBackfillJob).where(
+                        PiBackfillJob.status.in_(("PENDING", "RUNNING")),
+                        PiBackfillJob.round_name.is_(None),
+                    ).order_by(PiBackfillJob.id).limit(100)).all())
+                    await _run_admin_jobs(admin_jobs)
                     for round_name, days_from, days_to in BACKFILL_ROUNDS:
                         await _run_round(list(tags), t0, round_name, days_from, days_to)
                     logger.info("backfill_run_completed t0=%s tag_count=%d", t0, len(tags))

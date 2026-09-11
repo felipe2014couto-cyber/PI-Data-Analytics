@@ -10,11 +10,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import HistoricalDataNotLoadedError, QueryLimitExceededError, TimeRangeInvalidError, ValidationError
 from app.models.pi_tag import PiTag
 from app.models.postgres import PiSample
+from app.repositories.pi_tag_repository import PiTagRepository
 from app.schemas.pi import TimeSeries, TimeSeriesPoint, TimeSeriesRequest, TimeSeriesSeries
 from app.services.coverage_service import CoverageService, normalize_mode
-from app.services.pi_service import PiService
 
 logger = logging.getLogger("pi_analytics_data.service.timescaledb")
 
@@ -28,27 +29,43 @@ def _interval_seconds(interval: Optional[str]) -> Optional[int]:
 
 
 class DatabaseTimeSeriesService:
-    def __init__(self, db: Session, pi_service: Optional[PiService] = None):
+    """Read-only historical resolver backed exclusively by TimescaleDB.
+
+    PI Web API acquisition belongs to ingestion/backfill workers. A missing
+    coverage interval is an explicit administrative-reload request, never a
+    reason to synchronously call PI from a user query.
+    """
+
+    def __init__(self, db: Session, pi_service: Optional[object] = None):
         self.db = db
-        self.pi_service = pi_service
+        self.repo = PiTagRepository(db)
 
-    async def fetch_time_series(self, request: TimeSeriesRequest) -> TimeSeries:
+    async def fetch_time_series(self, request: TimeSeriesRequest, **_kwargs: Any) -> TimeSeries:
         if request.start_time >= request.end_time:
-            raise ValueError("O inicio deve ser anterior ao fim.")
-        if self.pi_service is None:
-            raise RuntimeError("PiService e obrigatorio para resolver lacunas")
-
-        requested_mode, interval_seconds = normalize_mode(
-            request.mode, _interval_seconds(request.interval)
-        )
-        tags = self.pi_service._load_tags(request.tag_ids)
+            raise TimeRangeInvalidError("O inicio deve ser anterior ao fim.")
+        try:
+            requested_mode, interval_seconds = normalize_mode(
+                request.mode, _interval_seconds(request.interval)
+            )
+        except (ValueError, KeyError) as exc:
+            raise ValidationError("Modo ou resolução de série inválidos.", details={"mode": request.mode, "interval": request.interval}) from exc
+        if len(request.tag_ids) > 100:
+            raise QueryLimitExceededError("Quantidade de tags excede o limite configurado.")
+        tags = []
+        for tag_id in request.tag_ids:
+            tag = self.repo.get(tag_id)
+            if tag is None:
+                from app.core.exceptions import NotFoundError
+                raise NotFoundError("Tag local nao encontrada.", details={"pi_tag_id": tag_id})
+            if not tag.active:
+                from app.core.exceptions import TagInactiveError
+                raise TagInactiveError(details={"pi_tag_id": tag_id})
+            tag._meta_unit = tag.engineering_unit or (tag.variable_type.default_unit if tag.variable_type else None)
+            tags.append(tag)
         series: list[TimeSeriesSeries] = []
-        errors: list[dict[str, Any]] = []
-        saw_db = False
-        saw_pi = False
+        missing_details: list[dict[str, Any]] = []
 
         for tag in tags:
-            tag_id = tag.id
             covered = CoverageService.get_coverage(
                 self.db, tag.id, request.start_time, request.end_time,
                 requested_mode, interval_seconds,
@@ -57,67 +74,44 @@ class DatabaseTimeSeriesService:
                 self.db, tag.id, request.start_time, request.end_time,
                 requested_mode, interval_seconds,
             )
-            points = self._get_from_db(tag.id, covered, requested_mode)
-            gap_failed = bool(missing)
-            if covered:
-                saw_db = True
-
-            for gap_start, gap_end in missing:
-                saw_pi = True
-                try:
-                    pi_result = await self.pi_service.fetch_time_series(TimeSeriesRequest(
-                        tag_ids=[tag.id],
-                        start_time=gap_start,
-                        end_time=gap_end,
-                        mode=request.mode,
-                        interval=request.interval,
-                        max_count=request.max_count,
-                    ))
-                except Exception as exc:
-                    logger.exception("PI gap resolution failed tag_id=%s start=%s end=%s", tag.id, gap_start, gap_end)
-                    errors.append({"tag_id": tag.id, "code": "PI_GAP_ERROR", "message": "Falha ao resolver lacuna no PI Web API."})
-                    continue
-
-                if pi_result.errors:
-                    errors.extend(pi_result.errors)
-                if not pi_result.series:
-                    continue
-                gap_series = pi_result.series[0]
-                gap_points = self._clip_points(gap_series.points, gap_start, gap_end)
-                points.extend(gap_points)
-                if gap_points:
-                    gap_failed = False
-                saw_pi = True
-                complete = not pi_result.errors and not any(
-                    bool(s.truncated) for s in pi_result.series
-                )
-                if complete:
-                    self._store_gap(tag, gap_points, gap_start, gap_end, requested_mode, interval_seconds)
-
-            unique = {point.timestamp.astimezone(timezone.utc): point for point in points}
-            ordered = [unique[key] for key in sorted(unique)]
-            if gap_failed and not ordered:
+            if missing:
+                missing_details.append({
+                    "tag_id": tag.id,
+                    "tag_name": tag.pi_tag_name,
+                    "intervals": [
+                        {"start": start.astimezone(timezone.utc).isoformat(), "end": end.astimezone(timezone.utc).isoformat()}
+                        for start, end in missing
+                    ],
+                })
                 continue
-            series.append(self._build_series(tag, ordered))
+            points = self._get_from_db(tag.id, covered, requested_mode)
+            if request.max_count and len(points) > request.max_count:
+                points = points[:request.max_count]
+            series.append(self._build_series(tag, points))
 
-        self.db.commit()
-        if saw_db and saw_pi:
-            source = "hybrid"
-        elif saw_db:
-            source = "timescaledb"
-        else:
-            source = "pi_web_api"
+        if missing_details:
+            raise HistoricalDataNotLoadedError(details={
+                "affected_tags": missing_details,
+                "mode": request.mode,
+                "resolution": request.interval if request.mode == "interpolated" else None,
+                "requested_period": {
+                    "start": request.start_time.astimezone(timezone.utc).isoformat(),
+                    "end": request.end_time.astimezone(timezone.utc).isoformat(),
+                },
+                "reload_available": True,
+            })
+
         return TimeSeries(
             start_time=request.start_time.astimezone(timezone.utc),
             end_time=request.end_time.astimezone(timezone.utc),
             mode=request.mode,
             series=series,
-            errors=errors,
+            errors=[],
             query_execution={
-                "strategy": "timescaledb_direct" if source == "timescaledb" else source,
-                "source": source,
-                "complete": not errors,
-                "partial": bool(errors),
+                "strategy": "timescaledb_direct",
+                "source": "timescaledb",
+                "complete": True,
+                "partial": False,
             },
         )
 

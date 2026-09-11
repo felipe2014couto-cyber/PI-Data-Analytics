@@ -18,6 +18,7 @@ from app.models.variable_type import VariableType
 from app.schemas.cep_analysis import CepAnalysisRequest
 from app.services.cep_query_store import CepQueryStore, get_cep_query_store
 from app.services.query_registry import get_query_registry
+from app.services.coverage_service import CoverageService
 
 
 def _setup_db(db_session):
@@ -70,6 +71,16 @@ def _setup_db(db_session):
     )
     db_session.add(cv)
     db_session.flush()
+
+    # CEP history is now TimescaleDB-only.  Seed the default 5-minute
+    # interpolated coverage used by these lifecycle tests without involving
+    # the PI fake provider.
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 1, 2, tzinfo=UTC)
+    for tag in tags:
+        CoverageService.record_coverage(db_session, tag.id, start, end, "INTERPOLATED", 300)
+        CoverageService.record_coverage(db_session, tag.id, start, end, "RECORDED")
+    db_session.commit()
 
     return eq, sec, vt, tags, cv
 

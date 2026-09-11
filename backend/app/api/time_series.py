@@ -13,12 +13,10 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import (
     get_db_time_series_service,
-    get_long_range_service,
-    get_pi_service,
     get_query_registry_dep,
 )
 from app.core.config import get_settings
-from app.core.exceptions import QueryCancelledError, QueryLimitExceededError
+from app.core.exceptions import HistoricalDataNotLoadedError, QueryCancelledError, QueryLimitExceededError
 from app.schemas.pi import (
     ComparisonContextResult,
     ComparisonMetadata,
@@ -30,8 +28,6 @@ from app.schemas.pi import (
 )
 from app.services.cache import VisualCache, WebIdCache
 from app.services.database_time_series_service import DatabaseTimeSeriesService
-from app.services.pi_long_range_service import PiLongRangeService
-from app.services.pi_service import PiService
 from app.services.query_registry import QueryRegistry, get_query_registry
 
 logger = logging.getLogger("pi_analytics_data.api.time_series")
@@ -109,8 +105,6 @@ async def get_time_series(
     target_points_per_tag: Optional[int] = Query(None, ge=1000, le=50000),
     refresh: bool = Query(False, description="Ignorar cache visual e forçar nova consulta."),
     query_id: Optional[str] = Query(None, description="ID da consulta para cancelamento."),
-    service: PiService = Depends(get_pi_service),
-    long_service: PiLongRangeService = Depends(get_long_range_service),
     db_service: DatabaseTimeSeriesService = Depends(get_db_time_series_service),
     registry: QueryRegistry = Depends(get_query_registry_dep),
 ) -> TimeSeries:
@@ -127,39 +121,18 @@ async def get_time_series(
         target_points_per_tag=target_points_per_tag,
     )
 
-    # TimescaleDB resolves covered ranges and PI resolves only real gaps.  A
-    # database failure is explicit and observable; it must not silently change
-    # the meaning of the query.
-    try:
-        db_result = await db_service.fetch_time_series(ts_request)
-        return db_result
-    except Exception as exc:
-        logger.exception("timescaledb_query_failed query_id=%s; using explicit PI fallback", qid)
-        logger.warning("timescaledb_fallback_alert query_id=%s reason=%s", qid, type(exc).__name__)
-
-    if resolution_mode is None and target_points_per_tag is None:
-        result = await service.fetch_time_series(ts_request)
-        return result
-
-    current_task = asyncio.current_task()
-    await registry.register(qid, main_task=current_task)
-
-    try:
-        result = await long_service.fetch_time_series(
-            ts_request, refresh=refresh, query_id=qid,
-        )
+    result = await db_service.fetch_time_series(ts_request)
+    if result.query_execution is not None:
         result.query_execution.query_id = qid
-        return result
-    except asyncio.CancelledError:
-        raise QueryCancelledError(f"Consulta {qid} cancelada.")
-    finally:
-        await registry.unregister(qid)
+        result.query_execution.resolution_mode = resolution_mode or "automatic"
+        result.query_execution.requested_target_points_per_tag = target_points_per_tag
+    return result
 
 
 @router.post("/comparison", response_model=TimeSeriesComparison, summary="Comparar dois contextos de series temporais")
 async def compare_time_series(
     payload: TimeSeriesComparisonRequest,
-    long_service: PiLongRangeService = Depends(get_long_range_service),
+    db_service: DatabaseTimeSeriesService = Depends(get_db_time_series_service),
     registry: QueryRegistry = Depends(get_query_registry_dep),
 ) -> TimeSeriesComparison:
     qid = payload.query_id or str(uuid.uuid4())
@@ -193,7 +166,7 @@ async def compare_time_series(
                     resolution_mode=payload.resolution_mode,
                     target_points_per_tag=payload.target_points_per_tag,
                 )
-                result = await long_service.fetch_time_series(
+                result = await db_service.fetch_time_series(
                     request,
                     refresh=True,
                     query_id=qid,
@@ -247,6 +220,8 @@ async def compare_time_series(
                     cache_hits[context.context_id], complete,
                 )
             except asyncio.CancelledError:
+                raise
+            except HistoricalDataNotLoadedError:
                 raise
             except Exception as exc:
                 logger.exception(
@@ -316,7 +291,7 @@ async def export_time_series_csv(
     mode: TimeSeriesMode = Query("recorded"),
     interval: Optional[str] = Query(None),
     max_count: Optional[int] = Query(None, ge=1, le=1_000_000),
-    long_service: PiLongRangeService = Depends(get_long_range_service),
+    db_service: DatabaseTimeSeriesService = Depends(get_db_time_series_service),
 ):
     ids = _normalize_tag_ids(tag_ids)
 
@@ -333,18 +308,23 @@ async def export_time_series_csv(
             detail=f"Periodo maximo de {max_days} dias excedido.",
         )
 
-    return StreamingResponse(
-        long_service.export_csv(
-            tag_ids=ids,
-            start_time=parsed_start,
-            end_time=parsed_end,
-            mode=mode,
-            interval=interval,
-            max_count=max_count,
-        ),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": "attachment; filename=exportacao_completa_pi.csv",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    result = await db_service.fetch_time_series(TimeSeriesRequest(
+        tag_ids=ids,
+        start_time=parsed_start,
+        end_time=parsed_end,
+        mode=mode,
+        interval=interval,
+        max_count=max_count,
+    ))
+
+    async def rows():
+        yield "tag_id,tag_name,timestamp,value,good,questionable,substituted\n"
+        for series in result.series:
+            for point in series.points:
+                value = "" if point.value is None else str(point.value).replace('"', '""')
+                yield f'{series.tag_id},"{series.tag_name}",{point.timestamp.isoformat()},"{value}",{point.good},{point.questionable},{point.substituted}\n'
+
+    return StreamingResponse(rows(), media_type="text/csv", headers={
+        "Content-Disposition": "attachment; filename=exportacao_historica_timescaledb.csv",
+        "X-Accel-Buffering": "no",
+    })

@@ -147,3 +147,11 @@ class TestMigrations:
         command.upgrade(alembic_cfg, "head")
         inspector = inspect(create_engine(db_url))
         assert "cep_query_operations" in inspector.get_table_names()
+        backfill_columns = {c["name"] for c in inspector.get_columns("pi_backfill_jobs")}
+        assert {"mode", "interval_seconds"}.issubset(backfill_columns)
+        command.downgrade(alembic_cfg, "20260911_cep_query_persistence")
+        inspector = inspect(create_engine(db_url))
+        backfill_columns = {c["name"] for c in inspector.get_columns("pi_backfill_jobs")}
+        assert "mode" not in backfill_columns
+        assert "interval_seconds" not in backfill_columns
+        command.upgrade(alembic_cfg, "head")
