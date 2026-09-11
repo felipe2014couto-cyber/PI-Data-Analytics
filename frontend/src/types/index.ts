@@ -1,5 +1,42 @@
 export type PiTagDataType = "NUMERIC" | "NON_NUMERIC";
 
+export type HistoricalReloadMode = "recorded" | "interpolated";
+
+export interface HistoricalReloadRequest {
+  start_time: string;
+  end_time: string;
+  mode: HistoricalReloadMode;
+  interval?: string;
+  tag_id?: number;
+  variable_id?: number;
+  all_active?: boolean;
+}
+
+export interface HistoricalReloadJob {
+  id: number;
+  tag_id: number;
+  mode: HistoricalReloadMode;
+  interval: string | null;
+  target_start: string;
+  target_end: string;
+  next_start: string | null;
+  status: string;
+  stage: string;
+  progress_percent: number;
+  attempts: number;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HistoricalReloadSummary {
+  total_active_tags: number;
+  tags_with_data: number;
+  tags_without_data: number;
+  partial_tags: number;
+  modes: Array<Record<string, unknown>>;
+}
+
 export type PiTagValidationStatus = "PENDING" | "VALID" | "INVALID" | "ERROR";
 
 export interface Equipment {

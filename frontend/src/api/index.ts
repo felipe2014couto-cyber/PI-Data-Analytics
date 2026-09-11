@@ -33,6 +33,9 @@ import type {
   CepQueryResponse,
   CepQueryCancelled,
   CepVariableSeries,
+  HistoricalReloadJob,
+  HistoricalReloadRequest,
+  HistoricalReloadSummary,
 } from "../types";
 
 export const authApi = {
@@ -49,6 +52,13 @@ export const adminUsersApi = {
   activate(id: string) { return httpClient.post<AuthUser>(`/admin/users/${id}/activate`); },
   deactivate(id: string) { return httpClient.post<AuthUser>(`/admin/users/${id}/deactivate`); },
   resetPassword(id: string, newPassword: string) { return httpClient.post<AuthUser>(`/admin/users/${id}/reset-password`, { new_password: newPassword }); },
+};
+
+export const historicalReloadApi = {
+  create(payload: HistoricalReloadRequest) { return httpClient.post<HistoricalReloadJob[]>("/admin/historical-reloads", payload); },
+  list() { return httpClient.get<HistoricalReloadJob[]>("/admin/historical-reloads"); },
+  summary() { return httpClient.get<HistoricalReloadSummary>("/admin/historical-reloads/summary"); },
+  cancel(id: number) { return httpClient.post<HistoricalReloadJob>(`/admin/historical-reloads/${id}/cancel`); },
 };
 
 export const visualConfigurationsApi = {

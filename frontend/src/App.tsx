@@ -15,6 +15,7 @@ import { ProtectedRoute } from "./auth/ProtectedRoute";
 import { LoginPage } from "./pages/LoginPage";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { RequiredPasswordChangePage } from "./pages/RequiredPasswordChangePage";
+import { HistoricalReloadPage } from "./pages/HistoricalReloadPage";
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="analises/visualizacao" element={<DataVisualizationPage />} />
           <Route path="analises/cep" element={<CepAnalysisPage />} />
           <Route element={<ProtectedRoute admin />}><Route path="admin/usuarios" element={<AdminUsersPage />} /></Route>
+          <Route element={<ProtectedRoute admin />}><Route path="admin/recargas-historicas" element={<HistoricalReloadPage />} /></Route>
           <Route path="*" element={<NotFoundPage />} />
           <Route path="/redirect" element={<Navigate to="/" replace />} />
         </Route></Route>
