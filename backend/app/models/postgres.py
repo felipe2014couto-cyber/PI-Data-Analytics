@@ -13,6 +13,7 @@ class PiSample(Base):
 
     tag_id = Column(Integer, primary_key=True, index=True)
     ts = Column(DateTime(timezone=True), primary_key=True, index=True)
+    source_mode = Column(String(32), primary_key=True, default="RECORDED")
 
     value_type = Column(String(12), nullable=False) # 'double', 'boolean', 'string', 'int'
 
@@ -24,7 +25,6 @@ class PiSample(Base):
     questionable = Column(Boolean, nullable=False, default=False)
     substituted = Column(Boolean, nullable=False, default=False)
 
-    source_mode = Column(String(32), nullable=False, default="RECORDED")
     ingested_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
 class PiIngestionCoverage(Base):

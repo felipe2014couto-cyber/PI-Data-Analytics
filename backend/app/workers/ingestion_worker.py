@@ -77,7 +77,7 @@ async def _ingest_tag(tag_id: int, now: datetime) -> tuple[int, int]:
             insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
             stmt = insert_factory(PiSample).values(records)
             stmt = stmt.on_conflict_do_update(
-                index_elements=["tag_id", "ts"],
+                index_elements=["tag_id", "ts", "source_mode"],
                 set_={column: getattr(stmt.excluded, column) for column in (
                     "value_type", "value_double", "value_boolean", "value_text",
                     "good", "questionable", "substituted", "source_mode",

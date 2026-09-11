@@ -165,7 +165,7 @@ class DatabaseTimeSeriesService:
         insert_factory = pg_insert if self.db.bind is not None and self.db.bind.dialect.name == "postgresql" else sqlite_insert
         stmt = insert_factory(PiSample).values(records)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["tag_id", "ts"],
+            index_elements=["tag_id", "ts", "source_mode"],
             set_={
                 "value_type": stmt.excluded.value_type,
                 "value_double": stmt.excluded.value_double,

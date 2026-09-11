@@ -116,7 +116,7 @@ async def backfill_tag_interval(
                     insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
                     stmt = insert_factory(PiSample).values([_record(tag_id, point, mode) for point in points])
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=["tag_id", "ts"],
+                        index_elements=["tag_id", "ts", "source_mode"],
                         set_={column: getattr(stmt.excluded, column) for column in (
                             "value_type", "value_double", "value_boolean", "value_text", "good", "questionable", "substituted", "source_mode"
                         )},
@@ -125,11 +125,12 @@ async def backfill_tag_interval(
                 CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
                 job.next_start = end
                 job.checkpoint_start = end
+                is_final = end >= job.target_end
                 job.stage = "READY"
-                job.status = "COMPLETED"
+                job.status = "COMPLETED" if is_final else "PENDING"
                 job.error_message = None
                 db.commit()
-                logger.info("backfill_window_completed tag_id=%s round=%s mode=%s start=%s end=%s points=%d", tag_id, round_name, mode, start, end, len(points))
+                logger.info("backfill_window_completed tag_id=%s round=%s mode=%s start=%s end=%s points=%d final=%s", tag_id, round_name, mode, start, end, len(points), is_final)
                 return True
             except Exception as exc:
                 db.rollback()
@@ -154,12 +155,22 @@ async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
                 PiBackfillJob.round_name.is_(None),
             ).order_by(PiBackfillJob.id).limit(100)).all())
     for job in jobs:
-        await backfill_tag_interval(
-            job.tag_id, job.target_start, job.target_end,
-            job.created_at or datetime.now(timezone.utc), "ADMIN", semaphore,
-            mode=job.mode or "RECORDED", interval_seconds=job.interval_seconds,
-            job_id=job.id,
-        )
+        cursor = job.next_start or job.target_start
+        while cursor < job.target_end:
+            window_end = min(cursor + timedelta(days=settings.backfill_chunk_days), job.target_end)
+            ok = await backfill_tag_interval(
+                job.tag_id, cursor, window_end,
+                job.t0 or job.created_at or datetime.now(timezone.utc), "ADMIN", semaphore,
+                mode=job.mode or "RECORDED", interval_seconds=job.interval_seconds,
+                job_id=job.id,
+            )
+            if not ok:
+                break
+            with SessionLocal() as db:
+                current = db.get(PiBackfillJob, job.id)
+                if current is None or current.status in ("CANCELLED", "FAILED", "COMPLETED"):
+                    break
+                cursor = current.next_start or window_end
 
 
 async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: int, days_to: int) -> None:
@@ -195,9 +206,11 @@ async def run_backfill_loop(*, once: bool = False) -> None:
                         PiBackfillJob.status.in_(("PENDING", "RUNNING")),
                         PiBackfillJob.round_name.is_(None),
                     ).order_by(PiBackfillJob.id).limit(100)).all())
-                    await _run_admin_jobs(admin_jobs)
-                    for round_name, days_from, days_to in BACKFILL_ROUNDS:
-                        await _run_round(list(tags), t0, round_name, days_from, days_to)
+                    if admin_jobs:
+                        await _run_admin_jobs(admin_jobs)
+                    else:
+                        for round_name, days_from, days_to in BACKFILL_ROUNDS:
+                            await _run_round(list(tags), t0, round_name, days_from, days_to)
                     logger.info("backfill_run_completed t0=%s tag_count=%d", t0, len(tags))
                     if db.bind is not None and db.bind.dialect.name == "postgresql":
                         db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
