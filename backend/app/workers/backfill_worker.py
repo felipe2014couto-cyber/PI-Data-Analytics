@@ -159,7 +159,7 @@ async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
                 PiBackfillJob.status.in_(("PENDING", "RUNNING")),
                 PiBackfillJob.round_name.is_(None),
             ).order_by(PiBackfillJob.id).limit(100)).all())
-    for job in jobs:
+    async def process_job(job: PiBackfillJob) -> None:
         cursor = job.next_start or job.target_start
         while cursor < job.target_end:
             window_end = min(cursor + timedelta(days=settings.backfill_chunk_days), job.target_end)
@@ -176,6 +176,9 @@ async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
                 if current is None or current.status in ("CANCELLED", "FAILED", "COMPLETED"):
                     break
                 cursor = current.next_start or window_end
+    batch_size = max(1, settings.pi_query_concurrency)
+    for offset in range(0, len(jobs), batch_size):
+        await asyncio.gather(*(process_job(job) for job in jobs[offset:offset + batch_size]))
 
 
 async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: int, days_to: int) -> None:
