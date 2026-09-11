@@ -72,8 +72,13 @@ async def backfill_tag_interval(
     mode: str = "RECORDED",
     interval_seconds: int | None = None,
     job_id: int | None = None,
+    max_count: int | None = None,
+    _split_depth: int = 0,
 ) -> bool:
-    async with semaphore:
+    split_window: tuple[datetime, datetime] | None = None
+    completed = False
+    await semaphore.acquire()
+    try:
         with SessionLocal() as db:
             tag = db.get(PiTag, tag_id)
             if tag is None or not tag.active:
@@ -105,49 +110,112 @@ async def backfill_tag_interval(
                 result = await _fetch_with_retry(PiService(db), TimeSeriesRequest(
                     tag_ids=[tag_id], start_time=start, end_time=end,
                     mode=request_mode, interval=request_interval,
+                    max_count=max_count,
                 ))
-                if result.errors or any(bool(s.truncated) for s in result.series):
-                    raise RuntimeError("resposta PI parcial/truncada nao gera cobertura completa")
+                error = next(iter(result.errors), None)
+                duration = end - start
+                minimum_window = timedelta(minutes=15)
+                if error:
+                    error_code = str(error.get("code") or "PI_ERROR")
+                    if error_code == "PI_TIMEOUT" and duration > minimum_window:
+                        midpoint = start + duration / 2
+                        split_window = (start, midpoint)
+                    else:
+                        raise RuntimeError(f"PI {error_code}: resposta nao completa")
                 points = [
                     point for point in (result.series[0].points if result.series else [])
                     if start <= point.timestamp.astimezone(timezone.utc) < end
                 ]
-                # PI can return the same event more than once at a boundary;
-                # collapse it before a single INSERT ... ON CONFLICT statement.
-                points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
-                if points:
-                    insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
-                    records = [_record(tag_id, point, mode) for point in points]
-                    for offset in range(0, len(records), 500):
-                        stmt = insert_factory(PiSample).values(records[offset:offset + 500])
-                        stmt = stmt.on_conflict_do_update(
-                            index_elements=["tag_id", "ts", "source_mode"],
-                            set_={column: getattr(stmt.excluded, column) for column in (
-                                "value_type", "value_double", "value_boolean", "value_text", "good", "questionable", "substituted", "source_mode"
-                            )},
-                        )
-                        db.execute(stmt)
-                CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
-                job.next_start = end
-                job.checkpoint_start = end
-                is_final = end >= job.target_end
-                job.stage = "READY"
-                job.status = "COMPLETED" if is_final else "PENDING"
-                job.error_message = None
-                db.commit()
-                logger.info("backfill_window_completed tag_id=%s round=%s mode=%s start=%s end=%s points=%d final=%s", tag_id, round_name, mode, start, end, len(points), is_final)
-                return True
+                too_many = max_count is not None and len(points) >= max_count
+                if too_many and duration > minimum_window:
+                    midpoint = start + duration / 2
+                    split_window = (start, midpoint)
+                elif too_many:
+                    raise RuntimeError("resposta PI excede maxCount na janela minima")
+                if split_window is not None:
+                    logger.info(
+                        "backfill_window_split tag_id=%s job_id=%s start=%s end=%s depth=%s",
+                        tag_id, job_id, start, end, _split_depth,
+                    )
+                    return_value = None
+                else:
+                    return_value = True
+                if return_value is None:
+                    # The recursive calls happen after releasing the semaphore.
+                    pass
+                else:
+                    # PI can return the same event more than once at a boundary;
+                    # collapse it before a single INSERT ... ON CONFLICT statement.
+                    points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
+                    if points:
+                        insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
+                        records = [_record(tag_id, point, mode) for point in points]
+                        for offset in range(0, len(records), 500):
+                            stmt = insert_factory(PiSample).values(records[offset:offset + 500])
+                            stmt = stmt.on_conflict_do_update(
+                                index_elements=["tag_id", "ts", "source_mode"],
+                                set_={column: getattr(stmt.excluded, column) for column in (
+                                    "value_type", "value_double", "value_boolean", "value_text", "good", "questionable", "substituted", "source_mode"
+                                )},
+                            )
+                            db.execute(stmt)
+                    CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
+                    job.next_start = end
+                    job.checkpoint_start = end
+                    is_final = end >= job.target_end
+                    job.stage = "READY"
+                    job.status = "COMPLETED" if is_final else "PENDING"
+                    job.error_message = None
+                    db.commit()
+                    completed = True
+                    logger.info("backfill_window_completed tag_id=%s round=%s mode=%s start=%s end=%s points=%d final=%s", tag_id, round_name, mode, start, end, len(points), is_final)
+            except PiIntegrationError as exc:
+                db.rollback()
+                if exc.code == "PI_TIMEOUT" and (end - start) > timedelta(minutes=15):
+                    split_window = (start, start + (end - start) / 2)
+                else:
+                    job = db.get(PiBackfillJob, job.id)
+                    if job is not None:
+                        job.stage = "FAILED"
+                        job.status = "FAILED"
+                        job.error_message = exc.safe_message[:2000]
+                        job.last_error_at = datetime.now(timezone.utc)
+                        db.commit()
+                if split_window is None:
+                    logger.exception("backfill_window_failed tag_id=%s round=%s mode=%s", tag_id, round_name, mode)
+                    return False
             except Exception as exc:
                 db.rollback()
-                job = db.get(PiBackfillJob, job.id)
-                if job is not None:
-                    job.stage = "FAILED"
-                    job.status = "FAILED"
-                    job.error_message = str(exc)[:2000]
-                    job.last_error_at = datetime.now(timezone.utc)
-                    db.commit()
+                if split_window is None:
+                    job = db.get(PiBackfillJob, job.id)
+                    if job is not None:
+                        job.stage = "FAILED"
+                        job.status = "FAILED"
+                        job.error_message = str(exc)[:2000]
+                        job.last_error_at = datetime.now(timezone.utc)
+                        db.commit()
                 logger.exception("backfill_window_failed tag_id=%s round=%s mode=%s", tag_id, round_name, mode)
-                return False
+                if split_window is None:
+                    return False
+    finally:
+        semaphore.release()
+
+    if split_window is not None:
+        split_start, midpoint = split_window
+        left = await backfill_tag_interval(
+            tag_id, split_start, midpoint, t0, round_name, semaphore,
+            mode=mode, interval_seconds=interval_seconds, job_id=job_id,
+            max_count=max_count, _split_depth=_split_depth + 1,
+        )
+        if not left:
+            return False
+        right = await backfill_tag_interval(
+            tag_id, midpoint, end, t0, round_name, semaphore,
+            mode=mode, interval_seconds=interval_seconds, job_id=job_id,
+            max_count=max_count, _split_depth=_split_depth + 1,
+        )
+        return left and right
+    return completed
 
 
 async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
@@ -160,27 +228,39 @@ async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
                 PiBackfillJob.round_name.is_(None),
             ).order_by(PiBackfillJob.id).limit(100)).all())
     jobs.sort(key=lambda job: (0 if job.mode == "INTERPOLATED_300S" else 1 if job.mode == "INTERPOLATED_10S" else 2, job.id))
-    async def process_job(job: PiBackfillJob) -> None:
-        cursor = job.next_start or job.target_start
-        chunk_days = 30 if job.mode == "INTERPOLATED_300S" else 2 if job.mode == "INTERPOLATED_10S" else settings.backfill_chunk_days
-        while cursor < job.target_end:
-            window_end = min(cursor + timedelta(days=chunk_days), job.target_end)
+    selected_ids = {job.id for job in jobs}
+    while True:
+        with SessionLocal() as db:
+            pending = list(db.scalars(select(PiBackfillJob).where(
+                PiBackfillJob.id.in_(selected_ids),
+                PiBackfillJob.status.in_(("PENDING", "RUNNING")),
+            ).order_by(PiBackfillJob.id)).all())
+        if not pending:
+            return
+        progressed = False
+        for job in pending:
+            cursor = job.next_start or job.target_start
+            if cursor >= job.target_end:
+                continue
+            if job.mode == "INTERPOLATED_300S":
+                window = timedelta(days=30)
+            elif job.mode == "INTERPOLATED_10S":
+                window = timedelta(hours=settings.backfill_recorded_window_hours)
+            else:
+                window = timedelta(hours=settings.backfill_recorded_window_hours)
+            window_end = min(cursor + window, job.target_end)
             ok = await backfill_tag_interval(
                 job.tag_id, cursor, window_end,
                 job.t0 or job.created_at or datetime.now(timezone.utc), "ADMIN", semaphore,
                 mode=job.mode or "RECORDED", interval_seconds=job.interval_seconds,
                 job_id=job.id,
+                max_count=settings.backfill_recorded_max_points if job.mode in ("RECORDED", "INTERPOLATED_10S") else None,
             )
             if not ok:
-                break
-            with SessionLocal() as db:
-                current = db.get(PiBackfillJob, job.id)
-                if current is None or current.status in ("CANCELLED", "FAILED", "COMPLETED"):
-                    break
-                cursor = current.next_start or window_end
-    batch_size = max(1, settings.pi_query_concurrency)
-    for offset in range(0, len(jobs), batch_size):
-        await asyncio.gather(*(process_job(job) for job in jobs[offset:offset + batch_size]))
+                return
+            progressed = True
+        if not progressed:
+            return
 
 
 async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: int, days_to: int) -> None:

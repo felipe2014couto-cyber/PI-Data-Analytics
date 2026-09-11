@@ -263,6 +263,18 @@ class Settings(BaseSettings):
         le=30,
         description="Tamanho em dias de cada bloco processado no backfill historico.",
     )
+    backfill_recorded_window_hours: float = Field(
+        default=6.0,
+        ge=0.25,
+        le=24.0,
+        description="Janela inicial do backfill RECORDED em horas; janelas podem ser divididas adaptativamente.",
+    )
+    backfill_recorded_max_points: int = Field(
+        default=5000,
+        ge=100,
+        le=1_000_000,
+        description="maxCount conservador usado pelo backfill RECORDED.",
+    )
     backfill_max_days: int = Field(
         default=370,
         ge=1,
