@@ -159,10 +159,12 @@ async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
                 PiBackfillJob.status.in_(("PENDING", "RUNNING")),
                 PiBackfillJob.round_name.is_(None),
             ).order_by(PiBackfillJob.id).limit(100)).all())
+    jobs.sort(key=lambda job: (0 if job.mode == "INTERPOLATED_300S" else 1 if job.mode == "INTERPOLATED_10S" else 2, job.id))
     async def process_job(job: PiBackfillJob) -> None:
         cursor = job.next_start or job.target_start
+        chunk_days = 30 if job.mode == "INTERPOLATED_300S" else 2 if job.mode == "INTERPOLATED_10S" else settings.backfill_chunk_days
         while cursor < job.target_end:
-            window_end = min(cursor + timedelta(days=settings.backfill_chunk_days), job.target_end)
+            window_end = min(cursor + timedelta(days=chunk_days), job.target_end)
             ok = await backfill_tag_interval(
                 job.tag_id, cursor, window_end,
                 job.t0 or job.created_at or datetime.now(timezone.utc), "ADMIN", semaphore,
