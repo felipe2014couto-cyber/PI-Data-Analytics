@@ -103,7 +103,7 @@ async def _ingest_tag(tag_id: int, now: datetime) -> tuple[int, int]:
         return len(points), 1
 
 
-async def run_ingestion_loop(interval_seconds: float = 10.0) -> None:
+async def run_ingestion_loop(interval_seconds: float = 10.0, *, once: bool = False) -> None:
     """Run cycles without overlapping leaders; safe to run in many processes."""
     interval_seconds = interval_seconds or settings.ingestion_cycle_seconds
     while True:
@@ -130,6 +130,10 @@ async def run_ingestion_loop(interval_seconds: float = 10.0) -> None:
                 if acquired and db.bind is not None and db.bind.dialect.name == "postgresql":
                     db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
         except Exception:
+            if once:
+                raise
             logger.exception("ingestion_cycle_failed")
+        if once:
+            return
         elapsed = (datetime.now(timezone.utc) - cycle_started).total_seconds()
         await asyncio.sleep(max(0.0, interval_seconds - elapsed))

@@ -9,14 +9,14 @@ from app.workers.deletion_worker import run_deletion_loop
 from app.workers.ingestion_worker import run_ingestion_loop
 
 
-async def main(worker: str, interval: float | None) -> None:
+async def main(worker: str, interval: float | None, once: bool = False) -> None:
     tasks = []
     if worker in {"all", "ingestion"}:
-        tasks.append(run_ingestion_loop(interval or 10))
+        tasks.append(run_ingestion_loop(interval or 10, once=once))
     if worker in {"all", "backfill"}:
-        tasks.append(run_backfill_loop())
+        tasks.append(run_backfill_loop(once=once))
     if worker in {"all", "deletion"}:
-        tasks.append(run_deletion_loop())
+        tasks.append(run_deletion_loop(once=once))
     await asyncio.gather(*tasks)
 
 
@@ -24,5 +24,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", choices=["all", "ingestion", "backfill", "deletion"], default="all")
     parser.add_argument("--interval", type=float, default=None)
+    parser.add_argument("--once", action="store_true", help="Run one cycle and exit; backfill includes all four rounds.")
     args = parser.parse_args()
-    asyncio.run(main(args.worker, args.interval))
+    asyncio.run(main(args.worker, args.interval, args.once))

@@ -19,7 +19,7 @@ def _clear_assignments(db, tag_id: int) -> None:
     db.query(Section).filter((Section.width_tag_id == tag_id) | (Section.um_tag_id == tag_id)).update({Section.width_tag_id: None, Section.um_tag_id: None}, synchronize_session=False)
 
 
-async def run_deletion_loop() -> None:
+async def run_deletion_loop(*, once: bool = False) -> None:
     while True:
         try:
             with SessionLocal() as db:
@@ -61,5 +61,9 @@ async def run_deletion_loop() -> None:
                             db.commit()
                         logger.exception("deletion_job_failed job_id=%s", job.id if job else None)
         except Exception:
+            if once:
+                raise
             logger.exception("deletion_cycle_failed")
+        if once:
+            return
         await asyncio.sleep(10)

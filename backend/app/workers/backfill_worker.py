@@ -143,7 +143,7 @@ async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: 
     await asyncio.gather(*(process_tag(tag_id) for tag_id in tags))
 
 
-async def run_backfill_loop() -> None:
+async def run_backfill_loop(*, once: bool = False) -> None:
     while True:
         acquired = False
         try:
@@ -161,5 +161,9 @@ async def run_backfill_loop() -> None:
                     if db.bind is not None and db.bind.dialect.name == "postgresql":
                         db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
         except Exception:
+            if once:
+                raise
             logger.exception("backfill_run_failed")
+        if once:
+            return
         await asyncio.sleep(60 if not acquired else 10)
