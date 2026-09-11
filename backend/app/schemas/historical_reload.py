@@ -11,7 +11,7 @@ class HistoricalReloadRequest(BaseModel):
     start_time: datetime
     end_time: datetime
     mode: ReloadMode = "recorded"
-    interval: str | None = Field(default=None, pattern=r"^\d+[smh]$", max_length=8)
+    interval: str | None = Field(default=None, pattern=r"^\d+[smhd]$", max_length=8)
     tag_id: int | None = Field(default=None, gt=0)
     variable_id: int | None = Field(default=None, gt=0)
     all_active: bool = False

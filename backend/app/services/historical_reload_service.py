@@ -23,7 +23,7 @@ def _one_year_later(value: datetime) -> datetime:
 def _interval_seconds(interval: str | None) -> int | None:
     if not interval:
         return None
-    return int(interval[:-1]) * {"s": 1, "m": 60, "h": 3600}[interval[-1]]
+    return int(interval[:-1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[interval[-1]]
 
 
 def _interval_label(seconds: int | None) -> str | None:

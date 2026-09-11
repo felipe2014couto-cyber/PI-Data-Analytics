@@ -54,7 +54,7 @@ export function HistoricalReloadPage() {
         <Form.Group className="col-md-3"><Form.Label>Início (UTC)</Form.Label><Form.Control type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} required /></Form.Group>
         <Form.Group className="col-md-3"><Form.Label>Fim (UTC)</Form.Label><Form.Control type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} required /></Form.Group>
         <Form.Group className="col-md-3"><Form.Label>Modo</Form.Label><Form.Select value={mode} onChange={(e) => setMode(e.target.value as HistoricalReloadMode)}><option value="recorded">Recorded</option><option value="interpolated">Interpolated</option></Form.Select></Form.Group>
-        {mode === "interpolated" ? <Form.Group className="col-md-3"><Form.Label>Resolução</Form.Label><Form.Control value={interval} onChange={(e) => setInterval(e.target.value)} pattern="\d+[smh]" required /></Form.Group> : null}
+        {mode === "interpolated" ? <Form.Group className="col-md-3"><Form.Label>Resolução</Form.Label><Form.Control value={interval} onChange={(e) => setInterval(e.target.value)} pattern="\d+[smhd]" required /></Form.Group> : null}
         <div className="col-12"><Button type="submit">Enfileirar recarga</Button></div>
       </Form>
     </Card.Body></Card>
