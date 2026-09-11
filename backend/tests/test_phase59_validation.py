@@ -363,17 +363,17 @@ class TestCatalogEndpoints:
     def test_list_equipments(self, client: TestClient):
         r = client.get("/api/equipments")
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        assert isinstance(r.json()["items"], list)
 
     def test_list_sections(self, client: TestClient):
         r = client.get("/api/sections")
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        assert isinstance(r.json()["items"], list)
 
     def test_list_variable_types(self, client: TestClient):
         r = client.get("/api/variable-types")
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        assert isinstance(r.json()["items"], list)
 
     def test_list_pi_tags(self, client: TestClient):
         r = client.get("/api/pi-tags")
@@ -408,7 +408,7 @@ class TestRegressionPhases5x:
         # Get v1 — should still have original content
         r = client.get(f"/api/visual-configurations/{cfg['id']}/history/1")
         assert r.status_code == 200
-        snap = r.json()["snapshot"]
+        snap = r.json()["document"]
         assert snap["visual_rules"]["enabled"] is False
 
     def test_cascade_delete_versions(self, client: TestClient):

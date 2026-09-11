@@ -103,8 +103,13 @@ class CepAnalysisService:
             # but exclude machine-stopped samples from the CEP population.
             calculation_data = self._exclude_machine_stopped(interpolated_data)
             for var in materialized_data.variables:
-                result, occurrences = await asyncio.to_thread(
-                    self._calculate_variable_compliance,
+                # The calculator is deliberately pure and bounded by the CEP
+                # request limits.  Keep it on the event loop instead of using
+                # the process-wide default executor: the service must not
+                # depend on executor lifecycle/reuse for a multi-variable
+                # analysis, and this avoids a stalled second variable when
+                # the host executor is unavailable.
+                result, occurrences = self._calculate_variable_compliance(
                     var, calculation_data, tag_variable_map,
                 )
                 variable_results.append(result)

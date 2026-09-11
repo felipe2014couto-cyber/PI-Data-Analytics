@@ -16,9 +16,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Batch mode keeps the migration compatible with SQLite and allows these
-    # optional references to coexist with pi_tags -> sections.
-    with op.batch_alter_table("sections", recreate="always") as batch_op:
+    is_sqlite = op.get_bind().dialect.name == "sqlite"
+    with op.batch_alter_table("sections", recreate="always" if is_sqlite else "never") as batch_op:
         batch_op.add_column(sa.Column("width_tag_id", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("um_tag_id", sa.Integer(), nullable=True))
         batch_op.add_column(sa.Column("thickness_tag_id", sa.Integer(), nullable=True))

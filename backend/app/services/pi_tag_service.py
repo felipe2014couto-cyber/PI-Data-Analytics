@@ -205,8 +205,31 @@ class PiTagService:
 
     def delete(self, pi_tag_id: int) -> None:
         item = self.get(pi_tag_id)
-        # Analysis tag references are nullable IDs on sections so the PI tag
-        # can still be removed without leaving a stale assignment behind.
+        # Historical samples live in the new hypertable. The legacy table is
+        # intentionally not touched during the rollback window.
+        from sqlalchemy import text
+        from app.models.postgres import PiTagDeletionJob
+
+        has_samples = False
+        try:
+            sample_count = self.db.execute(
+                text("SELECT COUNT(1) FROM pi_samples_timescale WHERE tag_id = :id"),
+                {"id": item.id},
+            ).scalar()
+            has_samples = bool(sample_count and sample_count > 0)
+        except Exception:
+            self.db.rollback()
+            raise
+
+        if has_samples:
+            item.lifecycle_status = "DELETION_PENDING"
+            item.active = False
+            deletion_job = PiTagDeletionJob(tag_id=item.id, status="PENDING")
+            self.db.add(deletion_job)
+            self.db.commit()
+            return
+
+        # Immediate delete if no samples exist
         for section in self.db.query(Section).filter(
             (Section.width_tag_id == item.id)
             | (Section.um_tag_id == item.id)

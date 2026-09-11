@@ -16,7 +16,8 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("pi_tags", recreate="always") as batch_op:
+    is_sqlite = op.get_bind().dialect.name == "sqlite"
+    with op.batch_alter_table("pi_tags", recreate="always" if is_sqlite else "never") as batch_op:
         batch_op.alter_column(
             "section_id",
             existing_type=sa.Integer(),

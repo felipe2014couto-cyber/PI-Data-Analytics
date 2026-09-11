@@ -329,7 +329,9 @@ export function PiTagsPage() {
     setDeleting(true);
     try {
       await piTagsApi.remove(confirmDelete.id);
-      setSuccessMessage("Tag PI excluida com sucesso.");
+      setSuccessMessage(
+        "Solicitacao de exclusao processada. Tags com historico no TimescaleDB sao purgadas com seguranca em segundo plano."
+      );
       setConfirmDelete(null);
       await loadList();
     } catch (err) {
@@ -581,6 +583,15 @@ export function PiTagsPage() {
 
       <ErrorAlert error={error} onClose={() => setError(null)} />
 
+      {items.some((item) => item.lifecycle_status === "DELETION_PENDING") && (
+        <div className="alert alert-warning py-2 px-3 small d-flex align-items-center mb-3">
+          <i className="bi bi-clock-history me-2 fs-6" />
+          <span>
+            Existem tags com exclusao assincrona em andamento. O worker de delecao esta purgando os registros historicos em segundo plano.
+          </span>
+        </div>
+      )}
+
       <div className="card piad-card piad-table-card">
         <div className="card-body">
           {loading ? (
@@ -653,7 +664,7 @@ export function PiTagsPage() {
                     <td className="small text-muted">{item.validation_message || "-"}</td>
                     <td className="small text-muted">{formatDateTime(item.validated_at)}</td>
                     <td>
-                      <ActiveBadge active={item.active} />
+                      <ActiveBadge active={item.active} lifecycleStatus={item.lifecycle_status} />
                     </td>
                     <td>
                       <div className="piad-table-actions">
@@ -661,8 +672,8 @@ export function PiTagsPage() {
                           variant="outline-success"
                           size="sm"
                           onClick={() => void validateOne(item)}
-                          disabled={!canValidate || validatingId === item.id}
-                          title="Validar no PI"
+                          disabled={!canValidate || validatingId === item.id || item.lifecycle_status === "DELETION_PENDING"}
+                          title={item.lifecycle_status === "DELETION_PENDING" ? "Exclusao em andamento" : "Validar no PI"}
                           data-testid={`validate-${item.id}`}
                         >
                           <i className="bi bi-shield-check" />
@@ -671,7 +682,8 @@ export function PiTagsPage() {
                           variant="outline-secondary"
                           size="sm"
                           onClick={() => toggleActive(item)}
-                          title={item.active ? "Desativar" : "Ativar"}
+                          disabled={item.lifecycle_status === "DELETION_PENDING"}
+                          title={item.lifecycle_status === "DELETION_PENDING" ? "Exclusao em andamento" : item.active ? "Desativar" : "Ativar"}
                         >
                           <i className={`bi ${item.active ? "bi-toggle-on" : "bi-toggle-off"}`} />
                         </Button>
@@ -679,7 +691,8 @@ export function PiTagsPage() {
                           variant="outline-primary"
                           size="sm"
                           onClick={() => openEdit(item)}
-                          title="Editar"
+                          disabled={item.lifecycle_status === "DELETION_PENDING"}
+                          title={item.lifecycle_status === "DELETION_PENDING" ? "Exclusao em andamento" : "Editar"}
                         >
                           <i className="bi bi-pencil" />
                         </Button>
@@ -687,7 +700,8 @@ export function PiTagsPage() {
                           variant="outline-danger"
                           size="sm"
                           onClick={() => setConfirmDelete(item)}
-                          title="Excluir"
+                          disabled={item.lifecycle_status === "DELETION_PENDING"}
+                          title={item.lifecycle_status === "DELETION_PENDING" ? "Exclusao em andamento" : "Excluir"}
                         >
                           <i className="bi bi-trash" />
                         </Button>
@@ -941,7 +955,7 @@ export function PiTagsPage() {
         message={
           <span>
             Tem certeza que deseja excluir a tag <strong>{confirmDelete?.pi_tag_name}</strong>?
-            Esta acao nao podera ser desfeita.
+            Esta acao nao podera ser desfeita. Se houver historico de medicoes no TimescaleDB, os registros serao purgados de forma segura em segundo plano.
           </span>
         }
         busy={deleting}

@@ -32,13 +32,15 @@ def _make_tag(
     *,
     code: str,
     pi_web_id: str | None = None,
+    engineering_unit: str | None = "C",
+    default_unit: str | None = None,
 ) -> PiTag:
     equipment = Equipment(code=f"EQ-{code}", name=f"Equipment {code}")
     db_session.add(equipment)
     db_session.flush()
     section = Section(equipment_id=equipment.id, code="S1", name="Section 1")
     db_session.add(section)
-    variable_type = VariableType(code=f"VT-{code}", name="Temperatura")
+    variable_type = VariableType(code=f"VT-{code}", name="Temperatura", default_unit=default_unit)
     db_session.add(variable_type)
     db_session.flush()
     tag = PiTag(
@@ -48,7 +50,7 @@ def _make_tag(
         pi_server="PI_DATA",
         pi_tag_name=code,
         display_name=f"Display {code}",
-        engineering_unit="C",
+        engineering_unit=engineering_unit,
         data_type=PiTagDataType.NUMERIC,
         active=True,
         pi_web_id=pi_web_id,
@@ -106,6 +108,33 @@ def test_time_series_recorded(client: TestClient, db_session: Session) -> None:
     assert series["points"][0]["value"] == 82.5
     assert series["points"][1]["good"] is False
     assert series["points"][1]["questionable"] is True
+
+
+def test_time_series_uses_variable_type_default_unit(client: TestClient, db_session: Session) -> None:
+    _configure_pi()
+    tag = _make_tag(
+        db_session,
+        code="RB3.DEFAULT_UNIT",
+        pi_web_id="W-DEFAULT-UNIT",
+        engineering_unit=None,
+        default_unit="bar",
+    )
+    client.fake_provider._recorded = {  # type: ignore[attr-defined]
+        "W-DEFAULT-UNIT": [make_value("2026-07-01T00:00:00Z", 1.0)]
+    }
+
+    response = client.get(
+        "/api/time-series",
+        params={
+            "tag_ids": [tag.id],
+            "start_time": "2026-07-01T00:00:00Z",
+            "end_time": "2026-07-01T01:00:00Z",
+            "mode": "recorded",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["series"][0]["unit"] == "bar"
 
 
 def test_time_series_interpolated(client: TestClient, db_session: Session) -> None:

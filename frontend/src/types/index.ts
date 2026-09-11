@@ -89,6 +89,9 @@ export interface VariableTypeUpdate {
   active?: boolean;
 }
 
+export type PiTagLifecycleStatus = "ACTIVE" | "INACTIVE" | "DELETION_PENDING";
+export type PiTagBackfillStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+
 export interface PiTag {
   id: number;
   equipment_id: number;
@@ -104,6 +107,8 @@ export interface PiTag {
   engineering_unit: string | null;
   data_type: PiTagDataType;
   active: boolean;
+  lifecycle_status?: PiTagLifecycleStatus;
+  backfill_status?: PiTagBackfillStatus;
   validation_status: PiTagValidationStatus;
   validation_message: string | null;
   validated_at: string | null;
@@ -423,6 +428,7 @@ export interface TimeSeriesSeries {
 }
 
 export interface QueryExecutionMetadata {
+  source?: "timescaledb" | "pi_web_api" | "hybrid" | null;
   strategy?: string | null;
   resolution_mode: string;
   requested_target_points_per_tag?: number | null;

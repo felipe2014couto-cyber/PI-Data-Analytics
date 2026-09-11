@@ -14,8 +14,11 @@ env/
 
 # Banco de dados local
 *.db
+*.db.*
 *.sqlite
 *.sqlite3
+*.bak
+*.backup*
 backend/tests/_test_pads.db
 backend/pi_analytics_data.db
 
@@ -25,7 +28,11 @@ logs/
 
 # Ambiente
 .env
+.env.*
 backend/.env
+backend/.env.*
+!.env.example
+!backend/.env.example
 
 # Frontend
 node_modules/

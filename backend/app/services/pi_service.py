@@ -283,7 +283,9 @@ class PiService:
             tag._meta_equipment_code = tag.equipment.code if tag.equipment else None
             tag._meta_section_code = tag.section.code if tag.section else None
             tag._meta_variable_type_code = tag.variable_type.code if tag.variable_type else None
-            tag._meta_unit = tag.engineering_unit or (tag.variable_type.unit if tag.variable_type else None)
+            tag._meta_unit = tag.engineering_unit or (
+                tag.variable_type.default_unit if tag.variable_type else None
+            )
             tags.append(tag)
         if self.db:
             self.db.rollback()
@@ -467,4 +469,10 @@ class PiService:
             mode=request.mode,
             series=series,
             errors=errors,
+            query_execution={
+                "strategy": "pi_web_api",
+                "source": "pi_web_api",
+                "complete": not errors,
+                "partial": bool(errors),
+            },
         )

@@ -26,7 +26,7 @@ def upgrade() -> None:
         sa.Column("target_tag_id", sa.Integer(), sa.ForeignKey("pi_tags.id", ondelete="RESTRICT"), nullable=True),
         sa.Column("code", sa.String(64), nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("active", sa.Boolean(), nullable=False, server_default="1"),
+        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
         sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.current_timestamp()),
         sa.UniqueConstraint("equipment_id", "code", name="uq_cep_variables_equip_code"),

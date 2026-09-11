@@ -150,6 +150,8 @@ class PiTagResponse(BaseModel):
     engineering_unit: Optional[str] = None
     data_type: PiTagDataType
     active: bool
+    lifecycle_status: Optional[str] = "ACTIVE"
+    backfill_status: Optional[str] = "PENDING"
     validation_status: PiTagValidationStatus
     validation_message: Optional[str] = None
     validated_at: Optional[datetime] = None

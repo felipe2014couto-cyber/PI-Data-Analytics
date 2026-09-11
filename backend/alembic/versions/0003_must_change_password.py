@@ -14,9 +14,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("users", sa.Column("must_change_password", sa.Boolean(), nullable=False, server_default=sa.text("0")))
+    op.add_column("users", sa.Column("must_change_password", sa.Boolean(), nullable=False, server_default=sa.false()))
     with op.batch_alter_table("users") as batch:
-        batch.alter_column("must_change_password", server_default=sa.text("1"), existing_type=sa.Boolean(), existing_nullable=False)
+        batch.alter_column("must_change_password", server_default=sa.true(), existing_type=sa.Boolean(), existing_nullable=False)
 
 
 def downgrade() -> None:

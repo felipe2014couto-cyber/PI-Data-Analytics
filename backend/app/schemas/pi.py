@@ -122,6 +122,7 @@ class TimeSeriesSeries(BaseModel):
 
 
 class QueryExecutionMetadata(BaseModel):
+    source: Optional[Literal["timescaledb", "pi_web_api", "hybrid"]] = None
     strategy: Optional[str] = None
     resolution_mode: str = "automatic"
     requested_target_points_per_tag: Optional[int] = None

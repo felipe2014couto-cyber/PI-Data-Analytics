@@ -67,13 +67,29 @@ export function QuerySummary({
   const pointsReceived = queryExecution?.pi_points_received;
   const pointsReturned = queryExecution?.points_returned;
   const exactRecorded = mode === "recorded";
-  const strategyLabel = strategy === "streamset-recorded-batch"
+  const source = queryExecution?.source;
+  const isPostgres = source === "timescaledb" || source === "hybrid" || strategy?.startsWith("postgresql") || strategy?.startsWith("timescaledb");
+  const strategyLabel = strategy === "timescaledb_direct"
+    ? "TimescaleDB Direto"
+    : strategy === "postgresql_direct"
+    ? "PostgreSQL Direto"
+    : strategy === "streamset-recorded-batch"
     ? "StreamSet Recorded + Batch"
     : strategy === "batch-recorded-fallback"
     ? "Batch Recorded (fallback)"
     : strategy ?? (streamsetUsed ? "StreamSet" : "Streams Recorded");
 
-  const sourceLabel = cacheHit ? "Cache" : streamsetUsed ? "StreamSet" : "PI Web API";
+  const sourceLabel = source === "hybrid"
+    ? "Banco + PI Web API"
+    : source === "timescaledb" || isPostgres
+    ? "TimescaleDB"
+    : source === "pi_web_api"
+    ? "PI Web API"
+    : cacheHit
+    ? "Cache"
+    : streamsetUsed
+    ? "StreamSet"
+    : "PI Web API";
 
   return (
     <div data-testid="query-summary">

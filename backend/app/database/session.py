@@ -8,6 +8,8 @@ from app.core.config import settings
 
 
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+if settings.database_password is not None and not settings.database_url.startswith("sqlite"):
+    connect_args["password"] = settings.database_password.get_secret_value()
 
 engine = create_engine(
     settings.database_url,

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,7 @@ from app.schemas.auth import ChangePasswordRequest, LoginRequest, UserPublic
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("pi_analytics_data.auth")
 
 
 def _set_cookies(response: Response, token: str, csrf: str) -> None:
@@ -21,6 +24,7 @@ def _set_cookies(response: Response, token: str, csrf: str) -> None:
 def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db_session)):
     user = UserService(db).authenticate(payload.username, payload.password)
     _set_cookies(response, create_access_token(user.id, user.auth_version), create_csrf_token())
+    logger.info("auth_login_success user_id=%s", user.id)
     return user
 
 

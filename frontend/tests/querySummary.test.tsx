@@ -57,4 +57,26 @@ describe("QuerySummary recorded exato", () => {
     expect(screen.getByTestId("metric-status")).toHaveTextContent("Parcial");
     expect(screen.getByTestId("truncated-warning")).toHaveTextContent("pode não conter todos os eventos");
   });
+
+  it("exibe TimescaleDB como fonte e TimescaleDB Direto como estrategia", () => {
+    render(
+      <QuerySummary
+        chart={null}
+        startLocal="2026-09-03"
+        endLocal="2026-09-10"
+        durationMs={25}
+        seriesCount={1}
+        partial={false}
+        mode="recorded"
+        queryExecution={{
+          ...metadata,
+          strategy: "timescaledb_direct",
+          streamset_used: false,
+          cache_hit: false,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("metric-source")).toHaveTextContent("TimescaleDB");
+    expect(screen.getByTestId("metric-strategy")).toHaveTextContent("TimescaleDB Direto");
+  });
 });

@@ -24,7 +24,7 @@ def upgrade() -> None:
         sa.Column("code", sa.String(length=64), nullable=False),
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("description", sa.String(length=500), nullable=True),
-        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=False), nullable=False, server_default=sa.func.current_timestamp()),
         sa.Column("updated_at", sa.DateTime(timezone=False), nullable=False, server_default=sa.func.current_timestamp()),
         sa.UniqueConstraint("code", name="uq_equipments_code"),
@@ -39,7 +39,7 @@ def upgrade() -> None:
         sa.Column("code", sa.String(length=64), nullable=False),
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("description", sa.String(length=500), nullable=True),
-        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=False), nullable=False, server_default=sa.func.current_timestamp()),
         sa.Column("updated_at", sa.DateTime(timezone=False), nullable=False, server_default=sa.func.current_timestamp()),
         sa.ForeignKeyConstraint(
@@ -60,7 +60,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("description", sa.String(length=500), nullable=True),
         sa.Column("default_unit", sa.String(length=32), nullable=True),
-        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=False), nullable=False, server_default=sa.func.current_timestamp()),
         sa.Column("updated_at", sa.DateTime(timezone=False), nullable=False, server_default=sa.func.current_timestamp()),
         sa.UniqueConstraint("code", name="uq_variable_types_code"),
@@ -86,7 +86,7 @@ def upgrade() -> None:
             nullable=False,
             server_default="NUMERIC",
         ),
-        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.text("1")),
+        sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column(
             "validation_status",
             sa.Enum(

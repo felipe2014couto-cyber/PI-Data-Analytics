@@ -128,7 +128,10 @@ def _make_client(db_session, fake_provider):
     app.dependency_overrides[get_current_user] = _authenticated_user
     app.dependency_overrides[validate_csrf] = lambda: None
 
-    return TestClient(app), store
+    # Match the application test fixture's event-loop backend.  The default
+    # asyncio portal can deadlock when a request creates an asynchronous CEP
+    # task and returns before that task reaches its first checkpoint.
+    return TestClient(app, backend_options={"use_uvloop": True}), store
 
 
 def test_materialization_uses_grouped_limit_tags_from_reading_registration(db_session) -> None:

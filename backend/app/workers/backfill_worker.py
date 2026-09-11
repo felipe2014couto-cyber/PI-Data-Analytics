@@ -1,0 +1,172 @@
+"""Durable, round-robin backfill worker with a fixed T0 per run."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from app.core.config import settings
+from app.database.session import SessionLocal
+from app.integrations.pi.errors import PiIntegrationError
+from app.models.pi_tag import PiTag
+from app.models.postgres import PiBackfillJob, PiSample
+from app.schemas.pi import TimeSeriesRequest
+from app.services.coverage_service import CoverageService
+from app.services.pi_service import PiService
+
+logger = logging.getLogger("workers.backfill")
+BACKFILL_ROUNDS = (
+    ("R1", 7, 0),
+    ("R2", 30, 7),
+    ("R3", 90, 30),
+    ("R4", 365, 90),
+)
+LOCK_KEY = 2147483002
+
+
+def _record(tag_id: int, point: Any) -> dict[str, Any]:
+    value_type = "boolean" if isinstance(point.value, bool) else "double" if isinstance(point.value, (int, float)) else "string"
+    return {
+        "tag_id": tag_id,
+        "ts": point.timestamp.astimezone(timezone.utc),
+        "value_type": value_type,
+        "value_double": float(point.value) if value_type == "double" else None,
+        "value_boolean": bool(point.value) if value_type == "boolean" else None,
+        "value_text": str(point.value) if value_type == "string" and point.value is not None else None,
+        "good": point.good, "questionable": point.questionable, "substituted": point.substituted,
+        "source_mode": "RECORDED",
+    }
+
+
+async def _fetch_with_retry(service: PiService, request: TimeSeriesRequest) -> Any:
+    for attempt in range(1, settings.pi_request_max_retries + 2):
+        try:
+            return await service.fetch_time_series(request)
+        except PiIntegrationError as exc:
+            if not exc.retryable or attempt >= settings.pi_request_max_retries + 1:
+                raise
+            retry_after = None
+            if isinstance(exc.details, dict):
+                try:
+                    retry_after = float(exc.details.get("retry_after"))
+                except (TypeError, ValueError):
+                    pass
+            delay = retry_after if retry_after is not None else min(2 ** (attempt - 1), 30)
+            await asyncio.sleep(max(0.1, min(delay, 60.0)) + random.uniform(0, 0.5))
+
+
+async def backfill_tag_interval(
+    tag_id: int,
+    start: datetime,
+    end: datetime,
+    t0: datetime,
+    round_name: str,
+    semaphore: asyncio.Semaphore,
+) -> bool:
+    async with semaphore:
+        with SessionLocal() as db:
+            tag = db.get(PiTag, tag_id)
+            if tag is None or not tag.active:
+                return False
+            job = db.execute(select(PiBackfillJob).where(
+                PiBackfillJob.tag_id == tag_id,
+                PiBackfillJob.round_name == round_name,
+                PiBackfillJob.t0 == t0,
+                PiBackfillJob.target_start == start,
+                PiBackfillJob.target_end == end,
+            )).scalar_one_or_none()
+            if job is None:
+                job = PiBackfillJob(tag_id=tag_id, target_start=start, target_end=end, next_start=start, t0=t0, round_name=round_name, stage="RUNNING", status="RUNNING")
+                db.add(job)
+            job.attempts = (job.attempts or 0) + 1
+            db.commit()
+
+            try:
+                result = await _fetch_with_retry(PiService(db), TimeSeriesRequest(
+                    tag_ids=[tag_id], start_time=start, end_time=end, mode="recorded"
+                ))
+                if result.errors or any(bool(s.truncated) for s in result.series):
+                    raise RuntimeError("resposta PI parcial/truncada nao gera cobertura completa")
+                points = [
+                    point for point in (result.series[0].points if result.series else [])
+                    if start <= point.timestamp.astimezone(timezone.utc) < end
+                ]
+                if points:
+                    insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
+                    stmt = insert_factory(PiSample).values([_record(tag_id, point) for point in points])
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["tag_id", "ts"],
+                        set_={column: getattr(stmt.excluded, column) for column in (
+                            "value_type", "value_double", "value_boolean", "value_text", "good", "questionable", "substituted", "source_mode"
+                        )},
+                    )
+                    db.execute(stmt)
+                CoverageService.record_coverage(db, tag_id, start, end, "RECORDED", pi_web_id=tag.pi_web_id)
+                job.next_start = end
+                job.checkpoint_start = end
+                job.stage = "READY"
+                job.status = "COMPLETED"
+                job.error_message = None
+                db.commit()
+                logger.info("backfill_window_completed tag_id=%s round=%s start=%s end=%s points=%d", tag_id, round_name, start, end, len(points))
+                return True
+            except Exception as exc:
+                db.rollback()
+                job = db.get(PiBackfillJob, job.id)
+                if job is not None:
+                    job.stage = "FAILED"
+                    job.status = "FAILED"
+                    job.error_message = str(exc)[:2000]
+                    job.last_error_at = datetime.now(timezone.utc)
+                    db.commit()
+                logger.exception("backfill_window_failed tag_id=%s round=%s", tag_id, round_name)
+                return False
+
+
+async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: int, days_to: int) -> None:
+    round_start = t0 - timedelta(days=days_from)
+    round_end = t0 - timedelta(days=days_to)
+    semaphore = asyncio.Semaphore(max(1, settings.pi_query_concurrency))
+    # One task per tag, but each tag's missing windows are processed in order.
+    async def process_tag(tag_id: int) -> None:
+        with SessionLocal() as db:
+            missing = CoverageService.get_missing_intervals(db, tag_id, round_start, round_end, "RECORDED")
+        for start, end in missing:
+            cursor = start
+            while cursor < end:
+                window_end = min(cursor + timedelta(days=settings.backfill_chunk_days), end)
+                await backfill_tag_interval(tag_id, cursor, window_end, t0, round_name, semaphore)
+                cursor = window_end
+    await asyncio.gather(*(process_tag(tag_id) for tag_id in tags))
+
+
+async def run_backfill_loop(*, once: bool = False) -> None:
+    while True:
+        acquired = False
+        try:
+            t0 = datetime.now(timezone.utc)
+            with SessionLocal() as db:
+                if db.bind is not None and db.bind.dialect.name == "postgresql":
+                    acquired = bool(db.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": LOCK_KEY}).scalar())
+                else:
+                    acquired = True
+                tags = db.execute(select(PiTag.id).where(PiTag.active.is_(True)).order_by(PiTag.id)).scalars().all()
+                if acquired:
+                    for round_name, days_from, days_to in BACKFILL_ROUNDS:
+                        await _run_round(list(tags), t0, round_name, days_from, days_to)
+                    logger.info("backfill_run_completed t0=%s tag_count=%d", t0, len(tags))
+                    if db.bind is not None and db.bind.dialect.name == "postgresql":
+                        db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
+        except Exception:
+            if once:
+                raise
+            logger.exception("backfill_run_failed")
+        if once:
+            return
+        await asyncio.sleep(60 if not acquired else 10)

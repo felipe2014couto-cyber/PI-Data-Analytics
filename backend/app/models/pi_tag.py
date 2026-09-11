@@ -65,6 +65,37 @@ class PiTag(Base, TimestampMixin):
     validation_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     validated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False), nullable=True)
 
+    lower_limit_tag_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("pi_tags.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    upper_limit_tag_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("pi_tags.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="ACTIVE",
+        server_default="ACTIVE",
+    )
+    sampling_mode: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="INTERPOLATED_10S",
+        server_default="INTERPOLATED_10S",
+    )
+    backfill_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="PENDING",
+        server_default="PENDING",
+    )
+    backfill_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     equipment: Mapped["Equipment"] = relationship(  # noqa: F821
         "Equipment",
         back_populates="pi_tags",
