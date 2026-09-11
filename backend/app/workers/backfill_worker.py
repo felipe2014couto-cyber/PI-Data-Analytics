@@ -150,7 +150,7 @@ async def _run_admin_jobs(jobs: list[PiBackfillJob] | None = None) -> None:
     semaphore = asyncio.Semaphore(max(1, settings.pi_query_concurrency))
     if jobs is None:
         with SessionLocal() as db:
-            jobs = list(db.execute(select(PiBackfillJob).where(
+            jobs = list(db.scalars(select(PiBackfillJob).where(
                 PiBackfillJob.status.in_(("PENDING", "RUNNING")),
                 PiBackfillJob.round_name.is_(None),
             ).order_by(PiBackfillJob.id).limit(100)).all())
@@ -202,7 +202,7 @@ async def run_backfill_loop(*, once: bool = False) -> None:
                     acquired = True
                 tags = db.execute(select(PiTag.id).where(PiTag.active.is_(True)).order_by(PiTag.id)).scalars().all()
                 if acquired:
-                    admin_jobs = list(db.execute(select(PiBackfillJob).where(
+                    admin_jobs = list(db.scalars(select(PiBackfillJob).where(
                         PiBackfillJob.status.in_(("PENDING", "RUNNING")),
                         PiBackfillJob.round_name.is_(None),
                     ).order_by(PiBackfillJob.id).limit(100)).all())
