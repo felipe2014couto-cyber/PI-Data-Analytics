@@ -24,6 +24,7 @@ services:
   backup:
     image: timescale/timescaledb-ha:pg18.4-ts2.27.1@sha256:7c253207091a191a9aea5d1dee8816512f3aca22d169905e0bc08795ffac9752
     profiles: [backup]
+    user: "0:0"
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -37,6 +38,7 @@ services:
       - timescale_backups:/backup
     entrypoint: ["/bin/sh", "-ec"]
     command: |
+      umask 077
       stamp=$$(date -u +%Y%m%dT%H%M%SZ)
       pg_dump --format=custom --file="/backup/pi_analytics_$${stamp}.dump" "$${PGDATABASE}"
       sha256sum "/backup/pi_analytics_$${stamp}.dump" | tee "/backup/pi_analytics_$${stamp}.sha256"
