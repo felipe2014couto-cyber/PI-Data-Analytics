@@ -83,15 +83,16 @@ class DatabaseTimeSeriesService:
                 if not pi_result.series:
                     continue
                 gap_series = pi_result.series[0]
-                points.extend(gap_series.points)
-                if gap_series.points:
+                gap_points = self._clip_points(gap_series.points, gap_start, gap_end)
+                points.extend(gap_points)
+                if gap_points:
                     gap_failed = False
                 saw_pi = True
                 complete = not pi_result.errors and not any(
                     bool(s.truncated) for s in pi_result.series
                 )
                 if complete:
-                    self._store_gap(tag, gap_series.points, gap_start, gap_end, requested_mode, interval_seconds)
+                    self._store_gap(tag, gap_points, gap_start, gap_end, requested_mode, interval_seconds)
 
             unique = {point.timestamp.astimezone(timezone.utc): point for point in points}
             ordered = [unique[key] for key in sorted(unique)]
@@ -162,6 +163,7 @@ class DatabaseTimeSeriesService:
         mode: str,
         interval_seconds: Optional[int],
     ) -> None:
+        points = self._clip_points(points, start, end)
         if not points:
             CoverageService.record_coverage(self.db, tag.id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
             return
@@ -184,6 +186,20 @@ class DatabaseTimeSeriesService:
         )
         self.db.execute(stmt)
         CoverageService.record_coverage(self.db, tag.id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
+
+    @staticmethod
+    def _clip_points(
+        points: list[TimeSeriesPoint],
+        start: datetime,
+        end: datetime,
+    ) -> list[TimeSeriesPoint]:
+        """Keep returned points aligned with the half-open coverage interval."""
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+        return [
+            point for point in points
+            if start_utc <= point.timestamp.astimezone(timezone.utc) < end_utc
+        ]
 
     @staticmethod
     def _record(tag_id: int, point: TimeSeriesPoint, mode: str) -> dict[str, Any]:

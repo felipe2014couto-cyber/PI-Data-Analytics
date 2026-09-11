@@ -93,7 +93,10 @@ async def backfill_tag_interval(
                 ))
                 if result.errors or any(bool(s.truncated) for s in result.series):
                     raise RuntimeError("resposta PI parcial/truncada nao gera cobertura completa")
-                points = result.series[0].points if result.series else []
+                points = [
+                    point for point in (result.series[0].points if result.series else [])
+                    if start <= point.timestamp.astimezone(timezone.utc) < end
+                ]
                 if points:
                     insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
                     stmt = insert_factory(PiSample).values([_record(tag_id, point) for point in points])

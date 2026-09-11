@@ -68,7 +68,10 @@ async def _ingest_tag(tag_id: int, now: datetime) -> tuple[int, int]:
             db.commit()
             return 0, 0
 
-        points = result.series[0].points if result.series else []
+        points = [
+            point for point in (result.series[0].points if result.series else [])
+            if start <= point.timestamp.astimezone(timezone.utc) < now
+        ]
         if points:
             records = [_record(tag.id, point, mode) for point in points]
             insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
