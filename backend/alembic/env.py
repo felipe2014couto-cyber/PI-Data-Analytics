@@ -11,7 +11,10 @@ from app import models  # noqa: F401  ensure models are imported
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic's default disables loggers not listed in alembic.ini.  That can
+    # silence the application's telemetry when migrations are exercised in
+    # the same process (and is not needed for this project's logging setup).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 current_url = config.get_main_option("sqlalchemy.url")
 if not current_url or current_url == "sqlite:///./pi_analytics_data.db":
