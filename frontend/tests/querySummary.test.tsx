@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { QuerySummary } from "../src/components/QuerySummary";
 
-describe("QuerySummary recorded exato", () => {
+describe("QuerySummary recorded 10s", () => {
   const metadata = {
     resolution_mode: "manual",
     sampled: false,
@@ -37,7 +37,7 @@ describe("QuerySummary recorded exato", () => {
     expect(screen.getByTestId("metric-batch-subrequests")).toHaveTextContent("7");
     expect(screen.getByTestId("metric-window-splits")).toHaveTextContent("3");
     expect(screen.getByTestId("metric-status")).toHaveTextContent("Completo");
-    expect(screen.getByTestId("recorded-exact-info")).toHaveTextContent("não foram interpolados nem reduzidos");
+    expect(screen.getByTestId("recorded-10s-info")).toHaveTextContent("série interpolada de 10 segundos");
     expect(screen.getByTestId("recorded-volume-warning")).toBeInTheDocument();
   });
 

@@ -8,8 +8,6 @@ import type { AnalysisModel, TimeAnalysisRule, TimePeriod, TimePreset, TimeSerie
 export type { TagOption };
 
 export const INTERVAL_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "1s", label: "1 segundo" },
-  { value: "5s", label: "5 segundos" },
   { value: "10s", label: "10 segundos" },
   { value: "30s", label: "30 segundos" },
   { value: "1m", label: "1 minuto" },
@@ -433,7 +431,7 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
             type="radio"
             id="mode-recorded"
             name="mode"
-            label="Valores registrados — exatos"
+            label="Histórico 10s — base cíclica"
             checked={mode === "recorded"}
             onChange={() => onModeChange("recorded")}
             data-testid="mode-recorded"

@@ -49,6 +49,12 @@ class DatabaseTimeSeriesService:
             )
         except (ValueError, KeyError) as exc:
             raise ValidationError("Modo ou resolução de série inválidos.", details={"mode": request.mode, "interval": request.interval}) from exc
+        # A visualização chamada "recorded" usa a série interpolada de 10 s.
+        # Assim, recordvalues não dispara uma consulta ao PI nem depende de
+        # cobertura RECORDED, que é mantida apenas para ingestão/compatibilidade.
+        if request.mode == "recorded":
+            requested_mode = "INTERPOLATED_10S"
+            interval_seconds = 10
         if len(request.tag_ids) > 100:
             raise QueryLimitExceededError("Quantidade de tags excede o limite configurado.")
         tags = []
@@ -93,7 +99,7 @@ class DatabaseTimeSeriesService:
             raise HistoricalDataNotLoadedError(details={
                 "affected_tags": missing_details,
                 "mode": request.mode,
-                "resolution": request.interval if request.mode == "interpolated" else None,
+                "resolution": request.interval if request.mode == "interpolated" else "10s",
                 "requested_period": {
                     "start": request.start_time.astimezone(timezone.utc).isoformat(),
                     "end": request.end_time.astimezone(timezone.utc).isoformat(),
@@ -112,6 +118,7 @@ class DatabaseTimeSeriesService:
                 "source": "timescaledb",
                 "complete": True,
                 "partial": False,
+                "effective_interval": "10s" if request.mode == "recorded" else request.interval,
             },
         )
 

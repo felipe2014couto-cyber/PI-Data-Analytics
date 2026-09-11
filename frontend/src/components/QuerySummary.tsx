@@ -66,7 +66,7 @@ export function QuerySummary({
   const windowSplits = queryExecution?.window_split_count;
   const pointsReceived = queryExecution?.pi_points_received;
   const pointsReturned = queryExecution?.points_returned;
-  const exactRecorded = mode === "recorded";
+  const recordedTenSecond = mode === "recorded";
   const source = queryExecution?.source;
   const isPostgres = source === "timescaledb" || source === "hybrid" || strategy?.startsWith("postgresql") || strategy?.startsWith("timescaledb");
   const strategyLabel = strategy === "timescaledb_direct"
@@ -118,7 +118,7 @@ export function QuerySummary({
         <Col xs={6} md={4} lg={2}>
           <Metric label="Modo" value={mode} testId="metric-mode" />
         </Col>
-        {exactRecorded ? (
+        {recordedTenSecond ? (
           <Col xs={12} md={8} lg={4}>
             <Metric label="Estratégia" value={strategyLabel} testId="metric-strategy" />
           </Col>
@@ -209,9 +209,9 @@ export function QuerySummary({
           </Col>
         ) : null}
       </Row>
-      {exactRecorded ? (
-        <div className="mt-2 p-2 border rounded bg-success bg-opacity-10 small" data-testid="recorded-exact-info">
-          Valores registrados — exatos. Os eventos não foram interpolados nem reduzidos.
+      {recordedTenSecond ? (
+        <div className="mt-2 p-2 border rounded bg-success bg-opacity-10 small" data-testid="recorded-10s-info">
+          Histórico 10s — base cíclica. O modo recorded é servido pela série interpolada de 10 segundos no TimescaleDB.
         </div>
       ) : anySampled ? (
         <div className="mt-2 p-2 border rounded bg-warning bg-opacity-10 small" data-testid="sampling-warning">
@@ -229,9 +229,9 @@ export function QuerySummary({
           A consulta atingiu o limite de segurança e pode não conter todos os eventos.
         </div>
       ) : null}
-      {exactRecorded && ((pointsReceived ?? 0) >= 10000 || (windowSplits ?? 0) > 0) ? (
+      {recordedTenSecond && ((pointsReceived ?? 0) >= 10000 || (windowSplits ?? 0) > 0) ? (
         <div className="mt-1 p-2 border rounded bg-warning bg-opacity-10 small" data-testid="recorded-volume-warning">
-          A consulta contém muitos eventos registrados e pode demorar. Os valores não serão interpolados nem reduzidos.
+          A consulta contém muitos pontos da série interpolada de 10 segundos e pode demorar.
         </div>
       ) : null}
     </div>

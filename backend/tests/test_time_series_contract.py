@@ -53,8 +53,8 @@ def _make_tag(db_session: Session, *, code: str, web_id: str) -> PiTag:
 def _seed_recorded(db_session: Session, tag: PiTag, value: float) -> None:
     from datetime import UTC, datetime
     start = datetime(2026, 7, 1, tzinfo=UTC); end = datetime(2026, 7, 1, 1, tzinfo=UTC)
-    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=value, source_mode="RECORDED"))
-    CoverageService.record_coverage(db_session, tag.id, start, end, "RECORDED")
+    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=value, source_mode="INTERPOLATED_10S"))
+    CoverageService.record_coverage(db_session, tag.id, start, end, "INTERPOLATED", 10)
     db_session.commit()
 
 

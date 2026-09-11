@@ -53,7 +53,8 @@ def test_coverage_is_semi_open_mode_specific_and_consolidated(db_session):
 
     assert CoverageService.get_coverage(db_session, tag.id, start, end, "RECORDED") == [(start, end)]
     assert CoverageService.get_coverage(db_session, tag.id, start, end, "INTERPOLATED", 10) == [(start, end)]
-    assert CoverageService.get_coverage(db_session, tag.id, start, end, "INTERPOLATED", 1) == []
+    with pytest.raises(ValueError, match="10s"):
+        CoverageService.get_coverage(db_session, tag.id, start, end, "INTERPOLATED", 1)
     assert CoverageService.get_missing_intervals(db_session, tag.id, start, end, "RECORDED") == []
 
 
@@ -62,9 +63,9 @@ def test_historical_query_reads_timescaledb_and_never_calls_pi(db_session):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(minutes=1)
     provider = FakePiDataProvider()
-    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=1.0, source_mode="RECORDED"))
-    db_session.add(PiSample(tag_id=tag.id, ts=end, value_type="double", value_double=2.0, source_mode="RECORDED"))
-    CoverageService.record_coverage(db_session, tag.id, start, end, "RECORDED")
+    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=1.0, source_mode="INTERPOLATED_10S"))
+    db_session.add(PiSample(tag_id=tag.id, ts=end, value_type="double", value_double=2.0, source_mode="INTERPOLATED_10S"))
+    CoverageService.record_coverage(db_session, tag.id, start, end, "INTERPOLATED", 10)
     db_session.commit()
     service = DatabaseTimeSeriesService(db_session, provider)
 

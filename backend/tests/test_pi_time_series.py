@@ -54,10 +54,11 @@ def test_time_series_point_serialization_preserves_numeric_string() -> None:
 def test_recorded_reads_timescaledb_and_reports_source(client: TestClient, db_session: Session) -> None:
     start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
     tag = _make_tag(db_session, "RECORDED")
-    _seed(db_session, tag, start, end, [(start, 82.5), (start + timedelta(seconds=30), 83.1)])
+    _seed(db_session, tag, start, end, [(start, 82.5), (start + timedelta(seconds=30), 83.1)], "INTERPOLATED_10S", 10)
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
     assert response.status_code == 200, response.text
     body = response.json(); assert body["query_execution"]["source"] == "timescaledb"
+    assert body["query_execution"]["effective_interval"] == "10s"
     assert len(body["series"][0]["points"]) == 2
     assert client.fake_provider.recorded_calls == []  # type: ignore[attr-defined]
 
@@ -88,6 +89,8 @@ def test_invalid_range_and_interpolated_interval(client: TestClient, db_session:
     assert response.status_code == 400
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": "2026-07-01T00:00:00Z", "end_time": "2026-07-01T01:00:00Z", "mode": "interpolated"})
     assert response.status_code == 422
+    response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": "2026-07-01T00:00:00Z", "end_time": "2026-07-01T01:00:00Z", "mode": "interpolated", "interval": "1s"})
+    assert response.status_code == 400
 
 
 def test_limit_inactive_and_unknown_tag_contracts(client: TestClient, db_session: Session) -> None:

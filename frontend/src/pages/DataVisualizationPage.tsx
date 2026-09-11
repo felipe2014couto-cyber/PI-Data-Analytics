@@ -132,6 +132,13 @@ const INITIAL_FILTERS: FiltersState = {
   filterConfiguration: INITIAL_FILTER_CONFIG,
 };
 
+function intervalToSeconds(value: string): number {
+  const match = /^(\d+)([smhd])$/.exec(value);
+  if (!match) return Number.POSITIVE_INFINITY;
+  const amount = Number(match[1]);
+  return amount * ({ s: 1, m: 60, h: 3600, d: 86400 } as const)[match[2] as "s" | "m" | "h" | "d"];
+}
+
 interface QueryState {
   timeSeries: TimeSeries | null;
   loading: boolean;
@@ -855,6 +862,9 @@ export function DataVisualizationPage() {
     }
     if (filters.mode === "interpolated" && !filters.interval) {
       return "Selecione um intervalo para valores interpolados.";
+    }
+    if (filters.mode === "interpolated" && intervalToSeconds(filters.interval) < 10) {
+      return "O intervalo mínimo para valores interpolados é de 10 segundos.";
     }
     if (filters.maxCount < 1) return "Maximo de pontos por tag deve ser >= 1.";
     if ((filters.visualization === "automatic" || filters.visualization === "line") && !assignmentValidation.validAxes) {

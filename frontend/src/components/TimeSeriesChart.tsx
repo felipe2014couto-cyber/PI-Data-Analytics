@@ -470,7 +470,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
   if (chart.valueKind === "textual" || chart.valueKind === "categorical") {
     return buildStateOption(props);
   }
-  const titleText = `${equipment ?? "Equipamento"} | ${props.titleLabel ?? (mode === "recorded" ? "Valores registrados — exatos" : "Valores interpolados")}`;
+  const titleText = `${equipment ?? "Equipamento"} | ${props.titleLabel ?? (mode === "recorded" ? "Histórico 10s — base cíclica" : "Valores interpolados")}`;
   const subtitle = `${start.toLocaleString("pt-BR")} ate ${end.toLocaleString("pt-BR")}`;
 
   const umSeries = props.umSeries;
