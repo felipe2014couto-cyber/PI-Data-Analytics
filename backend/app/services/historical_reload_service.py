@@ -9,6 +9,7 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.cep_variable import CepVariable
 from app.models.pi_tag import PiTag
 from app.models.postgres import PiBackfillJob, PiIngestionCoverage
+from app.models.cep_variable_tag_dependency import CepVariableTagDependency
 from app.schemas.historical_reload import HistoricalReloadRequest
 from app.services.coverage_service import CoverageService, normalize_mode
 
@@ -62,6 +63,11 @@ class HistoricalReloadService:
             if variable is None or not variable.active:
                 raise NotFoundError("Variável CEP ativa não encontrada.", details={"variable_id": payload.variable_id})
             ids = {variable.reading_tag_id, variable.lower_limit_tag_id, variable.upper_limit_tag_id, variable.target_tag_id}
+            ids.update(self.db.scalars(select(CepVariableTagDependency.tag_id).where(
+                CepVariableTagDependency.variable_id == variable.id,
+                CepVariableTagDependency.status == "RESOLVED",
+                CepVariableTagDependency.tag_id.is_not(None),
+            )).all())
             tags = [tag for tag in self.db.scalars(select(PiTag).where(PiTag.id.in_([item for item in ids if item]))).all() if tag.active]
             # CEP variables may keep lower/upper limits grouped on the reading
             # tag instead of using dedicated foreign keys.

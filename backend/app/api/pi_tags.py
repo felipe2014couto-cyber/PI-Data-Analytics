@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db_session, get_norm_limits_service, get_pi_service
 from app.api.pagination import build_paginated_response
 from app.api.query_params import pagination_params
-from app.models.pi_tag import PiTagValidationStatus
+from app.models.pi_tag import PiTagKind, PiTagValidationStatus
 from app.schemas.pi import (
     PiTagNormLimitsResponse,
     PiTagValidationBatchRequest,
@@ -31,6 +31,7 @@ def list_pi_tags(
     variable_type_id: Optional[int] = None,
     active: Optional[bool] = None,
     validation_status: Optional[PiTagValidationStatus] = None,
+    include_dependencies: bool = False,
     pagination: dict = Depends(pagination_params),
     db: Session = Depends(get_db_session),
 ):
@@ -42,6 +43,7 @@ def list_pi_tags(
         variable_type_id=variable_type_id,
         active=active,
         validation_status=validation_status,
+        tag_kind=None if include_dependencies else PiTagKind.PRIMARY,
         page=pagination["page"],
         page_size=pagination["page_size"],
     )

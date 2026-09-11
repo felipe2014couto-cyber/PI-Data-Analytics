@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db_session, get_query_registry_dep
@@ -28,6 +28,8 @@ from app.core.exceptions import (
 )
 from app.database.session import SessionLocal
 from app.models.cep_variable import CepVariable
+from app.models.cep_variable_tag_dependency import CepVariableTagDependency
+from app.models.pi_tag import PiTag
 from app.schemas.cep_analysis import (
     CepAnalysisAccepted,
     CepAnalysisRequest,
@@ -120,6 +122,12 @@ def _load_and_materialize(
     variables = []
     tag_variable_map: dict[int, list[int]] = {}
     unique_tags: dict[int, MaterializedTag] = {}
+    dependency_rows = list(db.scalars(select(CepVariableTagDependency).where(
+        CepVariableTagDependency.variable_id.in_([item.id for item in cep_variables]),
+    )).all())
+    dependencies_by_variable: dict[int, dict[str, CepVariableTagDependency]] = {}
+    for dependency in dependency_rows:
+        dependencies_by_variable.setdefault(dependency.variable_id, {})[dependency.dependency_type] = dependency
 
     def register_tag(tag: MaterializedTag, variable_id: int) -> None:
         unique_tags[tag.id] = tag
@@ -137,13 +145,20 @@ def _load_and_materialize(
                 f"A variável CEP '{cv.code}' não possui tag de acompanhamento cadastrada.",
             )
 
+        variable_dependencies = dependencies_by_variable.get(cv.id, {})
+        lower_dependency = variable_dependencies.get("LOWER_LIMIT")
+        upper_dependency = variable_dependencies.get("UPPER_LIMIT")
         has_grouped_limits = bool(reading_tag.lower_limit_tag and reading_tag.upper_limit_tag)
         lower_limit_tag_id = (
-            grouped_limit_id(reading_tag.id, "lower")
+            lower_dependency.tag_id
+            if lower_dependency is not None and lower_dependency.tag_id is not None
+            else grouped_limit_id(reading_tag.id, "lower")
             if has_grouped_limits else cv.lower_limit_tag_id
         )
         upper_limit_tag_id = (
-            grouped_limit_id(reading_tag.id, "upper")
+            upper_dependency.tag_id
+            if upper_dependency is not None and upper_dependency.tag_id is not None
+            else grouped_limit_id(reading_tag.id, "upper")
             if has_grouped_limits else cv.upper_limit_tag_id
         )
 
@@ -165,16 +180,17 @@ def _load_and_materialize(
         ), cv.id)
 
         if has_grouped_limits:
-            register_tag(MaterializedTag(
-                id=lower_limit_tag_id,
-                pi_tag_name=reading_tag.lower_limit_tag,
-                pi_server=reading_tag.pi_server,
-            ), cv.id)
-            register_tag(MaterializedTag(
-                id=upper_limit_tag_id,
-                pi_tag_name=reading_tag.upper_limit_tag,
-                pi_server=reading_tag.pi_server,
-            ), cv.id)
+            for dependency, fallback_id, name in (
+                (lower_dependency, lower_limit_tag_id, reading_tag.lower_limit_tag),
+                (upper_dependency, upper_limit_tag_id, reading_tag.upper_limit_tag),
+            ):
+                dependency_tag = db.get(PiTag, dependency.tag_id) if dependency is not None and dependency.tag_id else None
+                register_tag(MaterializedTag(
+                    id=dependency_tag.id if dependency_tag else fallback_id,
+                    pi_tag_name=dependency_tag.pi_tag_name if dependency_tag else name,
+                    pi_server=dependency_tag.pi_server if dependency_tag else reading_tag.pi_server,
+                    pi_web_id=dependency_tag.pi_web_id if dependency_tag else None,
+                ), cv.id)
         else:
             for limit_tag in [cv.lower_limit_tag, cv.upper_limit_tag]:
                 register_tag(MaterializedTag(

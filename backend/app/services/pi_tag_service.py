@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import (
+    ConflictError,
     DuplicateTagError,
     InvalidEquipmentError,
     InvalidSectionError,
@@ -47,6 +48,7 @@ class PiTagService:
         validation_status: Optional[PiTagValidationStatus],
         page: int,
         page_size: int,
+        tag_kind=None,
     ):
         return self.repo.list(
             search=search,
@@ -55,6 +57,7 @@ class PiTagService:
             variable_type_id=variable_type_id,
             active=active,
             validation_status=validation_status,
+            tag_kind=tag_kind,
             page=page,
             page_size=page_size,
         )
@@ -209,6 +212,10 @@ class PiTagService:
         # intentionally not touched during the rollback window.
         from sqlalchemy import text
         from app.models.postgres import PiTagDeletionJob
+        from app.models.cep_variable_tag_dependency import CepVariableTagDependency
+
+        if self.db.query(CepVariableTagDependency).filter(CepVariableTagDependency.tag_id == item.id).first() is not None:
+            raise ConflictError("A tag auxiliar ainda é referenciada por uma variável CEP.")
 
         has_samples = False
         try:

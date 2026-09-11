@@ -4,7 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.pi_tag import PiTagDataType, PiTagValidationStatus
+from app.models.pi_tag import PiTagDataType, PiTagValidationStatus, PiTagKind
 
 
 def _normalize_tag_name(value: str) -> str:
@@ -145,6 +145,7 @@ class PiTagResponse(BaseModel):
     lower_limit_tag: Optional[str] = None
     upper_limit_tag: Optional[str] = None
     pi_web_id: Optional[str] = None
+    tag_kind: PiTagKind = PiTagKind.PRIMARY
     display_name: str
     description: Optional[str] = None
     engineering_unit: Optional[str] = None

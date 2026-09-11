@@ -26,6 +26,11 @@ class PiTagValidationStatus(str, enum.Enum):
     ERROR = "ERROR"
 
 
+class PiTagKind(str, enum.Enum):
+    PRIMARY = "PRIMARY"
+    DEPENDENCY = "DEPENDENCY"
+
+
 class PiTag(Base, TimestampMixin):
     __tablename__ = "pi_tags"
 
@@ -47,6 +52,12 @@ class PiTag(Base, TimestampMixin):
     lower_limit_tag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     upper_limit_tag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     pi_web_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tag_kind: Mapped[PiTagKind] = mapped_column(
+        Enum(PiTagKind, native_enum=False, length=16),
+        nullable=False,
+        default=PiTagKind.PRIMARY,
+        server_default=PiTagKind.PRIMARY.value,
+    )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     engineering_unit: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

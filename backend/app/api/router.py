@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from app.api.admin_users import router as admin_users_router
 from app.api.auth import router as auth_router
 from app.api.cep import router as cep_router
+from app.api.cep_dependencies import router as cep_dependencies_router
 from app.api.deps import get_current_user, validate_csrf
 from app.api.equipments import router as equipments_router
 from app.api.health import router as health_router
@@ -20,6 +21,7 @@ api_router.include_router(health_router)
 api_router.include_router(auth_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(historical_reload_router)
+api_router.include_router(cep_dependencies_router)
 protected = [Depends(get_current_user), Depends(validate_csrf)]
 api_router.include_router(pi_router, dependencies=protected)
 api_router.include_router(equipments_router, dependencies=protected)
