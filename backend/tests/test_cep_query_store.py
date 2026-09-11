@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
@@ -15,6 +16,8 @@ from app.schemas.cep_analysis import (
     CepAnalysisSummary,
 )
 from app.services.cep_query_store import CancelResult, CepQueryStore
+from app.database.session import SessionLocal
+from app.models.cep_query_operation import CepQueryOperation
 
 
 def _make_request() -> CepAnalysisRequest:
@@ -298,3 +301,80 @@ async def test_concurrent_operations():
         entry = await store.get(f"q{i}")
         assert entry is not None
         assert entry.query_status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_persistent_store_survives_new_instance():
+    query_id = str(uuid4())
+    store = CepQueryStore(SessionLocal)
+    await store.register(query_id, _make_request(), total_variables=2)
+    await store.set_running(query_id)
+    await store.set_result(query_id, _make_result(query_id), "completed")
+
+    recovered = await CepQueryStore(SessionLocal).get(query_id)
+    assert recovered is not None
+    assert recovered.query_status == "completed"
+    assert recovered.result is not None
+    assert recovered.result.query_id == query_id
+
+
+@pytest.mark.asyncio
+async def test_persistent_store_marks_active_rows_interrupted():
+    query_id = str(uuid4())
+    store = CepQueryStore(SessionLocal)
+    await store.register(query_id, _make_request(), total_variables=2)
+    await store.set_running(query_id)
+
+    restarted = CepQueryStore(SessionLocal)
+    assert await restarted.recover_interrupted() == 1
+    entry = await CepQueryStore(SessionLocal).get(query_id)
+    assert entry is not None
+    assert entry.query_status == "failed"
+    assert entry.result is not None
+    assert entry.result.diagnostics[0].error_code == "CEP_INTERRUPTED_BY_RESTART"
+
+
+@pytest.mark.asyncio
+async def test_persistent_terminal_transition_is_idempotent():
+    query_id = str(uuid4())
+    store = CepQueryStore(SessionLocal)
+    await store.register(query_id, _make_request())
+    assert await store.set_result(query_id, _make_result(query_id), "completed") is True
+    assert await store.set_result(query_id, _make_result(query_id, "failed"), "failed") is False
+    assert await store.set_cancelled(query_id) == CancelResult.ALREADY_TERMINAL
+
+
+@pytest.mark.asyncio
+async def test_persistent_cancel_and_result_race_has_one_winner():
+    query_id = str(uuid4())
+    store = CepQueryStore(SessionLocal)
+    await store.register(query_id, _make_request())
+
+    result_won, cancel_won = await asyncio.gather(
+        store.set_result(query_id, _make_result(query_id), "completed"),
+        store.set_cancelled(query_id),
+    )
+
+    assert (result_won, cancel_won == CancelResult.CANCELLED) in {
+        (True, False),
+        (False, True),
+    }
+    terminal = await CepQueryStore(SessionLocal).get(query_id)
+    assert terminal is not None
+    assert terminal.query_status in {"completed", "cancelled"}
+
+
+@pytest.mark.asyncio
+async def test_persistent_invalid_payload_is_controlled():
+    query_id = str(uuid4())
+    store = CepQueryStore(SessionLocal)
+    await store.register(query_id, _make_request())
+    with SessionLocal() as db:
+        row = db.get(CepQueryOperation, query_id)
+        row.request_payload = {"invalid": True}
+        db.commit()
+
+    from app.services.cep_query_store import CepPersistenceError
+
+    with pytest.raises(CepPersistenceError):
+        await CepQueryStore(SessionLocal).get(query_id)

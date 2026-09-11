@@ -55,6 +55,7 @@ class TestMigrations:
         expected_tables = {
             "users", "equipments", "sections", "variable_types",
             "pi_tags", "visual_configurations", "visual_configuration_versions",
+            "cep_query_operations",
         }
         assert expected_tables.issubset(tables), f"Missing tables: {expected_tables - tables}"
 
@@ -134,3 +135,15 @@ class TestMigrations:
                     "VALUES ('test-id', 'nonexistent-user-id', 'test', 1)"
                 ))
                 conn.commit()
+
+    def test_cep_persistence_migration_downgrade_is_limited(self, alembic_cfg, temp_db):
+        """The CEP revision owns only its table and indexes."""
+        command.upgrade(alembic_cfg, "head")
+        command.downgrade(alembic_cfg, "20260910_timescaledb_native")
+        _, db_url = temp_db
+        inspector = inspect(create_engine(db_url))
+        assert "cep_query_operations" not in inspector.get_table_names()
+        assert "pi_samples_timescale" in inspector.get_table_names()
+        command.upgrade(alembic_cfg, "head")
+        inspector = inspect(create_engine(db_url))
+        assert "cep_query_operations" in inspector.get_table_names()

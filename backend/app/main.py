@@ -38,6 +38,7 @@ async def lifespan(_: FastAPI):
     await startup_pi_provider()
 
     # Start CEP cleanup task
+    await get_cep_query_store().recover_interrupted()
     cleanup_task = asyncio.create_task(_cep_cleanup_loop())
 
     try:
