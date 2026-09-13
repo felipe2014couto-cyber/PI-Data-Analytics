@@ -81,6 +81,18 @@ ComparisonType = Literal["periods", "equipments", "categories"]
 class TimeSeriesPoint(BaseModel):
     timestamp: datetime
     value: Optional[float | int | str | bool] = None
+    plot_min: Optional[float] = None
+    plot_max: Optional[float] = None
+    plot_first: Optional[float] = None
+    plot_last: Optional[float] = None
+    plot_avg: Optional[float] = None
+    plot_min_ts: Optional[datetime] = None
+    plot_max_ts: Optional[datetime] = None
+    plot_first_ts: Optional[datetime] = None
+    plot_last_ts: Optional[datetime] = None
+    plot_sample_count: Optional[int] = None
+    is_gapfilled: bool = False
+    has_previous_value: Optional[bool] = None
     good: bool = True
     questionable: bool = False
     substituted: bool = False
@@ -127,7 +139,10 @@ class QueryExecutionMetadata(BaseModel):
     resolution_mode: str = "automatic"
     requested_target_points_per_tag: Optional[int] = None
     effective_target_points_per_tag: Optional[int] = None
+    raw_point_count: Optional[int] = None
+    dynamic_bucket_seconds: Optional[int] = None
     effective_interval: Optional[str] = None
+    plot_aggregate: Optional[str] = None
     chunk_count: Optional[int] = None
     subdivided_chunk_count: Optional[int] = None
     pi_request_count: Optional[int] = None
@@ -162,6 +177,14 @@ class QueryExecutionMetadata(BaseModel):
     processing_ms: Optional[float] = None
     total_ms: Optional[float] = None
     query_id: Optional[str] = None
+    # Period/freshness metadata is populated for relative requests.  Keeping
+    # these fields optional preserves the contract for absolute historical
+    # queries while allowing the UI to explain a watermark-limited result.
+    requested_end: Optional[datetime] = None
+    effective_end: Optional[datetime] = None
+    data_available_until: Optional[datetime] = None
+    freshness_lag_seconds: Optional[float] = None
+    is_stale: Optional[bool] = None
 
 
 class TimeSeriesRequest(BaseModel):
@@ -173,6 +196,7 @@ class TimeSeriesRequest(BaseModel):
     max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000)
     resolution_mode: Optional[str] = Field(default=None, pattern="^(automatic|manual)$")
     target_points_per_tag: Optional[int] = Field(default=None, ge=1000, le=50000)
+    relative_period: bool = False
 
     @field_validator("start_time", "end_time")
     @classmethod

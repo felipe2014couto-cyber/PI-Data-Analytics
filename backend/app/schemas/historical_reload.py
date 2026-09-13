@@ -37,6 +37,18 @@ class HistoricalReloadRequest(BaseModel):
         return self
 
 
+class HistoricalReloadBatchCancelRequest(BaseModel):
+    job_ids: list[int] = Field(min_length=1, max_length=500)
+
+    @field_validator("job_ids")
+    @classmethod
+    def unique_positive_ids(cls, value: list[int]) -> list[int]:
+        ids = list(dict.fromkeys(value))
+        if any(job_id <= 0 for job_id in ids):
+            raise ValueError("Os IDs dos jobs devem ser positivos.")
+        return ids
+
+
 class HistoricalReloadJobResponse(BaseModel):
     id: int
     tag_id: int
@@ -50,6 +62,10 @@ class HistoricalReloadJobResponse(BaseModel):
     progress_percent: float = 0
     attempts: int = 0
     error_message: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    next_attempt_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -1,0 +1,21 @@
+[Unit]
+Description=PI Analytics continuous ingestion worker (example)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi-analytics
+WorkingDirectory=/opt/pi-data-analytics/backend
+EnvironmentFile=/opt/pi-data-analytics/.env
+Environment=PYTHONPATH=/opt/pi-data-analytics/backend
+ExecStart=/usr/bin/python3 -m scripts.run_workers --worker ingestion --interval 10
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/pi-analytics/ingestion.log
+StandardError=append:/var/log/pi-analytics/ingestion.err
+
+# Credentials remain in the protected EnvironmentFile, never in this unit.
+
+[Install]
+WantedBy=default.target

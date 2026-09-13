@@ -8,15 +8,26 @@ let mockEChartsInstance: any;
 let registeredEventHandlers: Record<string, Function[]> = {};
 let setPointerCaptureMock = vi.fn();
 let releasePointerCaptureMock = vi.fn();
+let zrTriggerMock = vi.fn();
+let currentZoom = { start: 0, end: 100 };
+let wrapperRenderCount = 0;
 
 vi.mock("../src/components/EChartsWrapper", () => ({
-  EChartsWrapper: ({ onInit, height }: any) => {
+  EChartsWrapper: ({ onInit, height, activateAreaZoom, syncGroup }: any) => {
+    wrapperRenderCount += 1;
     useEffect(() => {
       if (onInit && mockEChartsInstance) {
         onInit(mockEChartsInstance);
       }
     }, [onInit]);
-    return <div data-testid="echarts-wrapper" style={{ height }} />;
+    return (
+      <div
+        data-testid="echarts-wrapper"
+        data-area-zoom={Boolean(activateAreaZoom)}
+        data-sync-group={syncGroup ?? ""}
+        style={{ height }}
+      />
+    );
   },
 }));
 
@@ -89,6 +100,9 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
     registeredEventHandlers = {};
     setPointerCaptureMock = vi.fn();
     releasePointerCaptureMock = vi.fn();
+    zrTriggerMock = vi.fn();
+    currentZoom = { start: 0, end: 100 };
+    wrapperRenderCount = 0;
 
     window.HTMLElement.prototype.setPointerCapture = setPointerCaptureMock;
     window.HTMLElement.prototype.releasePointerCapture = releasePointerCaptureMock;
@@ -113,7 +127,7 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
         }),
       })),
       getOption: vi.fn(() => ({
-        dataZoom: [{ start: 0, end: 100 }],
+        dataZoom: [{ ...currentZoom }],
         legend: [{ selected: {} }],
       })),
       getZr: vi.fn(() => ({
@@ -122,6 +136,7 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
           registeredEventHandlers[event].push(handler);
         }),
         off: vi.fn(),
+        trigger: zrTriggerMock,
       })),
       getWidth: () => 820,
       getHeight: () => 420,
@@ -135,6 +150,119 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
       resize: vi.fn(),
       dispose: vi.fn(),
     };
+  });
+
+  it("ativa por padrão a seleção de área com o botão esquerdo", () => {
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+      />,
+    );
+
+    expect(screen.getByTestId("echarts-wrapper")).toHaveAttribute("data-area-zoom", "true");
+  });
+
+  it("clique simples mantém o marcador, mas arraste de 6 px não cria marcador", () => {
+    const { rerender } = render(
+      <TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />,
+    );
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 1, clientX: 200, clientY: 150 });
+    fireEvent.pointerUp(plot, { button: 0, pointerId: 1, clientX: 200, clientY: 150 });
+    expect(screen.getByTestId("marker-line-0")).toBeInTheDocument();
+
+    rerender(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" pinnedCursorTs={null} />);
+    fireEvent.doubleClick(plot, { clientX: 200, clientY: 150 });
+    expect(screen.queryByTestId("marker-line-0")).not.toBeInTheDocument();
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 2, clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(plot, { pointerId: 2, clientX: 260, clientY: 150 });
+    fireEvent.pointerUp(plot, { button: 0, pointerId: 2, clientX: 260, clientY: 150 });
+    expect(screen.queryByTestId("marker-line-0")).not.toBeInTheDocument();
+  });
+
+  it("Escape encerra a seleção nativa e restaura o dataZoom anterior", () => {
+    render(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />);
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 3, clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(plot, { pointerId: 3, clientX: 300, clientY: 150 });
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(zrTriggerMock).toHaveBeenCalledWith("mouseup", expect.any(Object));
+    expect(mockEChartsInstance.dispatchAction).toHaveBeenCalledWith({
+      type: "dataZoom",
+      dataZoomIndex: 0,
+      start: 0,
+      end: 100,
+    });
+  });
+
+  it("não renderiza React nem aplica zoom durante pointermove da seleção", () => {
+    render(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />);
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    const rendersBeforeDrag = wrapperRenderCount;
+
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 4, clientX: 150, clientY: 150 });
+    for (let x = 151; x <= 650; x += 5) {
+      fireEvent.pointerMove(plot, { pointerId: 4, clientX: x, clientY: 150 });
+    }
+
+    expect(wrapperRenderCount).toBe(rendersBeforeDrag);
+    expect(mockEChartsInstance.dispatchAction).not.toHaveBeenCalledWith(expect.objectContaining({ type: "dataZoom" }));
+  });
+
+  it("pointercancel limpa a seleção e não converte o gesto em clique de marcador", () => {
+    render(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />);
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 5, clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(plot, { pointerId: 5, clientX: 300, clientY: 150 });
+    fireEvent.pointerCancel(plot, { pointerId: 5, clientX: 300, clientY: 150 });
+    fireEvent.pointerUp(plot, { button: 0, pointerId: 5, clientX: 300, clientY: 150 });
+
+    expect(zrTriggerMock).toHaveBeenCalledWith("mouseup", expect.any(Object));
+    expect(screen.queryByTestId("marker-line-0")).not.toBeInTheDocument();
+  });
+
+  it("Ctrl+Z desfaz zooms sucessivos no domínio local sem consulta externa", () => {
+    render(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />);
+    currentZoom = { start: 20, end: 70 };
+    act(() => registeredEventHandlers.dataZoom?.forEach((handler) => handler({})));
+    currentZoom = { start: 35, end: 55 };
+    act(() => registeredEventHandlers.dataZoom?.forEach((handler) => handler({})));
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    expect(mockEChartsInstance.dispatchAction).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "dataZoom", start: 20, end: 70,
+    }));
+  });
+
+  it("expõe o grupo de sincronização temporal sem duplicar handlers no rerender", () => {
+    const props = { chart: mockChart(), equipment: "Turbina 1", start: new Date(START_TS), end: new Date(END_TS), mode: "recorded" as const, syncGroup: "linked-time" };
+    const { rerender } = render(<TimeSeriesChart {...props} />);
+    expect(screen.getByTestId("echarts-wrapper")).toHaveAttribute("data-sync-group", "linked-time");
+    expect(registeredEventHandlers.dataZoom).toHaveLength(1);
+    rerender(<TimeSeriesChart {...props} />);
+    expect(registeredEventHandlers.dataZoom).toHaveLength(1);
   });
 
   it("1. A linha vertical e a caixa de valores possuem cursor de redimensionamento (ew-resize)", () => {

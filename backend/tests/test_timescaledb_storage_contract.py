@@ -63,9 +63,9 @@ def test_historical_query_reads_timescaledb_and_never_calls_pi(db_session):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(minutes=1)
     provider = FakePiDataProvider()
-    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=1.0, source_mode="INTERPOLATED_10S"))
-    db_session.add(PiSample(tag_id=tag.id, ts=end, value_type="double", value_double=2.0, source_mode="INTERPOLATED_10S"))
-    CoverageService.record_coverage(db_session, tag.id, start, end, "INTERPOLATED", 10)
+    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=1.0, source_mode="RECORDED"))
+    db_session.add(PiSample(tag_id=tag.id, ts=end, value_type="double", value_double=2.0, source_mode="RECORDED"))
+    CoverageService.record_coverage(db_session, tag.id, start, end, "RECORDED")
     db_session.commit()
     service = DatabaseTimeSeriesService(db_session, provider)
 

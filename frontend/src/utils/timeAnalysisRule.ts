@@ -9,6 +9,43 @@ export function aggregateSeriesByMinute(
     return seriesEntry;
   }
 
+  // Plot aggregates already carry the correct statistic for their native
+  // bucket (10 s, 5 min, 1 h or 1 d). Re-bucketing those points by minute would not
+  // add information and, for MAX/MIN, used to operate on plot_avg and hide
+  // the peaks/valleys preserved by TimescaleDB.
+  const hasPlotStatistics = seriesEntry.points.some(
+    (point) => point.plot_sample_count != null || point.plot_avg != null || point.plot_min != null || point.plot_max != null,
+  );
+  if (hasPlotStatistics) {
+    return {
+      ...seriesEntry,
+      points: seriesEntry.points.map((point) => {
+        const value =
+          rule === "MAXIMO"
+            ? point.plot_max ?? point.value
+            : rule === "MIN"
+              ? point.plot_min ?? point.value
+              : point.plot_avg ?? point.value;
+        // An explicit statistical rule represents one value per bucket. Do
+        // not expand it again into the default PI Plot vertices.
+        return {
+          ...point,
+          value,
+          plot_min: undefined,
+          plot_max: undefined,
+          plot_first: undefined,
+          plot_last: undefined,
+          plot_avg: undefined,
+          plot_min_ts: undefined,
+          plot_max_ts: undefined,
+          plot_first_ts: undefined,
+          plot_last_ts: undefined,
+          plot_sample_count: undefined,
+        };
+      }),
+    };
+  }
+
   // Se a série não possui pontos ou não tem valores numéricos, mantemos como está
   const hasNumeric = seriesEntry.points.some((p) => isNumericValue(p.value));
   if (!hasNumeric || seriesEntry.points.length === 0) {

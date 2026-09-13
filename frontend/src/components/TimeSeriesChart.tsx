@@ -9,6 +9,19 @@ import type { SeriesVisualConfiguration, VisualRulesState } from "../types";
 import { formatNumericValue } from "../utils/values";
 
 const SAMPLE_THRESHOLD = 1200;
+const AREA_ZOOM_DRAG_THRESHOLD_PX = 6;
+
+interface ZoomRange {
+  start: number;
+  end: number;
+}
+
+interface AreaPointerCandidate {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  moved: boolean;
+}
 
 function formatElapsed(value: number): string {
   const totalSeconds = Math.max(0, Math.round(value / 1000));
@@ -59,6 +72,8 @@ export interface TimeSeriesChartProps {
   pinnedCursorTs?: number | null;
   onClearCursor?: () => void;
   onPinnedCursorChange?: (ts: number | null) => void;
+  syncGroup?: string;
+  enableZoomKeyboardUndo?: boolean;
 }
 
 const QUALITY_LABELS: Record<number, string> = {
@@ -412,7 +427,15 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
     toolbox: {
       right: 16,
       feature: {
-        dataZoom: { yAxisIndex: "none", title: { zoom: "Zoom", back: "Restaurar" } },
+        dataZoom: {
+          yAxisIndex: "none",
+          title: { zoom: "Zoom", back: "Voltar zoom" },
+          brushStyle: {
+            borderColor: "#1976d2",
+            borderWidth: 1,
+            color: "rgba(25, 118, 210, 0.14)",
+          },
+        },
         restore: { title: "Restaurar" },
         saveAsImage: { name: "pi-analytics-data-grafico-estados", title: "Salvar imagem" },
         ...(pinnedCursorTs !== null && pinnedCursorTs !== undefined && onClearCursor
@@ -470,7 +493,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
   if (chart.valueKind === "textual" || chart.valueKind === "categorical") {
     return buildStateOption(props);
   }
-  const titleText = `${equipment ?? "Equipamento"} | ${props.titleLabel ?? (mode === "recorded" ? "Histórico 10s — base cíclica" : "Valores interpolados")}`;
+  const titleText = `${equipment ?? "Equipamento"} | ${props.titleLabel ?? (mode === "recorded" ? "Histórico Plot — base cíclica" : "Valores interpolados")}`;
   const subtitle = `${start.toLocaleString("pt-BR")} ate ${end.toLocaleString("pt-BR")}`;
 
   const umSeries = props.umSeries;
@@ -611,7 +634,15 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
     toolbox: {
       right: 16,
       feature: {
-        dataZoom: { yAxisIndex: "none", title: { zoom: "Zoom", back: "Restaurar" } },
+        dataZoom: {
+          yAxisIndex: "none",
+          title: { zoom: "Zoom", back: "Voltar zoom" },
+          brushStyle: {
+            borderColor: "#1976d2",
+            borderWidth: 1,
+            color: "rgba(25, 118, 210, 0.14)",
+          },
+        },
         restore: { title: "Restaurar" },
         saveAsImage: { name: "pi-analytics-data-grafico-linha", title: "Salvar imagem" },
         ...(props.pinnedCursorTs !== null && props.pinnedCursorTs !== undefined && props.onClearCursor
@@ -793,7 +824,9 @@ function buildSeriesOption(
     showSymbol,
     symbol: "circle",
     symbolSize: 6,
-    sampling: series.comparisonType ? undefined : ("lttb" as const),
+    // The backend already reduced PI Plot buckets to significant ordered
+    // vertices. A second LTTB pass can discard the very extrema we preserved.
+    sampling: series.comparisonType || series.isPlotSeries ? undefined : ("lttb" as const),
     connectNulls: false,
     lineStyle: { color: series.color, width: 2, type: (series.contextId === "B" ? "dashed" : "solid") as "dashed" | "solid" },
     itemStyle: { color: series.color },
@@ -987,6 +1020,10 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   const isDraggingRef = useRef(false);
   const draggingMarkerIdxRef = useRef<number | null>(null);
   const markersRef = useRef<number[]>(markers);
+  const areaPointerRef = useRef<AreaPointerCandidate | null>(null);
+  const zoomHistoryRef = useRef<ZoomRange[]>([]);
+  const currentZoomRef = useRef<ZoomRange>({ start: 0, end: 100 });
+  const suppressZoomHistoryRef = useRef(false);
   markersRef.current = markers;
 
   // Sync external pinnedCursorTs if changed
@@ -1103,19 +1140,110 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     ],
   );
 
-  // Listen to ECharts zoom, restore, resize to update marker pixel positions without modifying stored timestamps
+  const cancelAreaSelection = useCallback(() => {
+    const candidate = areaPointerRef.current;
+    const inst = instanceRef.current;
+    areaPointerRef.current = null;
+    if (!candidate || !inst) return;
+    const previous = currentZoomRef.current;
+    try {
+      // Finish ECharts' native brush so the later physical pointerup cannot
+      // commit a cancelled range. The synthetic end may emit dataZoom, so
+      // suppress it from history and restore the pre-drag domain immediately.
+      suppressZoomHistoryRef.current = true;
+      inst.getZr().trigger("mouseup", {
+        offsetX: candidate.startX,
+        offsetY: candidate.startY,
+        event: { preventDefault: () => {} },
+      } as never);
+      suppressZoomHistoryRef.current = true;
+      currentZoomRef.current = previous;
+      inst.dispatchAction({
+        type: "dataZoom",
+        dataZoomIndex: 0,
+        start: previous.start,
+        end: previous.end,
+      } as never);
+    } catch {
+      // The visual domain has not changed yet, so clearing the candidate is sufficient.
+    }
+  }, []);
+
+  // Zoom is visual and local: one update after release, with no data request.
   useEffect(() => {
     if (!instance) return;
-    const forceUpdate = () => setRenderTick((t) => t + 1);
-    instance.on("dataZoom", forceUpdate);
-    instance.on("restore", forceUpdate);
-    window.addEventListener("resize", forceUpdate);
-    return () => {
-      instance.off("dataZoom", forceUpdate);
-      instance.off("restore", forceUpdate);
-      window.removeEventListener("resize", forceUpdate);
+    const readZoomRange = (): ZoomRange | null => {
+      const dataZoom = (instance.getOption() as any)?.dataZoom?.[0];
+      const range = { start: Number(dataZoom?.start), end: Number(dataZoom?.end) };
+      return Number.isFinite(range.start) && Number.isFinite(range.end) ? range : null;
     };
-  }, [instance]);
+    const handleDataZoom = () => {
+      const next = readZoomRange();
+      if (next) {
+        if (suppressZoomHistoryRef.current) {
+          suppressZoomHistoryRef.current = false;
+        } else {
+          const current = currentZoomRef.current;
+          if (Math.abs(current.start - next.start) > 0.0001 || Math.abs(current.end - next.end) > 0.0001) {
+            zoomHistoryRef.current.push(current);
+            if (zoomHistoryRef.current.length > 50) zoomHistoryRef.current.shift();
+          }
+        }
+        currentZoomRef.current = next;
+      }
+      setRenderTick((t) => t + 1);
+    };
+    const handleRestore = () => {
+      zoomHistoryRef.current = [];
+      currentZoomRef.current = { start: 0, end: 100 };
+      setRenderTick((t) => t + 1);
+      window.requestAnimationFrame(() => {
+        instance.dispatchAction({
+          type: "takeGlobalCursor",
+          key: "dataZoomSelect",
+          dataZoomSelectActive: true,
+        } as never);
+      });
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && areaPointerRef.current) {
+        event.preventDefault();
+        cancelAreaSelection();
+        return;
+      }
+      if (!(props.enableZoomKeyboardUndo ?? true)) return;
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) return;
+      const previous = zoomHistoryRef.current.pop();
+      if (!previous) return;
+      event.preventDefault();
+      suppressZoomHistoryRef.current = true;
+      currentZoomRef.current = previous;
+      instance.dispatchAction({
+        type: "dataZoom",
+        dataZoomIndex: 0,
+        start: previous.start,
+        end: previous.end,
+      } as never);
+    };
+    const forceUpdate = () => setRenderTick((t) => t + 1);
+    instance.on("dataZoom", handleDataZoom);
+    instance.on("restore", handleRestore);
+    window.addEventListener("resize", forceUpdate);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      instance.off("dataZoom", handleDataZoom);
+      instance.off("restore", handleRestore);
+      window.removeEventListener("resize", forceUpdate);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [cancelAreaSelection, instance, props.enableZoomKeyboardUndo]);
 
   const handleGlobalPointerMove = useCallback(
     (e: PointerEvent) => {
@@ -1182,13 +1310,22 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   );
 
   useEffect(() => {
+    const clearAreaPointer = () => {
+      areaPointerRef.current = null;
+    };
+    window.addEventListener("pointerup", clearAreaPointer);
+    window.addEventListener("pointercancel", cancelAreaSelection);
+    window.addEventListener("blur", cancelAreaSelection);
     return () => {
       window.removeEventListener("pointermove", handleGlobalPointerMove);
       window.removeEventListener("pointerup", handleGlobalPointerUp);
       window.removeEventListener("pointercancel", handleGlobalPointerUp);
       window.removeEventListener("blur", handleGlobalPointerUp);
+      window.removeEventListener("pointerup", clearAreaPointer);
+      window.removeEventListener("pointercancel", cancelAreaSelection);
+      window.removeEventListener("blur", cancelAreaSelection);
     };
-  }, [handleGlobalPointerMove, handleGlobalPointerUp]);
+  }, [cancelAreaSelection, handleGlobalPointerMove, handleGlobalPointerUp]);
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -1209,32 +1346,50 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       return;
     }
 
-    const rawTs = inst.convertFromPixel({ xAxisIndex: 0 }, offsetX);
+    areaPointerRef.current = {
+      pointerId: e.pointerId,
+      startX: offsetX,
+      startY: offsetY,
+      moved: false,
+    };
+  };
+
+  const handleCanvasPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const candidate = areaPointerRef.current;
+    if (!candidate || candidate.pointerId !== e.pointerId) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const distance = Math.hypot(
+      e.clientX - rect.left - candidate.startX,
+      e.clientY - rect.top - candidate.startY,
+    );
+    if (distance >= AREA_ZOOM_DRAG_THRESHOLD_PX) candidate.moved = true;
+  };
+
+  const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const candidate = areaPointerRef.current;
+    areaPointerRef.current = null;
+    if (!candidate || candidate.pointerId !== e.pointerId || candidate.moved) return;
+    const inst = instanceRef.current;
+    if (!inst) return;
+    const rawTs = inst.convertFromPixel({ xAxisIndex: 0 }, candidate.startX);
     if (typeof rawTs !== "number" || !Number.isFinite(rawTs)) return;
     const clickedTs = Math.round(rawTs);
 
-    if (markers.length === 0) {
+    if (markers.length < 2) {
       setMarkers([clickedTs]);
-      startDrag(0);
       props.onPinnedCursorChange?.(clickedTs);
-    } else if (markers.length === 1) {
-      setMarkers([clickedTs]);
-      startDrag(0);
-      props.onPinnedCursorChange?.(clickedTs);
-    } else {
-      // 2 markers: find visually closer marker on screen
-      const px0 = inst.convertToPixel({ xAxisIndex: 0 }, markers[0]);
-      const px1 = inst.convertToPixel({ xAxisIndex: 0 }, markers[1]);
-      const d0 = Math.abs(offsetX - px0);
-      const d1 = Math.abs(offsetX - px1);
-      const targetIdx = d0 <= d1 ? 0 : 1;
-      setMarkers((prev) => {
-        const next = [...prev];
-        next[targetIdx] = clickedTs;
-        return next;
-      });
-      startDrag(targetIdx);
+      return;
     }
+    const px0 = inst.convertToPixel({ xAxisIndex: 0 }, markers[0]);
+    const px1 = inst.convertToPixel({ xAxisIndex: 0 }, markers[1]);
+    const targetIdx = Math.abs(candidate.startX - px0) <= Math.abs(candidate.startX - px1) ? 0 : 1;
+    setMarkers((prev) => {
+      const next = [...prev];
+      next[targetIdx] = clickedTs;
+      return next;
+    });
   };
 
   const handleDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -1270,6 +1425,10 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     <div
       ref={containerRef}
       onPointerDown={handleCanvasPointerDown}
+      onPointerMove={handleCanvasPointerMove}
+      onPointerUp={handleCanvasPointerUp}
+      onPointerCancel={cancelAreaSelection}
+      onLostPointerCapture={cancelAreaSelection}
       onDoubleClick={handleDoubleClick}
       style={{
         position: "relative",
@@ -1617,7 +1776,15 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
           );
         })}
 
-      <EChartsWrapper option={option} loading={loading} height={420} onInit={handleInit} />
+      <EChartsWrapper
+        option={option}
+        loading={loading}
+        height={420}
+        onInit={handleInit}
+        preserveDataZoom
+        activateAreaZoom
+        syncGroup={props.syncGroup}
+      />
     </div>
   );
 }

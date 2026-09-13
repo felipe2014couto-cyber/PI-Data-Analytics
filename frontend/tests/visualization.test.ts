@@ -4,6 +4,7 @@ import {
   buildChartData,
   buildChartDataGroups,
   applyLineAssignments,
+  plotVertices,
   resolveVisualization,
 } from "../src/utils/chartData";
 import { buildTimeSeriesChartOption } from "../src/components/TimeSeriesChart";
@@ -20,6 +21,48 @@ import {
   type PeriodPreset,
 } from "../src/utils/period";
 import type { TimeSeries } from "../src/types";
+
+describe("PI Plot vertices", () => {
+  it("renders first, extrema and last in their real temporal order", () => {
+    const point = {
+      timestamp: "2026-09-07T09:00:00Z",
+      value: 10,
+      plot_first: 39,
+      plot_first_ts: "2026-09-07T09:05:00Z",
+      plot_max: 40.15,
+      plot_max_ts: "2026-09-07T09:20:00Z",
+      plot_min: -29.55634,
+      plot_min_ts: "2026-09-07T09:35:00Z",
+      plot_last: 0.05,
+      plot_last_ts: "2026-09-07T09:55:00Z",
+      plot_sample_count: 400,
+      good: true,
+      questionable: false,
+      substituted: false,
+    };
+
+    expect(plotVertices(point, null)).toEqual([
+      [Date.parse("2026-09-07T09:05:00Z"), 39],
+      [Date.parse("2026-09-07T09:20:00Z"), 40.15],
+      [Date.parse("2026-09-07T09:35:00Z"), -29.55634],
+      [Date.parse("2026-09-07T09:55:00Z"), 0.05],
+    ]);
+  });
+
+  it("does not invent extrema for a LOCF gap bucket", () => {
+    expect(plotVertices({
+      timestamp: "2026-09-08T09:00:00Z",
+      value: 0.05,
+      plot_first: 0.05,
+      plot_first_ts: "2026-09-07T09:55:00Z",
+      plot_sample_count: 0,
+      is_gapfilled: true,
+      good: true,
+      questionable: false,
+      substituted: false,
+    }, null)).toEqual([]);
+  });
+});
 
 describe("period utilities", () => {
   it("returns fixed range for preset P1D ending at now", () => {

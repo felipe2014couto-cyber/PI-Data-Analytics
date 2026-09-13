@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -129,9 +129,36 @@ class HistoricalReloadService:
             raise ConflictError("O job já terminou e não pode ser cancelado.")
         job.status = "CANCELLED"
         job.stage = "CANCELLED"
+        job.lease_owner = None
+        job.lease_expires_at = None
+        job.heartbeat_at = None
+        job.next_attempt_at = None
         self.db.commit()
         self.db.refresh(job)
         return job
+
+    def cancel_many(self, job_ids: list[int]) -> list[PiBackfillJob]:
+        jobs = list(self.db.scalars(select(PiBackfillJob).where(PiBackfillJob.id.in_(job_ids))).all())
+        for job in jobs:
+            if job.status in ("PENDING", "RUNNING"):
+                job.status = "CANCELLED"
+                job.stage = "CANCELLED"
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.heartbeat_at = None
+                job.next_attempt_at = None
+        self.db.commit()
+        for job in jobs:
+            self.db.refresh(job)
+        return jobs
+
+    def clear_terminal(self) -> int:
+        """Remove only terminal job records; samples and coverage are untouched."""
+        result = self.db.execute(
+            delete(PiBackfillJob).where(PiBackfillJob.status.in_(("COMPLETED", "CANCELLED")))
+        )
+        self.db.commit()
+        return int(result.rowcount or 0)
 
     def coverage(self, tag_id: int, start: datetime, end: datetime, mode: str, interval: str | None) -> dict:
         self.validate_period(start, end)

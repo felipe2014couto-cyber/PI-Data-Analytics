@@ -48,7 +48,10 @@ def test_once_exits_without_sleep(monkeypatch, module):
     monkeypatch.setattr(module.asyncio, "sleep", sleep)
     name = module.__name__.rsplit(".", 1)[1].replace("_worker", "")
     asyncio.run(getattr(module, f"run_{name}_loop")(once=True))
-    assert factory.call_count == 1
+    # Durable backfill may use separate short-lived sessions for lease
+    # recovery/claiming; every worker still has to execute at least one DB
+    # cycle and must not sleep in --once mode.
+    assert factory.call_count >= 1
     sleep.assert_not_awaited()
 
 

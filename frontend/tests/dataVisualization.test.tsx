@@ -196,19 +196,14 @@ describe("Data visualization page", () => {
     expect(filtersToggle).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("uses interpolated mode by default and preserves a manual change to recorded", async () => {
+  it("uses the recorded aggregate path without exposing legacy source modes", async () => {
     apiMock.listPiTags.mockResolvedValue(paginated([piTagFixture]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
     renderAt("/analises/visualizacao");
 
-    const interpolated = await screen.findByTestId("mode-interpolated");
-    const recorded = screen.getByTestId("mode-recorded");
-    expect(interpolated).toBeChecked();
-    expect(recorded).not.toBeChecked();
-    fireEvent.click(recorded);
-    fireEvent.click(screen.getByTestId("graph-configuration-toggle"));
-    expect(recorded).toBeChecked();
-    expect(interpolated).not.toBeChecked();
+    await screen.findByTestId("data-filters-panel");
+    expect(screen.queryByTestId("mode-interpolated")).toBeNull();
+    expect(screen.queryByTestId("mode-recorded")).toBeNull();
   });
 
   it("defaults to automatic and exposes only implemented visualization types", async () => {
@@ -680,7 +675,7 @@ describe("Data visualization page", () => {
     expect(await screen.findByTestId("filters-error")).toHaveTextContent("Selecione ao menos uma tag");
   });
 
-  it("requires interval when mode is interpolated", async () => {
+  it("does not expose legacy interpolation interval controls", async () => {
     const tag = { ...piTagFixture, validation_status: "VALID" as const };
     apiMock.listPiTags.mockResolvedValue(paginated([tag]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
@@ -690,12 +685,9 @@ describe("Data visualization page", () => {
     const tagList = await screen.findByTestId("tag-multi-select");
     const tagItem = within(tagList).getByTestId("tag-option-1");
     fireEvent.click(tagItem);
-    const modeInterp = await screen.findByTestId("mode-interpolated");
-    fireEvent.click(modeInterp);
-    const resolutionManual = await screen.findByTestId("resolution-manual");
-    fireEvent.click(resolutionManual);
-    const intervalSelect = await screen.findByTestId("interval-select");
-    expect(intervalSelect).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-interpolated")).toBeNull();
+    expect(screen.queryByTestId("resolution-manual")).toBeNull();
+    expect(screen.queryByTestId("interval-select")).toBeNull();
   });
 
   it("builds the request with UTC ISO timestamps and sends the right URL", async () => {
@@ -724,7 +716,7 @@ describe("Data visualization page", () => {
     expect(typeof capturedParams?.end_time).toBe("string");
     expect(String(capturedParams?.start_time)).toMatch(/T.*Z$/);
     expect(String(capturedParams?.end_time)).toMatch(/T.*Z$/);
-    expect(capturedParams?.mode).toBe("interpolated");
+    expect(capturedParams?.mode).toBe("recorded");
   });
 
   it("cancels the previous request when a new one is issued", async () => {
@@ -1498,17 +1490,12 @@ describe("Data visualization page", () => {
     await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1));
     const queryCall = apiMock.timeSeriesQuery.mock.calls[0][0];
     expect(queryCall.tag_ids).toEqual([1]);
-    expect(queryCall.mode).toBe("interpolated");
+    expect(queryCall.mode).toBe("recorded");
 
     // Limites não são ativados automaticamente
     expect(screen.queryByTestId("visual-limit")).not.toBeInTheDocument();
 
-    // Também funciona em modo recorded
-    fireEvent.click(screen.getByTestId("mode-recorded"));
-    fireEvent.click(screen.getByTestId("filters-submit"));
-    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(2));
-    const secondCall = apiMock.timeSeriesQuery.mock.calls[1][0];
-    expect(secondCall.mode).toBe("recorded");
+    expect(screen.queryByTestId("mode-interpolated")).toBeNull();
   });
 
   it("trocar de modelo cancela requisição pendente e descarta respostas obsoletas", async () => {

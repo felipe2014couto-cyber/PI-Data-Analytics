@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -432,6 +433,24 @@ class PiService:
         )
 
     async def fetch_time_series(self, request: TimeSeriesRequest) -> TimeSeries:
+        """Serialize worker PI reads across processes while concurrency is one."""
+        postgres = self.db.bind is not None and self.db.bind.dialect.name == "postgresql"
+        use_global_lock = postgres and settings.pi_query_concurrency == 1
+        if use_global_lock:
+            self.db.execute(
+                text("SELECT pg_advisory_lock(:key)"),
+                {"key": settings.pi_query_global_lock_key},
+            )
+        try:
+            return await self._fetch_time_series_unlocked(request)
+        finally:
+            if use_global_lock:
+                self.db.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": settings.pi_query_global_lock_key},
+                )
+
+    async def _fetch_time_series_unlocked(self, request: TimeSeriesRequest) -> TimeSeries:
         self._validate_time_range(request)
         tags = self._load_tags(request.tag_ids)
         max_count = self._resolve_max_count(request)
@@ -449,6 +468,9 @@ class PiService:
                         "tag_id": tag.id,
                         "code": exc.code,
                         "message": exc.safe_message,
+                        "retry_after": exc.details.get("retry_after")
+                        if isinstance(exc.details, dict)
+                        else None,
                     }
                 )
             except Exception:  # pragma: no cover - defensive

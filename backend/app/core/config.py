@@ -82,10 +82,14 @@ class Settings(BaseSettings):
         description="Quantidade maxima de pontos por tag em uma consulta.",
     )
     pi_query_concurrency: int = Field(
-        default=4,
+        default=1,
         ge=1,
         le=20,
         description="Concorrencia global maxima de chamadas ao PI Web API.",
+    )
+    pi_query_global_lock_key: int = Field(
+        default=2147483003,
+        description="Advisory lock PostgreSQL que serializa consultas PI entre processos.",
     )
     pi_query_initial_chunk_days: int = Field(
         default=7,
@@ -100,7 +104,7 @@ class Settings(BaseSettings):
         description="Limite de pontos por chamada ao PI Web API.",
     )
     pi_query_visual_default_points_per_tag: int = Field(
-        default=10000,
+        default=1500,
         ge=1000,
         le=50000,
         description="Alvo visual padrao de pontos exibidos por tag.",
@@ -116,6 +120,24 @@ class Settings(BaseSettings):
         ge=1000,
         le=1_000_000,
         description="Limite global de pontos na resposta visual.",
+    )
+    timescaledb_dynamic_raw_point_limit: int = Field(
+        default=5000,
+        ge=1,
+        le=100000,
+        description="Maximo de RecordedValues qualificados para leitura visual direta.",
+    )
+    timescaledb_query_cache_ttl_seconds: int = Field(
+        default=45,
+        ge=1,
+        le=300,
+        description="TTL do cache em memoria para consultas visuais dinamicas.",
+    )
+    timescaledb_query_cache_max_entries: int = Field(
+        default=64,
+        ge=1,
+        le=512,
+        description="Quantidade maxima de consultas TimescaleDB no cache em memoria.",
     )
     pi_query_max_period_days: int = Field(
         default=366,
@@ -251,12 +273,38 @@ class Settings(BaseSettings):
         le=300.0,
         description="Intervalo em segundos entre ciclos do worker de ingestao live.",
     )
+    ingestion_recorded_cycle_seconds: float = Field(
+        default=60.0,
+        ge=10.0,
+        le=300.0,
+        description="Intervalo entre ciclos de captura RecordedValues.",
+    )
+    ingestion_recorded_window_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=300,
+        description="Janela nominal consultada no endpoint RecordedValues.",
+    )
+    ingestion_recorded_max_points: int = Field(
+        default=20_000,
+        ge=100,
+        le=1_000_000,
+        description="Limite por chamada RecordedValues antes de subdividir a janela.",
+    )
     ingestion_overlap_seconds: int = Field(
         default=30,
         ge=5,
         le=300,
         description="Janela de sobreposicao retroativa para compensar latencia de gravacao no PI Web API.",
     )
+    ingestion_freshness_tolerance_seconds: int = Field(
+        default=300,
+        ge=30,
+        le=86400,
+        description="Atraso máximo aceito para períodos relativos antes de sinalizar dados obsoletos.",
+    )
+    ingestion_interpolated_10s_window_hours: float = Field(default=12.0, ge=0.25, le=24.0)
+    ingestion_interpolated_300s_window_days: int = Field(default=14, ge=1, le=60)
     backfill_chunk_days: int = Field(
         default=1,
         ge=1,
@@ -275,6 +323,16 @@ class Settings(BaseSettings):
         le=1_000_000,
         description="maxCount conservador usado pelo backfill RECORDED.",
     )
+    backfill_admin_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="Chamadas simultaneas para recargas administrativas.",
+    )
+    backfill_lease_seconds: int = Field(default=900, ge=60, le=7200)
+    backfill_heartbeat_seconds: int = Field(default=30, ge=5, le=300)
+    backfill_retry_base_seconds: float = Field(default=5.0, ge=0.1, le=300.0)
+    backfill_retry_max_seconds: float = Field(default=300.0, ge=1.0, le=3600.0)
     backfill_max_days: int = Field(
         default=370,
         ge=1,

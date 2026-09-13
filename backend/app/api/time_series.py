@@ -103,6 +103,7 @@ async def get_time_series(
     max_count: Optional[int] = Query(None, ge=1, le=1_000_000),
     resolution_mode: Optional[str] = Query(None, pattern="^(automatic|manual)$"),
     target_points_per_tag: Optional[int] = Query(None, ge=1000, le=50000),
+    relative_period: bool = Query(False, description="Período relativo terminado no instante atual."),
     refresh: bool = Query(False, description="Ignorar cache visual e forçar nova consulta."),
     query_id: Optional[str] = Query(None, description="ID da consulta para cancelamento."),
     db_service: DatabaseTimeSeriesService = Depends(get_db_time_series_service),
@@ -119,9 +120,10 @@ async def get_time_series(
         max_count=max_count,
         resolution_mode=resolution_mode,
         target_points_per_tag=target_points_per_tag,
+        relative_period=relative_period,
     )
 
-    result = await db_service.fetch_time_series(ts_request)
+    result = await db_service.fetch_time_series(ts_request, refresh=refresh)
     if result.query_execution is not None:
         result.query_execution.query_id = qid
         result.query_execution.resolution_mode = resolution_mode or "automatic"

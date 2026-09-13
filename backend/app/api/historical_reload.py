@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db_session, require_admin, validate_csrf
 from app.schemas.historical_reload import (
+    HistoricalReloadBatchCancelRequest,
     HistoricalReloadCoverageResponse,
     HistoricalReloadJobResponse,
     HistoricalReloadRequest,
@@ -29,6 +30,8 @@ def _job_response(job) -> HistoricalReloadJobResponse:
         target_end=job.target_end, next_start=job.next_start, status=job.status,
         stage=job.stage, progress_percent=min(100, max(0, elapsed / duration * 100)),
         attempts=job.attempts or 0, error_message=job.error_message,
+        lease_owner=job.lease_owner, lease_expires_at=job.lease_expires_at,
+        heartbeat_at=job.heartbeat_at, next_attempt_at=job.next_attempt_at,
         created_at=job.created_at, updated_at=job.updated_at,
     )
 
@@ -46,6 +49,17 @@ def list_reloads(limit: int = Query(100, ge=1, le=500), db: Session = Depends(ge
 @router.get("/summary", response_model=HistoricalReloadSummaryResponse)
 def reload_summary(db: Session = Depends(get_db_session)):
     return HistoricalReloadService(db).summary()
+
+
+@router.delete("/terminal", status_code=status.HTTP_200_OK)
+def clear_terminal_reloads(db: Session = Depends(get_db_session)):
+    """Clear only COMPLETED/CANCELLED job rows, never samples or coverage."""
+    return {"deleted": HistoricalReloadService(db).clear_terminal()}
+
+
+@router.post("/cancel-batch", response_model=list[HistoricalReloadJobResponse])
+def cancel_batch(payload: HistoricalReloadBatchCancelRequest, db: Session = Depends(get_db_session)):
+    return [_job_response(job) for job in HistoricalReloadService(db).cancel_many(payload.job_ids)]
 
 
 @router.get("/coverage/{tag_id}", response_model=HistoricalReloadCoverageResponse)

@@ -48,6 +48,27 @@ function makeTs(seriesList: TimeSeriesSeries[]): TimeSeries {
 }
 
 describe("applyTimeAnalysisRule", () => {
+  it("collapses PI Plot vertices when an explicit statistic is selected", () => {
+    const point = {
+      ...makePoint("2026-09-04T10:00:00Z", 15),
+      plot_min: -5,
+      plot_max: 40,
+      plot_first: 10,
+      plot_last: 20,
+      plot_avg: 15,
+      plot_min_ts: "2026-09-04T10:10:00Z",
+      plot_max_ts: "2026-09-04T10:20:00Z",
+      plot_first_ts: "2026-09-04T10:01:00Z",
+      plot_last_ts: "2026-09-04T10:59:00Z",
+      plot_sample_count: 100,
+    };
+    const result = applyTimeAnalysisRule(makeTs([makeSeries(1, [point])]), "MAXIMO");
+
+    expect(result.series[0].points[0].value).toBe(40);
+    expect(result.series[0].points[0].plot_sample_count).toBeUndefined();
+    expect(result.series[0].points[0].plot_min_ts).toBeUndefined();
+  });
+
   it("returns original series when rule is DEFAULT", () => {
     const pts = [
       makePoint("2026-09-04T10:00:05Z", 10),

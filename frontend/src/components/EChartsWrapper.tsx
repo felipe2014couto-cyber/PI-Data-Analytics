@@ -38,6 +38,36 @@ export interface EChartsWrapperProps {
   className?: string;
   height?: number | string;
   onInit?: (instance: ECharts) => void;
+  preserveDataZoom?: boolean;
+  activateAreaZoom?: boolean;
+  syncGroup?: string;
+}
+
+const connectedGroupCounts = new Map<string, number>();
+
+function connectInstance(instance: ECharts, group: string): void {
+  (instance as ECharts & { group?: string }).group = group;
+  const count = connectedGroupCounts.get(group) ?? 0;
+  connectedGroupCounts.set(group, count + 1);
+  echarts.connect(group);
+}
+
+function disconnectInstance(group: string): void {
+  const count = connectedGroupCounts.get(group) ?? 0;
+  if (count <= 1) {
+    connectedGroupCounts.delete(group);
+    echarts.disconnect(group);
+    return;
+  }
+  connectedGroupCounts.set(group, count - 1);
+}
+
+function activateDataZoomSelection(instance: ECharts): void {
+  instance.dispatchAction({
+    type: "takeGlobalCursor",
+    key: "dataZoomSelect",
+    dataZoomSelectActive: true,
+  } as never);
 }
 
 export function EChartsWrapper({
@@ -46,6 +76,9 @@ export function EChartsWrapper({
   className,
   height = 360,
   onInit,
+  preserveDataZoom = true,
+  activateAreaZoom = false,
+  syncGroup,
 }: EChartsWrapperProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<ECharts | null>(null);
@@ -55,10 +88,18 @@ export function EChartsWrapper({
     if (!containerRef.current) {
       return;
     }
+    let joinedSyncGroup = false;
     try {
       const instance = echarts.init(containerRef.current, undefined, { renderer: "canvas" }) as unknown as ECharts;
       chartRef.current = instance;
+      if (syncGroup) {
+        connectInstance(instance, syncGroup);
+        joinedSyncGroup = true;
+      }
       instance.setOption(option, { notMerge: true });
+      if (activateAreaZoom) {
+        activateDataZoomSelection(instance);
+      }
       if (onInit) {
         onInit(instance);
       }
@@ -87,6 +128,9 @@ export function EChartsWrapper({
         // ignore dispose error
       }
       chartRef.current = null;
+      if (syncGroup && joinedSyncGroup) {
+        disconnectInstance(syncGroup);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -99,6 +143,7 @@ export function EChartsWrapper({
 
         // Preserve user's active zoom window (start/end or startValue/endValue) across option updates
         if (
+          preserveDataZoom &&
           currentOpt?.dataZoom &&
           Array.isArray(currentOpt.dataZoom) &&
           Array.isArray((option as any)?.dataZoom)
@@ -136,11 +181,17 @@ export function EChartsWrapper({
         }
 
         chartRef.current.setOption(effectiveOption, { notMerge: true });
+        if (activateAreaZoom) {
+          activateDataZoomSelection(chartRef.current);
+        }
       } catch {
         chartRef.current.setOption(option, { notMerge: true });
+        if (activateAreaZoom) {
+          activateDataZoomSelection(chartRef.current);
+        }
       }
     }
-  }, [option]);
+  }, [activateAreaZoom, option, preserveDataZoom]);
 
   useEffect(() => {
     if (chartRef.current) {

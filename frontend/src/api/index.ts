@@ -56,9 +56,13 @@ export const adminUsersApi = {
 
 export const historicalReloadApi = {
   create(payload: HistoricalReloadRequest) { return httpClient.post<HistoricalReloadJob[]>("/admin/historical-reloads", payload); },
-  list() { return httpClient.get<HistoricalReloadJob[]>("/admin/historical-reloads"); },
+  list() { return httpClient.get<HistoricalReloadJob[]>("/admin/historical-reloads", { limit: 500 }); },
   summary() { return httpClient.get<HistoricalReloadSummary>("/admin/historical-reloads/summary"); },
   cancel(id: number) { return httpClient.post<HistoricalReloadJob>(`/admin/historical-reloads/${id}/cancel`); },
+  cancelBatch(jobIds: number[]) {
+    return httpClient.post<HistoricalReloadJob[]>("/admin/historical-reloads/cancel-batch", { job_ids: jobIds });
+  },
+  clearTerminal() { return httpClient.delete<{ deleted: number }>("/admin/historical-reloads/terminal"); },
 };
 
 export const visualConfigurationsApi = {
@@ -86,6 +90,7 @@ function buildListQuery(params?: ListParams): Record<string, unknown> {
     section_id: params.section_id,
     variable_type_id: params.variable_type_id,
     validation_status: params.validation_status,
+    include_dependencies: params.include_dependencies,
   };
 }
 
@@ -189,7 +194,8 @@ export const piTagsApi = {
 
 export const piApi = {
   health() {
-    return httpClient.get<PiHealth>("/pi/health");
+    // The visualization reads the persisted worker state. It never pings PI.
+    return httpClient.get<PiHealth>("/ingestion/health");
   },
 };
 
@@ -207,6 +213,7 @@ export const timeSeriesApi = {
       max_count?: number;
       resolution_mode?: string;
       target_points_per_tag?: number;
+      relative_period?: boolean;
       query_id?: string;
     },
     signal?: AbortSignal,
@@ -220,6 +227,7 @@ export const timeSeriesApi = {
       max_count: params.max_count,
       resolution_mode: params.resolution_mode,
       target_points_per_tag: params.target_points_per_tag,
+      relative_period: params.relative_period,
       query_id: params.query_id,
     };
     return httpClient.get<TimeSeries>("/time-series", query, signal);

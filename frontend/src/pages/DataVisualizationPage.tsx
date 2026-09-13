@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
 
 import { equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
 import { ApiError } from "../api/http";
@@ -72,6 +74,7 @@ import { EMPTY_VISUAL_CONFIGURATION, defaultNormLimitConfig } from "../utils/vis
 import type { ChartSeries } from "../utils/chartData";
 
 const DEFAULT_MAX_COUNT = 2000;
+const TIME_CHART_SYNC_GROUP = "piad-data-visualization-time";
 
 function _generateQueryId(): string {
   try {
@@ -120,11 +123,11 @@ const INITIAL_FILTERS: FiltersState = {
   variableTypeId: null,
   timePeriod: { kind: "preset", preset: "PT1H" },
   timezone: APPLICATION_TIMEZONE,
-  mode: "interpolated",
-  interval: "1m",
+  mode: "recorded",
+  interval: "10s",
   maxCount: DEFAULT_MAX_COUNT,
   resolutionMode: "automatic",
-  targetPointsPerTag: 10000,
+  targetPointsPerTag: 1500,
   ignoreBadQuality: true,
   visualization: "automatic",
   timeAnalysisRule: "MEDIA",
@@ -148,6 +151,19 @@ interface QueryState {
   startedAt: number | null;
   finishedAt: number | null;
   resolvedPeriod: ResolvedTimePeriod | null;
+  errorDetails: HistoricalErrorDetails | null;
+}
+
+interface HistoricalErrorDetails {
+  affected_tags?: Array<{ tag_id: number; intervals?: Array<{ start: string; end: string }> }>;
+  mode?: string;
+  resolution?: string;
+  requested_period?: { start: string; end: string };
+  data_available_until?: string;
+  requested_end?: string;
+  effective_end?: string;
+  freshness_lag_seconds?: number;
+  reload_available?: boolean;
 }
 
 const INITIAL_QUERY: QueryState = {
@@ -159,6 +175,7 @@ const INITIAL_QUERY: QueryState = {
   startedAt: null,
   finishedAt: null,
   resolvedPeriod: null,
+  errorDetails: null,
 };
 
 interface ComparisonState {
@@ -199,11 +216,14 @@ function syncQualityConfig(
 }
 
 export function DataVisualizationPage() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [filters, setFilters] = useState<FiltersState>(INITIAL_FILTERS);
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [seriesAssignments, setSeriesAssignments] = useState<SeriesAssignment[]>([]);
   const [metricConfiguration, setMetricConfiguration] = useState<MetricConfiguration>({ kind: "none" });
   const [query, setQuery] = useState<QueryState>(INITIAL_QUERY);
+  const [filterValidationError, setFilterValidationError] = useState<string | null>(null);
   const [comparison, setComparison] = useState<ComparisonState>(INITIAL_COMPARISON);
   const [visualRules, setVisualRules] = useState<VisualRulesState>(INITIAL_VISUAL_RULES);
   const [resolvedLimitSeries, setResolvedLimitSeries] = useState<ChartSeries[]>([]);
@@ -279,8 +299,8 @@ export function DataVisualizationPage() {
         base_url: null,
         data_server: null,
         response_time_ms: null,
-        message: err instanceof Error ? err.message : "Falha ao consultar /api/pi/health",
-        error_code: "PI_HEALTH_FAILED",
+        message: err instanceof Error ? err.message : "Falha ao consultar o estado da ingestão",
+        error_code: "INGESTION_HEALTH_FAILED",
       });
     } finally {
       setPiChecking(false);
@@ -806,6 +826,26 @@ export function DataVisualizationPage() {
     setVisualRules(INITIAL_VISUAL_RULES);
     scatterInitializedRef.current = false;
     setQuery(INITIAL_QUERY);
+    setFilterValidationError(null);
+  };
+
+  const openHistoricalReload = () => {
+    const details = query.errorDetails;
+    if (user?.role !== "admin" || !details?.reload_available) return;
+    const tagIds = (details.affected_tags ?? []).map((entry) => entry.tag_id);
+    const period = details.requested_period ?? (query.resolvedPeriod ? {
+      start: query.resolvedPeriod.startTime,
+      end: query.resolvedPeriod.endTime,
+    } : null);
+    if (!tagIds.length || !period) return;
+    const params = new URLSearchParams({
+      tag_ids: tagIds.join(","),
+      start_time: period.start,
+      end_time: period.end,
+      mode: "recorded",
+      interval: details.resolution ?? (details.mode === "recorded" ? "10s" : "300s"),
+    });
+    navigate(`/admin/recargas-historicas?${params.toString()}`);
   };
 
   const visualConfigurationDocument = buildVisualConfigurationDocument({
@@ -876,9 +916,10 @@ export function DataVisualizationPage() {
   const runQuery = async () => {
     const error = computeValidationError();
     if (error) {
-      setQuery((prev) => ({ ...prev, errorMessage: error }));
+      setFilterValidationError(error);
       return;
     }
+    setFilterValidationError(null);
     const capturedNow = new Date();
     let resolvedPeriod: ResolvedTimePeriod;
     try {
@@ -887,6 +928,7 @@ export function DataVisualizationPage() {
       setQuery((prev) => ({
         ...prev,
         errorMessage: periodError instanceof Error ? periodError.message : "Período inválido.",
+        errorDetails: null,
       }));
       return;
     }
@@ -894,6 +936,7 @@ export function DataVisualizationPage() {
       setQuery((prev) => ({
         ...prev,
         errorMessage: "PI Web API nao esta disponivel. Verifique a conexao.",
+        errorDetails: null,
       }));
       return;
     }
@@ -915,6 +958,7 @@ export function DataVisualizationPage() {
       startedAt,
       finishedAt: null,
       resolvedPeriod,
+      errorDetails: null,
     });
 
     try {
@@ -928,6 +972,7 @@ export function DataVisualizationPage() {
           max_count: filters.mode === "recorded" && filters.resolutionMode === "manual" ? filters.maxCount : undefined,
           resolution_mode: filters.resolutionMode,
           target_points_per_tag: filters.targetPointsPerTag,
+          relative_period: filters.timePeriod.kind !== "absolute",
           query_id: qid,
         },
         controller.signal,
@@ -990,6 +1035,7 @@ export function DataVisualizationPage() {
         timeSeries: result,
         loading: false,
         errorMessage: null,
+        errorDetails: null,
         partial: result.errors.length > 0 || result.query_execution?.partial === true,
         errorPerSeries: result.errors,
         startedAt,
@@ -1008,6 +1054,7 @@ export function DataVisualizationPage() {
           startedAt,
           finishedAt: Date.now(),
           resolvedPeriod,
+          errorDetails: null,
         });
         return;
       }
@@ -1021,6 +1068,7 @@ export function DataVisualizationPage() {
         timeSeries: null,
         loading: false,
         errorMessage: message,
+        errorDetails: err instanceof ApiError && err.details && typeof err.details === "object" ? err.details as HistoricalErrorDetails : null,
         partial: false,
         errorPerSeries: [],
         startedAt,
@@ -1442,7 +1490,7 @@ export function DataVisualizationPage() {
     <div data-testid="data-visualization-page">
       <PageHeader
         title="Visualizacao de Dados"
-        subtitle="Grafico de linha com consulta direta ao PI Web API"
+        subtitle="Gráfico de linha com dados históricos do TimescaleDB"
         center={
           <VisualConfigurationsPanel
             document={visualConfigurationDocument}
@@ -1463,11 +1511,11 @@ export function DataVisualizationPage() {
                 data-testid="pi-connection-status"
                 data-status={piHealth.status}
               >
-                PI: {piHealth.status}
+                Ingestão: {piHealth.status}
               </span>
             ) : (
               <span className="badge bg-info" data-testid="pi-connection-loading">
-                Verificando PI...
+                Verificando ingestão...
               </span>
             )}
             <Form.Check
@@ -1485,7 +1533,7 @@ export function DataVisualizationPage() {
               onClick={() => void loadPiHealth()}
               disabled={piChecking}
             >
-              <i className="bi bi-arrow-repeat me-1" /> Verificar PI
+              <i className="bi bi-arrow-repeat me-1" /> Verificar ingestão
             </Button>
             <Button
               variant="primary"
@@ -1661,7 +1709,7 @@ export function DataVisualizationPage() {
                 onSubmit={handleSubmit}
                 submitting={query.loading}
                 cancelling={cancelling}
-                errorMessage={query.errorMessage}
+                errorMessage={filterValidationError}
               />
             </Card.Body>
           </Card>
@@ -1669,6 +1717,12 @@ export function DataVisualizationPage() {
         <Col xs={12} lg={8} xl={9}>
           <Card className="piad-card mb-3">
             <Card.Body>
+              {query.timeSeries?.query_execution?.data_available_until && query.timeSeries.query_execution.effective_end &&
+              query.timeSeries.query_execution.requested_end !== query.timeSeries.query_execution.effective_end ? (
+                <Alert variant="info" data-testid="data-available-until">
+                  Dados disponíveis até: {new Date(query.timeSeries.query_execution.data_available_until).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}
+                </Alert>
+              ) : null}
               {query.loading ? (
                 <div className="piad-loading" data-testid="chart-loading">
                   <span className="spinner-border spinner-border-sm me-2" /> Carregando serie temporal...
@@ -1677,6 +1731,26 @@ export function DataVisualizationPage() {
                 <Alert variant="danger" className="mb-0" data-testid="chart-error">
                   <div className="fw-semibold mb-1">Falha na consulta</div>
                   <div>{query.errorMessage}</div>
+                  {query.errorDetails?.mode || query.errorDetails?.resolution ? (
+                    <div className="small mt-2">
+                      Modo: {query.errorDetails.mode ?? filters.mode} · Resolução: {query.errorDetails.resolution ?? "automática"}
+                    </div>
+                  ) : null}
+                  {query.errorDetails?.requested_period ? (
+                    <div className="small">
+                      Período: {new Date(query.errorDetails.requested_period.start).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })} até {new Date(query.errorDetails.requested_period.end).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}
+                    </div>
+                  ) : null}
+                  {query.errorDetails?.data_available_until ? (
+                    <div className="small">Dados disponíveis até: {new Date(query.errorDetails.data_available_until).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}</div>
+                  ) : null}
+                  {query.errorDetails?.reload_available && user?.role === "admin" ? (
+                    <Button variant="warning" size="sm" className="mt-2 me-2" onClick={openHistoricalReload} data-testid="historical-reload-button">
+                      Recarregar período
+                    </Button>
+                  ) : query.errorDetails?.reload_available ? (
+                    <div className="small mt-2">A cobertura precisa ser carregada por um administrador.</div>
+                  ) : null}
                   <Button
                     variant="outline-danger"
                     size="sm"
@@ -1697,7 +1771,7 @@ export function DataVisualizationPage() {
                   </p>
                 </div>
               ) : chartGroups ? (
-                <div data-testid="chart-groups">
+                <div data-testid="chart-groups" className="position-relative">
                   {numericChart &&
                   filters.visualization !== "histogram" &&
                   filters.visualization !== "boxplot" &&
@@ -1735,6 +1809,8 @@ export function DataVisualizationPage() {
                         limitSeries={resolvedLimitSeries}
                         normLimitSeries={displayedNormLimitSeries}
                         umSeries={umChartSeries}
+                        syncGroup={TIME_CHART_SYNC_GROUP}
+                        enableZoomKeyboardUndo
                       />
                     </div>
                   ) : null}
@@ -1813,6 +1889,8 @@ export function DataVisualizationPage() {
                         mode={filters.mode}
                         loading={query.loading}
                         visualRules={visualRules}
+                        syncGroup={TIME_CHART_SYNC_GROUP}
+                        enableZoomKeyboardUndo={!numericChart || filters.visualization === "states"}
                       />
                     </div>
                   ) : null}

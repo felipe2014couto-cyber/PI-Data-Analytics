@@ -54,11 +54,13 @@ def test_time_series_point_serialization_preserves_numeric_string() -> None:
 def test_recorded_reads_timescaledb_and_reports_source(client: TestClient, db_session: Session) -> None:
     start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
     tag = _make_tag(db_session, "RECORDED")
-    _seed(db_session, tag, start, end, [(start, 82.5), (start + timedelta(seconds=30), 83.1)], "INTERPOLATED_10S", 10)
+    _seed(db_session, tag, start, end, [(start, 82.5), (start + timedelta(seconds=30), 83.1)], "RECORDED")
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
     assert response.status_code == 200, response.text
     body = response.json(); assert body["query_execution"]["source"] == "timescaledb"
-    assert body["query_execution"]["effective_interval"] == "10s"
+    # SQLite exercises the raw RECORDED fallback; PostgreSQL routes the same
+    # request through the 10-second continuous aggregate.
+    assert body["query_execution"]["effective_interval"] is None
     assert len(body["series"][0]["points"]) == 2
     assert client.fake_provider.recorded_calls == []  # type: ignore[attr-defined]
 

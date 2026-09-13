@@ -1,4 +1,4 @@
-"""PI Web API endpoints (health only)."""
+"""PI Web API administrative health endpoint."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends

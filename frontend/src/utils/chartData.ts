@@ -52,6 +52,7 @@ export interface ChartSeries {
   statePoints: Array<[number, number | null]>;
   stateValues: string[];
   stateQualitySeries: Array<[number, ChartQuality]>;
+  isPlotSeries?: boolean;
 }
 
 export interface ChartBuildResult {
@@ -122,6 +123,46 @@ function mergeValueKinds(current: ChartValueKind, next: ChartValueKind): ChartVa
   return "mixed";
 }
 
+/**
+ * Expand a Plot aggregate bucket into the significant RecordedValues vertices.
+ *
+ * PI's Plot presentation preserves the first/last event and both extrema in
+ * their real temporal order.  The aggregate still travels as one API point;
+ * only the chart receives the expanded vertices.
+ */
+export function plotVertices(
+  point: TimeSeriesPoint,
+  comparisonType: ComparisonType | null | undefined,
+): Array<[number, number]> {
+  if (point.is_gapfilled || !point.plot_sample_count) return [];
+
+  const bucketTime = Date.parse(point.timestamp);
+  if (!Number.isFinite(bucketTime)) return [];
+  const candidates: Array<[string | null | undefined, number | null | undefined]> = [
+    [point.plot_first_ts, point.plot_first],
+    [point.plot_min_ts, point.plot_min],
+    [point.plot_max_ts, point.plot_max],
+    [point.plot_last_ts, point.plot_last],
+  ];
+  const vertices: Array<[number, number]> = [];
+  const seen = new Set<string>();
+
+  for (const [timestamp, value] of candidates) {
+    if (!timestamp || !isNumericValue(value)) continue;
+    const absoluteTime = Date.parse(timestamp);
+    if (!Number.isFinite(absoluteTime)) continue;
+    const displayTime = comparisonType === "periods" && point.elapsed_ms != null
+      ? point.elapsed_ms + (absoluteTime - bucketTime)
+      : absoluteTime;
+    const key = `${displayTime}:${value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    vertices.push([displayTime, value]);
+  }
+
+  return vertices.sort((left, right) => left[0] - right[0]);
+}
+
 function buildUnitSlot(
   unit: string | null,
   units: Array<{ key: string; display: string }>,
@@ -169,6 +210,7 @@ export function buildChartData(
     let nonNumeric = 0;
     let seriesValueKind: ChartValueKind = "empty";
     let previousState: string | null = null;
+    let isPlotSeries = false;
 
     for (const point of seriesEntry.points) {
       const absoluteTime = Date.parse(point.timestamp);
@@ -202,8 +244,15 @@ export function buildChartData(
         continue;
       }
       if (isNumericValue(point.value)) {
-        points.push([time, point.value]);
-        qualitySeries.push([time, classifyQuality(point)]);
+        const vertices = plotVertices(point, seriesEntry.comparison_type);
+        if (vertices.length > 0) {
+          isPlotSeries = true;
+          points.push(...vertices);
+          qualitySeries.push(...vertices.map(([vertexTime]) => [vertexTime, classifyQuality(point)] as [number, ChartQuality]));
+        } else {
+          points.push([time, point.value]);
+          qualitySeries.push([time, classifyQuality(point)]);
+        }
         numeric += 1;
         totalNumeric += 1;
       } else {
@@ -272,6 +321,7 @@ export function buildChartData(
       statePoints,
       stateValues,
       stateQualitySeries,
+      isPlotSeries,
     });
   });
 

@@ -86,7 +86,7 @@ interface DataFiltersPanelProps {
   onSubmit: () => void;
   submitting: boolean;
   cancelling?: boolean;
-  errorMessage: string | null;
+  errorMessage?: string | null;
 }
 
 export function DataFiltersPanel(props: DataFiltersPanelProps) {
@@ -112,12 +112,6 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
     onAnalysisModelChange,
     timeAnalysisRule,
     onTimeAnalysisRuleChange,
-    mode,
-    onModeChange,
-    interval,
-    onIntervalChange,
-    resolutionMode,
-    onResolutionModeChange,
     targetPointsPerTag,
     onTargetPointsPerTagChange,
     targetPointsPerTagLimit,
@@ -155,12 +149,7 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
           no servidor para habilitar a consulta.
         </Alert>
       ) : null}
-      {errorMessage ? (
-        <Alert variant="danger" className="mb-0" data-testid="filters-error">
-          {errorMessage}
-        </Alert>
-      ) : null}
-
+      {errorMessage ? <Alert variant="danger" className="mb-0" data-testid="filters-error">{errorMessage}</Alert> : null}
       <Accordion defaultActiveKey={["period", "context"]} alwaysOpen className="filter-accordion">
         <Accordion.Item eventKey="period">
           <Accordion.Header>Período</Accordion.Header>
@@ -424,70 +413,10 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
 
       {advancedFilters}
 
-      <Form.Group>
-        <Form.Label className="d-block">Modo de consulta</Form.Label>
-        <div className="d-flex gap-3">
-          <Form.Check
-            type="radio"
-            id="mode-recorded"
-            name="mode"
-            label="Histórico 10s — base cíclica"
-            checked={mode === "recorded"}
-            onChange={() => onModeChange("recorded")}
-            data-testid="mode-recorded"
-          />
-          <Form.Check
-            type="radio"
-            id="mode-interpolated"
-            name="mode"
-            label="Valores interpolados"
-            checked={mode === "interpolated"}
-            onChange={() => onModeChange("interpolated")}
-            data-testid="mode-interpolated"
-          />
-        </div>
-      </Form.Group>
-
-      <Form.Group>
-        <Form.Label className="d-block">Resolucao</Form.Label>
-        <div className="d-flex gap-3">
-          <Form.Check
-            type="radio"
-            id="resolution-auto"
-            name="resolutionMode"
-            label="Automatica"
-            checked={resolutionMode === "automatic"}
-            onChange={() => onResolutionModeChange("automatic")}
-            data-testid="resolution-auto"
-          />
-          <Form.Check
-            type="radio"
-            id="resolution-manual"
-            name="resolutionMode"
-            label="Manual"
-            checked={resolutionMode === "manual"}
-            onChange={() => onResolutionModeChange("manual")}
-            data-testid="resolution-manual"
-          />
-        </div>
-      </Form.Group>
-
-      {resolutionMode === "manual" && mode === "interpolated" ? (
-        <Form.Group controlId="interval-select">
-          <Form.Label>Intervalo</Form.Label>
-          <Form.Select
-            value={interval}
-            onChange={(event) => onIntervalChange(event.target.value)}
-            data-testid="interval-select"
-          >
-            {INTERVAL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </Form.Select>
-        </Form.Group>
-      ) : null}
+      <Alert variant="info" className="mb-3" data-testid="plot-aggregate-mode">
+        O histórico é consultado exclusivamente pelos agregados Plot do TimescaleDB
+        (10 segundos, horário ou diário conforme o período).
+      </Alert>
 
       <Row className="g-2">
         <Col xs={6}>

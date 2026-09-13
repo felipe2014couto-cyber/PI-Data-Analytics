@@ -25,6 +25,10 @@ export interface HistoricalReloadJob {
   progress_percent: number;
   attempts: number;
   error_message: string | null;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  heartbeat_at: string | null;
+  next_attempt_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -215,6 +219,7 @@ export interface ListParams {
   section_id?: number;
   variable_type_id?: number;
   validation_status?: PiTagValidationStatus;
+  include_dependencies?: boolean;
 }
 
 // PI Web API integration types (Phase 2)
@@ -433,6 +438,18 @@ export type MetricResult = MetricResultBase & (
 export interface TimeSeriesPoint {
   timestamp: string;
   value: number | string | boolean | null;
+  plot_min?: number | null;
+  plot_max?: number | null;
+  plot_first?: number | null;
+  plot_last?: number | null;
+  plot_avg?: number | null;
+  plot_min_ts?: string | null;
+  plot_max_ts?: string | null;
+  plot_first_ts?: string | null;
+  plot_last_ts?: string | null;
+  plot_sample_count?: number | null;
+  is_gapfilled?: boolean;
+  has_previous_value?: boolean | null;
   good: boolean;
   questionable: boolean;
   substituted: boolean;
@@ -470,7 +487,10 @@ export interface QueryExecutionMetadata {
   resolution_mode: string;
   requested_target_points_per_tag?: number | null;
   effective_target_points_per_tag?: number | null;
+  raw_point_count?: number | null;
+  dynamic_bucket_seconds?: number | null;
   effective_interval?: string | null;
+  plot_aggregate?: string | null;
   chunk_count?: number | null;
   subdivided_chunk_count?: number | null;
   pi_request_count?: number | null;
@@ -505,6 +525,11 @@ export interface QueryExecutionMetadata {
   processing_ms?: number | null;
   total_ms?: number | null;
   query_id?: string | null;
+  requested_end?: string | null;
+  effective_end?: string | null;
+  data_available_until?: string | null;
+  freshness_lag_seconds?: number | null;
+  is_stale?: boolean | null;
 }
 
 export interface TimeSeriesError {
