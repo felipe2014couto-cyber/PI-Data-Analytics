@@ -1,4 +1,4 @@
-import { render, act } from "@testing-library/react";
+import { render, act, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useEffect } from "react";
 import { TimeSeriesChart } from "../src/components/TimeSeriesChart";
@@ -9,16 +9,25 @@ let registeredEventHandlers: Record<string, Function[]> = {};
 let currentZoom = { start: 0, end: 100 };
 // Última option recebida pelo wrapper mockado (para inspecionar yAxis).
 let lastOption: any = null;
+let lastWrapperProps: any = null;
 
 vi.mock("../src/components/EChartsWrapper", () => ({
-  EChartsWrapper: ({ onInit, option, height }: any) => {
+  EChartsWrapper: (props: any) => {
+    const { onInit, option, height, loading } = props;
+    lastWrapperProps = props;
     useEffect(() => {
       lastOption = option;
       if (onInit && mockEChartsInstance) {
         onInit(mockEChartsInstance);
       }
     }, [onInit, option]);
-    return <div data-testid="echarts-wrapper" style={{ height }} />;
+    return (
+      <div
+        data-testid="echarts-wrapper"
+        data-global-loading={Boolean(loading)}
+        style={{ height }}
+      />
+    );
   },
 }));
 
@@ -37,16 +46,16 @@ function yPixelToValue(px: number): number {
   return Y_MAX - frac * (Y_MAX - Y_MIN);
 }
 
-function mockChartSeries(id: string, values: Array<[number, number]>): ChartSeries {
+function mockChartSeries(id: string, values: Array<[number, number]>, yAxisIndex: 0 | 1 = 0, unit = "m/min"): ChartSeries {
   return {
-    tagId: 7,
+    tagId: Number(id) || 7,
     displayName: `Zona ${id}`,
     tagName: `TAG_${id}`,
     equipment: null,
     section: null,
     variableType: null,
-    unit: "m/min",
-    yAxisIndex: 0,
+    unit,
+    yAxisIndex,
     color: "#ff0000",
     seriesInstanceId: id,
     total: values.length,
@@ -70,6 +79,25 @@ function mockChart(points: Array<[number, number]>): ChartBuildResult {
     totalSeries: 1,
     totalPoints: points.length,
     totalNumericPoints: points.length,
+    totalDroppedPoints: 0,
+    totalNonNumericPoints: 0,
+    valueKind: "numeric",
+    categories: [],
+    comparisonType: null,
+  };
+}
+
+function mockMultiSeriesChart(
+  seriesList: Array<{ id: string; points: Array<[number, number]>; yAxisIndex?: 0 | 1; unit?: string }>,
+  yAxisLabels: string[] = ["m/min"],
+): ChartBuildResult {
+  return {
+    series: seriesList.map((s) => mockChartSeries(s.id, s.points, s.yAxisIndex ?? 0, s.unit ?? "m/min")),
+    units: yAxisLabels,
+    yAxisLabels,
+    totalSeries: seriesList.length,
+    totalPoints: seriesList.reduce((sum, s) => sum + s.points.length, 0),
+    totalNumericPoints: seriesList.reduce((sum, s) => sum + s.points.length, 0),
     totalDroppedPoints: 0,
     totalNonNumericPoints: 0,
     valueKind: "numeric",
@@ -135,6 +163,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     registeredEventHandlers = {};
     currentZoom = { start: 0, end: 100 };
     lastOption = null;
+    lastWrapperProps = null;
     onVisibleWindowChange = vi.fn(() => Promise.resolve("applied"));
     dispatchAction = vi.fn();
 
@@ -177,7 +206,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     };
   });
 
-  function renderChart(points: Array<[number, number]> = BROAD_POINTS) {
+  function renderChart(points: Array<[number, number]> = BROAD_POINTS, props: Record<string, any> = {}) {
     return render(
       <TimeSeriesChart
         chart={mockChart(points)}
@@ -186,6 +215,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
         end={new Date(END_TS)}
         mode={"recorded" as const}
         onVisibleWindowChange={onVisibleWindowChange}
+        {...props}
       />,
     );
   }
@@ -230,7 +260,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     });
 
     // O rollback limpa o domínio fixado: a escala volta ao automático,
-    // recalcu­lada a partir dos dados da janela restaurada.
+    // recalculada a partir dos dados da janela restaurada.
     expect(lastOption.yAxis[0].min).toBeUndefined();
     expect(lastOption.yAxis[0].max).toBeUndefined();
     expect(lastOption.yAxis[0].scale).toBe(true);
@@ -256,18 +286,16 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     expect(dispatchAction).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 }),
     );
-    // O undo restaura o domínio Y visível do nível anterior (0–50),
-    // lido da área plotável no momento do zoom.
-    expect(lastOption.yAxis[0].min).toBeCloseTo(Y_MIN, 6);
-    expect(lastOption.yAxis[0].max).toBeCloseTo(Y_MAX, 6);
-    expect(lastOption.yAxis[0].scale).toBe(false);
+    // O undo restaura apenas a janela temporal; o eixo Y permanece automático.
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
     view.unmount();
   });
 
   it("reset (restore) remove o domínio Y fixado", () => {
     const view = renderChart(BROAD_POINTS);
     fireDataZoom(10, 30);
-    // O zoom horizontal já não fixa o domínio.
     expect(lastOption.yAxis[0].min).toBeUndefined();
 
     fireRestore();
@@ -302,12 +330,235 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     const view = renderChart(BROAD_POINTS);
     fireDataZoom(10, 30);
     fireDataZoom(40, 60);
-    // Zooms horizontais limpam o domínio: a escala permanece automática.
     expect(lastOption.yAxis[0].min).toBeUndefined();
-    // O domínio visível foi lido do mesmo grid em ambos os zooms; a segunda
-    // entrada do histórico não pode reverter o estado atual do primeiro eco.
     fireDataZoom(50, 60);
     expect(lastOption.yAxis[0].min).toBeUndefined();
+    view.unmount();
+  });
+
+  // --- Testes obrigatórios de regressão reproduzindo o uso real ---
+
+  it("1. arraste horizontal com variação vertical de 10 a 30 pixels consulta somente a janela X e mantém min/max indefinidos", () => {
+    const view = renderChart(BROAD_POINTS);
+    const container = view.container.querySelector('[data-testid="echarts-wrapper"]')?.parentElement;
+    expect(container).toBeTruthy();
+
+    // Simula ponteiro com deslocamento horizontal amplo e variação vertical de 25px
+    fireEvent.pointerDown(container!, { pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(container!, { pointerId: 1, clientX: 300, clientY: 125 });
+    fireEvent.pointerUp(container!, { pointerId: 1, clientX: 300, clientY: 125 });
+
+    fireDataZoom(10, 40);
+
+    expect(onVisibleWindowChange).toHaveBeenCalledTimes(1);
+    const calledStart = onVisibleWindowChange.mock.calls[0][0];
+    const calledEnd = onVisibleWindowChange.mock.calls[0][1];
+    expect(calledStart.getTime()).toBe(START_TS + (DURATION * 10) / 100);
+    expect(calledEnd.getTime()).toBe(START_TS + (DURATION * 40) / 100);
+
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("2. série global com pontos amplos seguida de resposta com valores estreitos não fixa limites e mantém eixo automático", () => {
+    const WIDE_GLOBAL_POINTS: Array<[number, number]> = [
+      [START_TS, 10],
+      [START_TS + 1000000, 950],
+      [END_TS, 500],
+    ];
+    const view = renderChart(WIDE_GLOBAL_POINTS);
+    fireDataZoom(20, 50);
+
+    const NARROW_DETAIL_POINTS: Array<[number, number]> = [
+      [START_TS + 800000, 20.1],
+      [START_TS + 1200000, 20.4],
+      [START_TS + 1600000, 20.2],
+    ];
+    view.rerender(
+      <TimeSeriesChart
+        chart={mockChart(NARROW_DETAIL_POINTS)}
+        equipment="Turbina 1"
+        start={new Date(START_TS + (DURATION * 20) / 100)}
+        end={new Date(START_TS + (DURATION * 50) / 100)}
+        mode={"recorded" as const}
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("3. duas séries no mesmo eixo com escalas muito diferentes continuam visíveis após o zoom", () => {
+    const twoSeriesChart = mockMultiSeriesChart([
+      {
+        id: "1",
+        points: [
+          [START_TS, 18],
+          [START_TS + 1800000, 22],
+          [END_TS, 20],
+        ],
+        yAxisIndex: 0,
+      },
+      {
+        id: "2",
+        points: [
+          [START_TS, 390],
+          [START_TS + 1800000, 420],
+          [END_TS, 405],
+        ],
+        yAxisIndex: 0,
+      },
+    ]);
+
+    const view = render(
+      <TimeSeriesChart
+        chart={twoSeriesChart}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode={"recorded" as const}
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+
+    fireDataZoom(20, 60);
+
+    expect(lastOption.series).toHaveLength(2);
+    expect(lastOption.series[0].yAxisIndex).toBe(0);
+    expect(lastOption.series[1].yAxisIndex).toBe(0);
+    // Ambas as séries continuam no mesmo eixo com scale: true e sem min/max fixos
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("4. séries em eixos Y diferentes permanecem válidas e automáticas", () => {
+    const dualAxisChart = mockMultiSeriesChart(
+      [
+        {
+          id: "1",
+          points: [
+            [START_TS, 10],
+            [END_TS, 30],
+          ],
+          yAxisIndex: 0,
+          unit: "bar",
+        },
+        {
+          id: "2",
+          points: [
+            [START_TS, 80],
+            [END_TS, 120],
+          ],
+          yAxisIndex: 1,
+          unit: "°C",
+        },
+      ],
+      ["bar", "°C"],
+    );
+
+    const view = render(
+      <TimeSeriesChart
+        chart={dualAxisChart}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode={"recorded" as const}
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+
+    fireDataZoom(15, 45);
+
+    expect(lastOption.yAxis).toHaveLength(2);
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    expect(lastOption.yAxis[1].min).toBeUndefined();
+    expect(lastOption.yAxis[1].max).toBeUndefined();
+    expect(lastOption.yAxis[1].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("5. segundo zoom enquanto o primeiro está pendente: apenas a resposta mais recente pode ser aplicada", async () => {
+    let resolverFirst!: (outcome: "applied" | "superseded") => void;
+    let resolverSecond!: (outcome: "applied" | "superseded") => void;
+    onVisibleWindowChange = vi.fn((_start: Date, _end: Date) => {
+      if (onVisibleWindowChange.mock.calls.length === 1) {
+        return new Promise<"applied" | "superseded">((resolve) => {
+          resolverFirst = resolve;
+        });
+      }
+      return new Promise<"applied" | "superseded">((resolve) => {
+        resolverSecond = resolve;
+      });
+    });
+
+    const view = renderChart(BROAD_POINTS);
+
+    // Primeiro zoom
+    fireDataZoom(10, 30);
+    // Segundo zoom antes do primeiro resolver
+    fireDataZoom(40, 70);
+
+    expect(onVisibleWindowChange).toHaveBeenCalledTimes(2);
+
+    // Resposta atrasada do primeiro zoom chega após o segundo zoom
+    await act(async () => {
+      resolverFirst("superseded");
+      resolverSecond("applied");
+    });
+
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("6. refinamento de zoom pendente mantém gráfico visível sem overlay global de carregamento", () => {
+    // Durante o refinamento do zoom, o TimeSeriesChart não recebe loading=true
+    const view = renderChart(BROAD_POINTS, { loading: false });
+
+    fireDataZoom(20, 50);
+
+    const wrapper = view.getByTestId("echarts-wrapper");
+    expect(wrapper).toBeInTheDocument();
+    expect(wrapper).toHaveAttribute("data-global-loading", "false");
+    expect(lastWrapperProps.loading).toBe(false);
+    view.unmount();
+  });
+
+  it("7. Ctrl+Z e restaurar recuperam o intervalo e não restauram limites Y obsoletos", () => {
+    const view = renderChart(BROAD_POINTS);
+
+    // Primeiro zoom
+    fireDataZoom(10, 40);
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+
+    // Segundo zoom
+    fireDataZoom(20, 30);
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+
+    // Ctrl+Z para o primeiro nível de zoom
+    pressCtrlZ();
+    expect(dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0 }),
+    );
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+
+    // Restaurar gráfico (reset completo)
+    fireRestore();
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
     view.unmount();
   });
 });

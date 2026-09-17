@@ -4,6 +4,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import {
   apiMock,
+  classificationTagFixture,
+  classificationTagFixture2,
   connectedHealthFixture,
   equipmentFixture,
   mockApiModule,
@@ -109,15 +111,15 @@ function renderPage() {
 
 async function loadInitialChart() {
   renderPage();
-  const equipment = (await screen.findByTestId("equipment-select")) as HTMLSelectElement;
+  const equipment = (await screen.findByTestId("equipment-select", undefined, { timeout: 5_000 })) as HTMLSelectElement;
   fireEvent.change(equipment, { target: { value: "1" } });
-  const tagList = await screen.findByTestId("tag-multi-select");
-  fireEvent.click(await within(tagList).findByTestId("tag-option-1"));
-  fireEvent.click(await screen.findByTestId("filters-submit"));
+  const tagList = await screen.findByTestId("tag-multi-select", undefined, { timeout: 5_000 });
+  fireEvent.click(await within(tagList).findByTestId("tag-option-1", undefined, { timeout: 5_000 }));
+  fireEvent.click(await screen.findByTestId("filters-submit", undefined, { timeout: 5_000 }));
   // The full suite initializes several route-level fixtures in parallel, so
   // leave enough time for the initial query without weakening the assertion.
   await screen.findByTestId("deep-zoom-chart", undefined, { timeout: 5_000 });
-  await waitFor(() => expect(latestChartProps?.onVisibleWindowChange).toBeTypeOf("function"));
+  await waitFor(() => expect(latestChartProps?.onVisibleWindowChange).toBeTypeOf("function"), { timeout: 5_000 });
 }
 
 describe("deep zoom da visualização", () => {
@@ -128,6 +130,7 @@ describe("deep zoom da visualização", () => {
     latestChartProps = null;
     apiMock.authMe.mockResolvedValue({ id: "admin", username: "admin", role: "admin", is_active: true, must_change_password: false });
     apiMock.visualConfigHistory.mockResolvedValue([]);
+    apiMock.listClassificationTags.mockResolvedValue([classificationTagFixture, classificationTagFixture2]);
     apiMock.listEquipments.mockResolvedValue(paginated([equipmentFixture]));
     apiMock.listSections.mockResolvedValue(paginated([sectionFixture]));
     apiMock.listVariableTypes.mockResolvedValue(paginated([variableTypeFixture]));

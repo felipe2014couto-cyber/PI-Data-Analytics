@@ -1257,18 +1257,36 @@ export function DataVisualizationPage() {
       return Promise.resolve("superseded");
     }
 
-    // Enforce 1 second minimum zoom window (clamp to center)
-    let effectiveStart = visibleStart;
-    let effectiveEnd = visibleEnd;
-    const windowMs = effectiveEnd.getTime() - effectiveStart.getTime();
-    if (windowMs < 1000) {
-      const center = (effectiveStart.getTime() + effectiveEnd.getTime()) / 2;
-      effectiveStart = new Date(Math.round(center - 500));
-      effectiveEnd = new Date(Math.round(center + 500));
+    const effectiveStart = visibleStart;
+    const effectiveEnd = visibleEnd;
+    const key = zoomCacheKey(effectiveStart, effectiveEnd);
+    const activeResult = activeQueryRef.current.timeSeries;
+
+    if (zoomRejectedRef.current.has(key)) {
+      return Promise.resolve("rejected");
+    }
+
+    // Refuse sub-second zoom without sufficient points in the active series
+    const rawWindowMs = visibleEnd.getTime() - visibleStart.getTime();
+    if (rawWindowMs < 1000 && activeResult) {
+      const sMs = visibleStart.getTime();
+      const eMs = visibleEnd.getTime();
+      const pointsInWindow = activeResult.series.reduce((sum, s) => {
+        return (
+          sum +
+          (s.points?.filter((p) => {
+            const t = Date.parse(p.timestamp);
+            return t >= sMs && t <= eMs;
+          }).length ?? 0)
+        );
+      }, 0);
+      if (pointsInWindow < 2) {
+        zoomRejectedRef.current.add(key);
+        return Promise.resolve("rejected");
+      }
     }
 
     // Cache hit: restore stored query state immediately
-    const key = zoomCacheKey(effectiveStart, effectiveEnd);
     const cached = zoomCacheRef.current.get(key);
     if (cached) {
       zoomAbortRef.current?.abort();
@@ -1279,8 +1297,6 @@ export function DataVisualizationPage() {
       setQuery(cached);
       return Promise.resolve("applied");
     }
-
-    const activeResult = activeQueryRef.current.timeSeries;
 
     // Current resolution already covers this window with sufficient detail:
     // no re-fetch needed, just update the visible range.
@@ -1293,12 +1309,35 @@ export function DataVisualizationPage() {
       return Promise.resolve("applied");
     }
 
+    // Terminal recorded resolution with no points in the requested sub-window:
+    // cannot fetch finer recorded data, reject without firing redundant query.
+    const isTerminalResolution =
+      activeResult?.query_execution?.effective_interval?.toLowerCase() === "recorded" &&
+      !activeResult?.query_execution?.sampled;
+    if (isTerminalResolution && activeResult) {
+      const startMs = visibleStart.getTime();
+      const endMs = visibleEnd.getTime();
+      const pointsInWindow = activeResult.series.reduce((sum, s) => {
+        return (
+          sum +
+          (s.points?.filter((p) => {
+            const t = Date.parse(p.timestamp);
+            return t >= startMs && t <= endMs;
+          }).length ?? 0)
+        );
+      }, 0);
+      if (pointsInWindow === 0) {
+        zoomRejectedRef.current.add(key);
+        return Promise.resolve("rejected");
+      }
+    }
+
     // In-flight request for the exact same window: reuse the promise
     if (zoomInFlightRef.current?.key === key) {
       return zoomInFlightRef.current.promise;
     }
 
-    // Fire a new zoom query — always fetch finer data, never reject based on point count
+    // Fire a new zoom query
     zoomAbortRef.current?.abort();
     const controller = new AbortController();
     zoomAbortRef.current = controller;
@@ -1322,6 +1361,12 @@ export function DataVisualizationPage() {
           initial.resolvedPeriod ?? undefined,
         );
         if (mySeq !== zoomRequestSeqRef.current) return "superseded";
+        const totalPoints = result.series.reduce((sum, s) => sum + (s.points?.length ?? 0), 0);
+        if (totalPoints === 0 || (result.query_execution?.points_returned ?? 0) === 0) {
+          zoomRejectedRef.current.add(key);
+          setZoomQuery(INITIAL_ZOOM_QUERY);
+          return "rejected";
+        }
         const next: QueryState = {
           ...initial,
           timeSeries: result,
@@ -2129,7 +2174,6 @@ export function DataVisualizationPage() {
                         baseEnd={baseEnd}
                         isZoomed={Boolean(zoomedRange)}
                         mode={filters.mode}
-                        loading={zoomQuery.loading}
                         titleLabel={
                           filters.visualization === "line" ? "Linha temporal" : undefined
                         }

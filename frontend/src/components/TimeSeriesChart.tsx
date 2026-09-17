@@ -23,10 +23,6 @@ export interface YAxisDomain {
   max: number;
 }
 
-/** Tolerância vertical (em px da área plotável) para tratar uma seleção de
- * área como zoom puramente temporal (horizontal). Seleções que cubram a
- * altura menos essa folga preservam o domínio Y vigente. */
-const VERTICAL_FULL_SELECTION_TOLERANCE_PX = 8;
 
 export type ZoomQueryOutcome = "applied" | "rejected" | "superseded";
 export type ZoomChangeReason = "selection" | "undo";
@@ -711,7 +707,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
         end: 100,
         moveOnMouseMove: false,
         moveOnMouseWheel: false,
-        zoomOnMouseWheel: false,
+        zoomOnMouseWheel: true,
         filterMode: "weakFilter",
       },
       { type: "slider", xAxisIndex: 0, start: 0, end: 100, bottom: 16, height: 24, filterMode: "none" },
@@ -1088,7 +1084,6 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     contextKey: string;
     domains: (YAxisDomain | null)[];
   } | null>(null);
-  const yDomainStateRef = useRef<{ contextKey: string; domains: (YAxisDomain | null)[] } | null>(null);
   // Chave estrutural do contexto atual (séries, unidades, modo). Mudanças
   // estruturais invalidam o domínio Y preservado para nunca herdar escala
   // de outra unidade ou conjunto de séries.
@@ -1101,15 +1096,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   }, [chart.series, chart.yAxisLabels, chart.valueKind, mode]);
   const contextKeyRef = useRef(contextKey);
   contextKeyRef.current = contextKey;
-  const applyYDomain = useCallback((domains: (YAxisDomain | null)[] | null | undefined) => {
-    const next = domains && domains.length > 0 && domains.some((d) => d !== null)
-      ? { contextKey: contextKeyRef.current, domains }
-      : null;
-    yDomainStateRef.current = next;
-    setYDomainState(next);
-  }, []);
   const clearYDomain = useCallback(() => {
-    yDomainStateRef.current = null;
     setYDomainState(null);
   }, []);
   // Invalida o domínio Y preservado quando o contexto estrutural muda.
@@ -1130,8 +1117,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   const handleClearAllMarkers = useCallback(() => {
     setMarkers([]);
     props.onClearCursor?.();
-    props.onPinnedCursorChange?.(null);
-  }, [props.onClearCursor, props.onPinnedCursorChange]);
+  }, [props.onClearCursor]);
 
   const handleRemoveMarker = useCallback(
     (idx: number) => {
@@ -1158,9 +1144,9 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   const getGridBounds = useCallback(() => {
     const inst = instanceRef.current;
     if (inst) {
-      const gridModel = (inst as any).getModel?.()?.getComponent?.("grid");
-      const rect = gridModel?.coordinateSystem?.getRect?.();
-      if (rect && typeof rect.x === "number") {
+      const coordSys = (inst as any).getModel?.()?.getComponent("grid")?.coordinateSystem;
+      const rect = coordSys?.getRect?.();
+      if (rect) {
         return {
           left: rect.x,
           right: rect.x + rect.width,
@@ -1179,45 +1165,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     return { left, right, top, bottom, height: Math.max(0, bottom - top) };
   }, [chart.yAxisLabels.length]);
 
-  // Converte uma faixa vertical (pixels do container) em domínio Y por eixo
-  // numérico, usando a conversão de coordenadas da própria instância. Retorna
-  // null quando nenhum eixo produz limites finitos válidos.
-  const computeYDomainsFromPixels = useCallback(
-    (yTop: number, yBottom: number): (YAxisDomain | null)[] | null => {
-      const inst = instanceRef.current;
-      const axisCount = chart.yAxisLabels.length;
-      if (!inst || axisCount === 0) return null;
-      const domains: (YAxisDomain | null)[] = [];
-      let anyValid = false;
-      for (let i = 0; i < axisCount; i++) {
-        let domain: YAxisDomain | null = null;
-        try {
-          const topVal = inst.convertFromPixel({ yAxisIndex: i } as never, yTop);
-          const bottomVal = inst.convertFromPixel({ yAxisIndex: i } as never, yBottom);
-          if (
-            typeof topVal === "number" && typeof bottomVal === "number" &&
-            Number.isFinite(topVal) && Number.isFinite(bottomVal)
-          ) {
-            const min = Math.min(topVal, bottomVal);
-            const max = Math.max(topVal, bottomVal);
-            if (max > min) domain = { min, max };
-          }
-        } catch {
-          domain = null;
-        }
-        if (domain) anyValid = true;
-        domains.push(domain);
-      }
-      return anyValid ? domains : null;
-    },
-    [chart.yAxisLabels.length],
-  );
 
-  // Domínio Y atualmente visível (toda a altura da área plotável).
-  const readVisibleYDomains = useCallback((): (YAxisDomain | null)[] | null => {
-    const bounds = getGridBounds();
-    return computeYDomainsFromPixels(bounds.top, bounds.bottom);
-  }, [computeYDomainsFromPixels, getGridBounds]);
 
   const handleAddFirstMarker = useCallback(() => {
     setMarkers((prev) => {
@@ -1363,11 +1311,10 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         } else {
           zoomHistoryRef.current.push(range);
         }
-        // Rejeição do zoom: restaura também o domínio Y do nível anterior.
-        if (rollback.yAxisDomains) applyYDomain(rollback.yAxisDomains);
-        else clearYDomain();
+        // Rejeição do zoom: mantém a escala Y automática
+        clearYDomain();
         dispatchZoom(rollback);
-      });
+      }).catch(() => {});
     };
     const handleDataZoom = (event?: any) => {
       setRenderTick((t) => t + 1);
@@ -1454,69 +1401,19 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         }
       }
 
-      // Extensão vertical da seleção: apenas o recorte vertical intencional
-      // fixa o domínio Y selecionado. O zoom temporal (quase toda a altura)
-      // calcula automaticamente o domínio Y a partir dos dados visíveis na
-      // janela de tempo selecionada — como o PI Vision.
-      const selectionRect = lastSelectionRectRef.current;
+      // Seleção visual exclusivamente temporal: movimentos verticais do mouse
+      // não afetam nem recortam o eixo Y. Limpa qualquer domínio Y explícito
+      // para que a escala permaneça automática (scale: true, sem min/max fixado).
       lastSelectionRectRef.current = null;
-      let selectedYDomains: (YAxisDomain | null)[] | null = null;
-      if (selectionRect) {
-        const bounds = getGridBounds();
-        const coveredFromTop = Math.max(0, selectionRect.top - bounds.top);
-        const coveredFromBottom = Math.max(0, bounds.bottom - selectionRect.bottom);
-        const verticalRecorte = coveredFromTop + coveredFromBottom > VERTICAL_FULL_SELECTION_TOLERANCE_PX;
-        if (verticalRecorte) {
-          selectedYDomains = computeYDomainsFromPixels(selectionRect.top, selectionRect.bottom);
-        }
-      }
-      if (selectedYDomains) {
-        applyYDomain(selectedYDomains);
-      } else {
-        // Auto-scale Y to the data within the visible time window.
-        // Group values by yAxisIndex, then compute min/max per axis.
-        const axisCount = chart.yAxisLabels.length || 1;
-        const mins = new Array<number>(axisCount).fill(Infinity);
-        const maxs = new Array<number>(axisCount).fill(-Infinity);
-        for (const s of chart.series) {
-          const axIdx = s.yAxisIndex ?? 0;
-          for (const pt of s.points) {
-            const ts = pt[0];
-            if (ts < targetStartMs!) continue;
-            if (ts > targetEndMs!) break;
-            const val = pt[1];
-            if (val === null || !Number.isFinite(val)) continue;
-            if (val < mins[axIdx]) mins[axIdx] = val;
-            if (val > maxs[axIdx]) maxs[axIdx] = val;
-          }
-        }
-        const autoYDomains: (YAxisDomain | null)[] = [];
-        for (let i = 0; i < axisCount; i++) {
-          if (Number.isFinite(mins[i]) && Number.isFinite(maxs[i]) && maxs[i] >= mins[i]) {
-            // Add 5% margin so data doesn't touch the edges
-            const range = maxs[i] - mins[i];
-            const margin = range > 0 ? range * 0.05 : Math.abs(mins[i]) * 0.05 || 1;
-            autoYDomains.push({ min: mins[i] - margin, max: maxs[i] + margin });
-          } else {
-            autoYDomains.push(null);
-          }
-        }
-        if (autoYDomains.some((d) => d !== null)) {
-          selectedYDomains = autoYDomains;
-          applyYDomain(autoYDomains);
-        } else {
-          clearYDomain();
-        }
-      }
+      clearYDomain();
 
       const nextRange: ZoomRange = {
         start: startPct ?? ((targetStartMs - domainStart) / domainDuration) * 100,
         end: endPct ?? ((targetEndMs - domainStart) / domainDuration) * 100,
-        yAxisDomains: selectedYDomains ?? undefined,
       };
 
       const current = currentZoomRef.current;
-      zoomHistoryRef.current.push({ ...current, yAxisDomains: current.yAxisDomains ?? readVisibleYDomains() ?? undefined });
+      zoomHistoryRef.current.push({ ...current });
       if (zoomHistoryRef.current.length > 50) zoomHistoryRef.current.shift();
       currentZoomRef.current = nextRange;
 
@@ -1559,10 +1456,8 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       if (!previous) return;
       event.preventDefault();
       const current = currentZoomRef.current;
-      // Restaura o domínio Y do nível anterior antes da reconsulta para que
-      // a resposta assíncrona não o sobrescreva.
-      if (previous.yAxisDomains) applyYDomain(previous.yAxisDomains);
-      else clearYDomain();
+      // Undo restaura apenas a janela temporal anterior e mantém escala Y automática
+      clearYDomain();
       dispatchZoom(previous);
       requestVisibleWindow(previous, current, "undo");
     };
@@ -1578,7 +1473,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       window.removeEventListener("resize", forceUpdate);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [cancelAreaSelection, computeYDomainsFromPixels, contextKey, end, getGridBounds, instance, props.enableZoomKeyboardUndo, props.onRestoreInitialZoom, props.onVisibleWindowChange, readVisibleYDomains, start]);
+  }, [cancelAreaSelection, clearYDomain, contextKey, end, getGridBounds, instance, props.enableZoomKeyboardUndo, props.onRestoreInitialZoom, props.onVisibleWindowChange, start]);
 
   const handleGlobalPointerMove = useCallback(
     (e: PointerEvent) => {
@@ -1719,12 +1614,8 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       e.clientY - rect.top - candidate.startY,
     );
     if (distance >= AREA_ZOOM_DRAG_THRESHOLD_PX) candidate.moved = true;
-    // Registra a extensão vertical da seleção para o handler de dataZoom
-    // decidir entre zoom temporal (preserva Y) e recorte vertical.
-    lastSelectionRectRef.current = {
-      top: Math.min(candidate.startY, e.clientY - rect.top),
-      bottom: Math.max(candidate.startY, e.clientY - rect.top),
-    };
+    // Seleção visual é exclusivamente temporal no eixo X
+    lastSelectionRectRef.current = null;
   };
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
