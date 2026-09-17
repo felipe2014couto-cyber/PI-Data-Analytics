@@ -6,6 +6,8 @@ interface QuerySummaryProps {
   chart: ChartBuildResult | null;
   startLocal: string;
   endLocal: string;
+  zoomedStartLocal?: string;
+  zoomedEndLocal?: string;
   durationMs: number | null;
   seriesCount: number;
   partial: boolean;
@@ -30,6 +32,8 @@ export function QuerySummary({
   chart,
   startLocal,
   endLocal,
+  zoomedStartLocal,
+  zoomedEndLocal,
   durationMs,
   seriesCount,
   partial,
@@ -112,6 +116,11 @@ export function QuerySummary({
         <Col xs={6} md={4} lg={2}>
           <Metric label="Periodo" value={startLocal + " -> " + endLocal} testId="metric-period" />
         </Col>
+        {zoomedStartLocal && zoomedEndLocal ? (
+          <Col xs={6} md={4} lg={2}>
+            <Metric label="Janela zoom" value={zoomedStartLocal + " -> " + zoomedEndLocal} testId="metric-zoomed-period" />
+          </Col>
+        ) : null}
         <Col xs={6} md={4} lg={2}>
           <Metric label="Duracao" value={duration} testId="metric-duration" />
         </Col>

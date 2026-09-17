@@ -14,12 +14,30 @@ const AREA_ZOOM_DRAG_THRESHOLD_PX = 6;
 interface ZoomRange {
   start: number;
   end: number;
+  /** Domínio Y visível por índice de eixo numérico no momento do zoom. */
+  yAxisDomains?: (YAxisDomain | null)[];
 }
+
+export interface YAxisDomain {
+  min: number;
+  max: number;
+}
+
+/** Tolerância vertical (em px da área plotável) para tratar uma seleção de
+ * área como zoom puramente temporal (horizontal). Seleções que cubram a
+ * altura menos essa folga preservam o domínio Y vigente. */
+const VERTICAL_FULL_SELECTION_TOLERANCE_PX = 8;
+
+export type ZoomQueryOutcome = "applied" | "rejected" | "superseded";
+export type ZoomChangeReason = "selection" | "undo";
+
+type InteractionState = "idle" | "zoomSelecting" | "markerDragging";
 
 interface AreaPointerCandidate {
   pointerId: number;
   startX: number;
   startY: number;
+  lastY: number;
   moved: boolean;
 }
 
@@ -62,6 +80,9 @@ export interface TimeSeriesChartProps {
   equipment: string | null;
   start: Date;
   end: Date;
+  baseStart?: Date;
+  baseEnd?: Date;
+  isZoomed?: boolean;
   mode: "recorded" | "interpolated";
   loading?: boolean;
   titleLabel?: string;
@@ -74,6 +95,17 @@ export interface TimeSeriesChartProps {
   onPinnedCursorChange?: (ts: number | null) => void;
   syncGroup?: string;
   enableZoomKeyboardUndo?: boolean;
+  onVisibleWindowChange?: (
+    start: Date,
+    end: Date,
+    reason: ZoomChangeReason,
+  ) => Promise<ZoomQueryOutcome> | ZoomQueryOutcome;
+  onRestoreInitialZoom?: () => void;
+  /**
+   * Domínio Y visível por índice de eixo numérico. Quando definido, os eixos
+   * recebem min/max explícitos e deixam de ser recalculados a partir dos dados.
+   */
+  visibleYDomain?: (YAxisDomain | null)[] | null;
 }
 
 const QUALITY_LABELS: Record<number, string> = {
@@ -412,12 +444,14 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
     },
     grid: { left: 100, right: 24, top: 70, bottom: 96 },
     xAxis: {
-      type: "time",
+      type: chart.comparisonType === "periods" ? "value" : "time",
+      min: chart.comparisonType === "periods" ? undefined : start.getTime(),
+      max: chart.comparisonType === "periods" ? undefined : end.getTime(),
       name: chart.comparisonType === "periods" ? "Tempo decorrido" : undefined,
       axisLabel: {
         color: "#1f2d3d",
         formatter: chart.comparisonType === "periods" ? (value: number) => formatElapsed(value) : undefined,
-      },
+      } as Record<string, unknown>,
     },
     yAxis: {
       type: "category",
@@ -454,11 +488,14 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
       {
         type: "inside",
         xAxisIndex: 0,
+        start: 0,
+        end: 100,
         moveOnMouseMove: false,
         moveOnMouseWheel: false,
-        zoomOnMouseWheel: true,
+        zoomOnMouseWheel: false,
+        filterMode: "weakFilter",
       },
-      { type: "slider", xAxisIndex: 0, bottom: 16, height: 24 },
+      { type: "slider", xAxisIndex: 0, start: 0, end: 100, bottom: 16, height: 24, filterMode: "none" },
     ],
     animation: false,
     series: series
@@ -504,15 +541,22 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
   let umYAxisIndex = -1;
 
   if (hasNumericAxes) {
-    yAxis = chart.yAxisLabels.map((label, index) => ({
-      type: "value" as const,
-      name: label,
-      nameTextStyle: { padding: [0, 0, 0, 24] },
-      position: (index === 0 ? "left" : "right") as "left" | "right",
-      alignTicks: true,
-      scale: true,
-      axisPointer: { show: false },
-    }));
+    yAxis = chart.yAxisLabels.map((label, index) => {
+      const domain = props.visibleYDomain?.[index] ?? null;
+      return {
+        type: "value" as const,
+        name: label,
+        nameTextStyle: { padding: [0, 0, 0, 24] },
+        position: (index === 0 ? "left" : "right") as "left" | "right",
+        alignTicks: true,
+        // Domínio Y preservado (zoom) tem precedência sobre o recálculo
+        // automático a partir dos dados recarregados.
+        ...(domain && Number.isFinite(domain.min) && Number.isFinite(domain.max) && domain.max > domain.min
+          ? { min: domain.min, max: domain.max, scale: false }
+          : { scale: true }),
+        axisPointer: { show: false },
+      };
+    });
     if (hasUm && umSeries) {
       yAxis.push({
         type: "category" as const,
@@ -628,6 +672,8 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
     },
     xAxis: {
       type: "time",
+      min: start.getTime(),
+      max: end.getTime(),
       axisLabel: { color: "#1f2d3d" },
     },
     yAxis: yAxis as EChartsOption["yAxis"],
@@ -661,11 +707,14 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
       {
         type: "inside",
         xAxisIndex: 0,
+        start: 0,
+        end: 100,
         moveOnMouseMove: false,
         moveOnMouseWheel: false,
-        zoomOnMouseWheel: true,
+        zoomOnMouseWheel: false,
+        filterMode: "weakFilter",
       },
-      { type: "slider", xAxisIndex: 0, bottom: 16, height: 24 },
+      { type: "slider", xAxisIndex: 0, start: 0, end: 100, bottom: 16, height: 24, filterMode: "none" },
     ],
     animation: false,
     series: [
@@ -1021,9 +1070,54 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   const draggingMarkerIdxRef = useRef<number | null>(null);
   const markersRef = useRef<number[]>(markers);
   const areaPointerRef = useRef<AreaPointerCandidate | null>(null);
+  // Synchronous source of truth for interaction arbitration: pointerdown and
+  // pointerup can land before React commits a state update, so closures over
+  // state are stale mid-gesture. Handlers must consult this ref instead.
+  const interactionStateRef = useRef<InteractionState>("idle");
   const zoomHistoryRef = useRef<ZoomRange[]>([]);
   const currentZoomRef = useRef<ZoomRange>({ start: 0, end: 100 });
   const suppressZoomHistoryRef = useRef(false);
+  const isProgrammaticUpdateRef = useRef(false);
+  const lastDispatchedWindowRef = useRef<{ start: number; end: number } | null>(null);
+  // Extensão vertical (px do container) da última seleção de área em andamento.
+  const lastSelectionRectRef = useRef<{ top: number; bottom: number } | null>(null);
+  // Fonte única de verdade do domínio Y visível durante a navegação de zoom.
+  // `contextKey` garante que a escala nunca seja reaproveitada entre contextos
+  // estruturais diferentes (troca de variável, séries, unidades ou modo).
+  const [yDomainState, setYDomainState] = useState<{
+    contextKey: string;
+    domains: (YAxisDomain | null)[];
+  } | null>(null);
+  const yDomainStateRef = useRef<{ contextKey: string; domains: (YAxisDomain | null)[] } | null>(null);
+  // Chave estrutural do contexto atual (séries, unidades, modo). Mudanças
+  // estruturais invalidam o domínio Y preservado para nunca herdar escala
+  // de outra unidade ou conjunto de séries.
+  const contextKey = useMemo(() => {
+    const seriesKey = chart.series
+      .map((s) => `${s.seriesInstanceId ?? `tag:${s.tagId}`}:${s.unit ?? ""}:${s.yAxisIndex}`)
+      .join("|");
+    const unitsKey = chart.yAxisLabels.join("|");
+    return `${mode}::${seriesKey}::${unitsKey}::${chart.valueKind}`;
+  }, [chart.series, chart.yAxisLabels, chart.valueKind, mode]);
+  const contextKeyRef = useRef(contextKey);
+  contextKeyRef.current = contextKey;
+  const applyYDomain = useCallback((domains: (YAxisDomain | null)[] | null | undefined) => {
+    const next = domains && domains.length > 0 && domains.some((d) => d !== null)
+      ? { contextKey: contextKeyRef.current, domains }
+      : null;
+    yDomainStateRef.current = next;
+    setYDomainState(next);
+  }, []);
+  const clearYDomain = useCallback(() => {
+    yDomainStateRef.current = null;
+    setYDomainState(null);
+  }, []);
+  // Invalida o domínio Y preservado quando o contexto estrutural muda.
+  useEffect(() => {
+    if (yDomainState && yDomainState.contextKey !== contextKey) {
+      clearYDomain();
+    }
+  }, [contextKey, yDomainState, clearYDomain]);
   markersRef.current = markers;
 
   // Sync external pinnedCursorTs if changed
@@ -1085,6 +1179,46 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     return { left, right, top, bottom, height: Math.max(0, bottom - top) };
   }, [chart.yAxisLabels.length]);
 
+  // Converte uma faixa vertical (pixels do container) em domínio Y por eixo
+  // numérico, usando a conversão de coordenadas da própria instância. Retorna
+  // null quando nenhum eixo produz limites finitos válidos.
+  const computeYDomainsFromPixels = useCallback(
+    (yTop: number, yBottom: number): (YAxisDomain | null)[] | null => {
+      const inst = instanceRef.current;
+      const axisCount = chart.yAxisLabels.length;
+      if (!inst || axisCount === 0) return null;
+      const domains: (YAxisDomain | null)[] = [];
+      let anyValid = false;
+      for (let i = 0; i < axisCount; i++) {
+        let domain: YAxisDomain | null = null;
+        try {
+          const topVal = inst.convertFromPixel({ yAxisIndex: i } as never, yTop);
+          const bottomVal = inst.convertFromPixel({ yAxisIndex: i } as never, yBottom);
+          if (
+            typeof topVal === "number" && typeof bottomVal === "number" &&
+            Number.isFinite(topVal) && Number.isFinite(bottomVal)
+          ) {
+            const min = Math.min(topVal, bottomVal);
+            const max = Math.max(topVal, bottomVal);
+            if (max > min) domain = { min, max };
+          }
+        } catch {
+          domain = null;
+        }
+        if (domain) anyValid = true;
+        domains.push(domain);
+      }
+      return anyValid ? domains : null;
+    },
+    [chart.yAxisLabels.length],
+  );
+
+  // Domínio Y atualmente visível (toda a altura da área plotável).
+  const readVisibleYDomains = useCallback((): (YAxisDomain | null)[] | null => {
+    const bounds = getGridBounds();
+    return computeYDomainsFromPixels(bounds.top, bounds.bottom);
+  }, [computeYDomainsFromPixels, getGridBounds]);
+
   const handleAddFirstMarker = useCallback(() => {
     setMarkers((prev) => {
       if (prev.length > 0) return prev;
@@ -1115,6 +1249,9 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         equipment,
         start,
         end,
+        baseStart: props.baseStart,
+        baseEnd: props.baseEnd,
+        isZoomed: props.isZoomed,
         mode,
         titleLabel,
         visualRules: props.visualRules,
@@ -1123,12 +1260,16 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         umSeries: props.umSeries,
         pinnedCursorTs: props.pinnedCursorTs ?? null,
         onClearCursor: props.onClearCursor,
+        visibleYDomain: yDomainState?.contextKey === contextKey ? yDomainState.domains : null,
       }),
     [
       chart,
       equipment,
       start,
       end,
+      props.baseStart,
+      props.baseEnd,
+      props.isZoomed,
       mode,
       titleLabel,
       props.visualRules,
@@ -1137,6 +1278,8 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       props.umSeries,
       props.pinnedCursorTs,
       props.onClearCursor,
+      contextKey,
+      yDomainState,
     ],
   );
 
@@ -1144,6 +1287,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     const candidate = areaPointerRef.current;
     const inst = instanceRef.current;
     areaPointerRef.current = null;
+    interactionStateRef.current = "idle";
     if (!candidate || !inst) return;
     const previous = currentZoomRef.current;
     try {
@@ -1169,33 +1313,223 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     }
   }, []);
 
-  // Zoom is visual and local: one update after release, with no data request.
+  // ECharts updates the selection locally while dragging. Its dataZoom event
+  // is emitted after release; only then do we ask the page for finer data.
   useEffect(() => {
     if (!instance) return;
-    const readZoomRange = (): ZoomRange | null => {
-      const dataZoom = (instance.getOption() as any)?.dataZoom?.[0];
-      const range = { start: Number(dataZoom?.start), end: Number(dataZoom?.end) };
-      return Number.isFinite(range.start) && Number.isFinite(range.end) ? range : null;
+    let active = true;
+    const dispatchZoom = (range: ZoomRange) => {
+      suppressZoomHistoryRef.current = true;
+      currentZoomRef.current = range;
+      instance.dispatchAction({
+        type: "dataZoom",
+        dataZoomIndex: 0,
+        start: range.start,
+        end: range.end,
+      } as never);
     };
-    const handleDataZoom = () => {
-      const next = readZoomRange();
-      if (next) {
-        if (suppressZoomHistoryRef.current) {
-          suppressZoomHistoryRef.current = false;
+    const requestVisibleWindow = (
+      range: ZoomRange,
+      rollback: ZoomRange,
+      reason: ZoomChangeReason,
+      explicitStartMs?: number,
+      explicitEndMs?: number,
+    ) => {
+      const callback = props.onVisibleWindowChange;
+      if (!callback) return;
+      let visibleStart: number;
+      let visibleEnd: number;
+      if (explicitStartMs !== undefined && explicitEndMs !== undefined) {
+        visibleStart = explicitStartMs;
+        visibleEnd = explicitEndMs;
+      } else {
+        const domainStart = start.getTime();
+        const domainEnd = end.getTime();
+        const duration = domainEnd - domainStart;
+        if (!Number.isFinite(duration) || duration <= 0) return;
+        visibleStart = domainStart + (duration * range.start) / 100;
+        visibleEnd = domainStart + (duration * range.end) / 100;
+      }
+      if (!Number.isFinite(visibleStart) || !Number.isFinite(visibleEnd) || visibleEnd <= visibleStart) return;
+      void Promise.resolve(callback(new Date(visibleStart), new Date(visibleEnd), reason)).then((outcome) => {
+        if (!active || outcome !== "rejected") return;
+        const current = currentZoomRef.current;
+        if (Math.abs(current.start - range.start) > 0.0001 || Math.abs(current.end - range.end) > 0.0001) return;
+        if (reason === "selection") {
+          const last = zoomHistoryRef.current[zoomHistoryRef.current.length - 1];
+          if (last && Math.abs(last.start - rollback.start) < 0.0001 && Math.abs(last.end - rollback.end) < 0.0001) {
+            zoomHistoryRef.current.pop();
+          }
         } else {
-          const current = currentZoomRef.current;
-          if (Math.abs(current.start - next.start) > 0.0001 || Math.abs(current.end - next.end) > 0.0001) {
-            zoomHistoryRef.current.push(current);
-            if (zoomHistoryRef.current.length > 50) zoomHistoryRef.current.shift();
+          zoomHistoryRef.current.push(range);
+        }
+        // Rejeição do zoom: restaura também o domínio Y do nível anterior.
+        if (rollback.yAxisDomains) applyYDomain(rollback.yAxisDomains);
+        else clearYDomain();
+        dispatchZoom(rollback);
+      });
+    };
+    const handleDataZoom = (event?: any) => {
+      setRenderTick((t) => t + 1);
+
+      if (isProgrammaticUpdateRef.current) {
+        return;
+      }
+      if (suppressZoomHistoryRef.current) {
+        suppressZoomHistoryRef.current = false;
+        return;
+      }
+
+      const raw = Array.isArray(event?.batch) && event.batch.length > 0 ? event.batch[0] : event;
+      let targetStartMs: number | null = null;
+      let targetEndMs: number | null = null;
+      let startPct: number | null = null;
+      let endPct: number | null = null;
+
+      if (raw?.startValue !== undefined && raw?.endValue !== undefined) {
+        const sv = typeof raw.startValue === "number" ? raw.startValue : Number(raw.startValue);
+        const ev = typeof raw.endValue === "number" ? raw.endValue : Number(raw.endValue);
+        if (Number.isFinite(sv) && Number.isFinite(ev) && ev > sv) {
+          targetStartMs = sv;
+          targetEndMs = ev;
+        }
+      }
+
+      if (raw?.start !== undefined && raw?.end !== undefined) {
+        const s = Number(raw.start);
+        const e = Number(raw.end);
+        if (Number.isFinite(s) && Number.isFinite(e)) {
+          startPct = s;
+          endPct = e;
+        }
+      }
+
+      if (targetStartMs === null || targetEndMs === null) {
+        const optDz = (instance.getOption() as any)?.dataZoom?.[0];
+        if (optDz?.startValue !== undefined && optDz?.endValue !== undefined) {
+          const sv = Number(optDz.startValue);
+          const ev = Number(optDz.endValue);
+          if (Number.isFinite(sv) && Number.isFinite(ev) && ev > sv) {
+            targetStartMs = sv;
+            targetEndMs = ev;
           }
         }
-        currentZoomRef.current = next;
+        if (startPct === null && optDz?.start !== undefined && optDz?.end !== undefined) {
+          startPct = Number(optDz.start);
+          endPct = Number(optDz.end);
+        }
       }
-      setRenderTick((t) => t + 1);
+
+      const domainStart = start.getTime();
+      const domainEnd = end.getTime();
+      const domainDuration = domainEnd - domainStart;
+
+      if ((targetStartMs === null || targetEndMs === null) && startPct !== null && endPct !== null) {
+        if (Number.isFinite(domainDuration) && domainDuration > 0) {
+          targetStartMs = domainStart + (domainDuration * startPct) / 100;
+          targetEndMs = domainStart + (domainDuration * endPct) / 100;
+        }
+      }
+
+      if (targetStartMs === null || targetEndMs === null || targetEndMs <= targetStartMs) {
+        return;
+      }
+
+      // If the selection covers 100% of the current window, it's not a zoom-in gesture
+      if (
+        startPct !== null &&
+        endPct !== null &&
+        Math.abs(startPct) < 0.01 &&
+        Math.abs(endPct - 100) < 0.01
+      ) {
+        return;
+      }
+
+      // Deduplicate against the last requested window (< 100ms difference)
+      if (lastDispatchedWindowRef.current) {
+        const diffStart = Math.abs(lastDispatchedWindowRef.current.start - targetStartMs);
+        const diffEnd = Math.abs(lastDispatchedWindowRef.current.end - targetEndMs);
+        if (diffStart < 100 && diffEnd < 100) {
+          return;
+        }
+      }
+
+      // Extensão vertical da seleção: apenas o recorte vertical intencional
+      // fixa o domínio Y selecionado. O zoom temporal (quase toda a altura)
+      // calcula automaticamente o domínio Y a partir dos dados visíveis na
+      // janela de tempo selecionada — como o PI Vision.
+      const selectionRect = lastSelectionRectRef.current;
+      lastSelectionRectRef.current = null;
+      let selectedYDomains: (YAxisDomain | null)[] | null = null;
+      if (selectionRect) {
+        const bounds = getGridBounds();
+        const coveredFromTop = Math.max(0, selectionRect.top - bounds.top);
+        const coveredFromBottom = Math.max(0, bounds.bottom - selectionRect.bottom);
+        const verticalRecorte = coveredFromTop + coveredFromBottom > VERTICAL_FULL_SELECTION_TOLERANCE_PX;
+        if (verticalRecorte) {
+          selectedYDomains = computeYDomainsFromPixels(selectionRect.top, selectionRect.bottom);
+        }
+      }
+      if (selectedYDomains) {
+        applyYDomain(selectedYDomains);
+      } else {
+        // Auto-scale Y to the data within the visible time window.
+        // Group values by yAxisIndex, then compute min/max per axis.
+        const axisCount = chart.yAxisLabels.length || 1;
+        const mins = new Array<number>(axisCount).fill(Infinity);
+        const maxs = new Array<number>(axisCount).fill(-Infinity);
+        for (const s of chart.series) {
+          const axIdx = s.yAxisIndex ?? 0;
+          for (const pt of s.points) {
+            const ts = pt[0];
+            if (ts < targetStartMs!) continue;
+            if (ts > targetEndMs!) break;
+            const val = pt[1];
+            if (val === null || !Number.isFinite(val)) continue;
+            if (val < mins[axIdx]) mins[axIdx] = val;
+            if (val > maxs[axIdx]) maxs[axIdx] = val;
+          }
+        }
+        const autoYDomains: (YAxisDomain | null)[] = [];
+        for (let i = 0; i < axisCount; i++) {
+          if (Number.isFinite(mins[i]) && Number.isFinite(maxs[i]) && maxs[i] >= mins[i]) {
+            // Add 5% margin so data doesn't touch the edges
+            const range = maxs[i] - mins[i];
+            const margin = range > 0 ? range * 0.05 : Math.abs(mins[i]) * 0.05 || 1;
+            autoYDomains.push({ min: mins[i] - margin, max: maxs[i] + margin });
+          } else {
+            autoYDomains.push(null);
+          }
+        }
+        if (autoYDomains.some((d) => d !== null)) {
+          selectedYDomains = autoYDomains;
+          applyYDomain(autoYDomains);
+        } else {
+          clearYDomain();
+        }
+      }
+
+      const nextRange: ZoomRange = {
+        start: startPct ?? ((targetStartMs - domainStart) / domainDuration) * 100,
+        end: endPct ?? ((targetEndMs - domainStart) / domainDuration) * 100,
+        yAxisDomains: selectedYDomains ?? undefined,
+      };
+
+      const current = currentZoomRef.current;
+      zoomHistoryRef.current.push({ ...current, yAxisDomains: current.yAxisDomains ?? readVisibleYDomains() ?? undefined });
+      if (zoomHistoryRef.current.length > 50) zoomHistoryRef.current.shift();
+      currentZoomRef.current = nextRange;
+
+      lastDispatchedWindowRef.current = { start: targetStartMs, end: targetEndMs };
+      requestVisibleWindow(nextRange, current, "selection", targetStartMs, targetEndMs);
     };
     const handleRestore = () => {
       zoomHistoryRef.current = [];
       currentZoomRef.current = { start: 0, end: 100 };
+      lastDispatchedWindowRef.current = null;
+      // Reset volta ao domínio Y original: remove qualquer escala preservada.
+      clearYDomain();
+      props.onRestoreInitialZoom?.();
       setRenderTick((t) => t + 1);
       window.requestAnimationFrame(() => {
         instance.dispatchAction({
@@ -1212,6 +1546,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         return;
       }
       if (!(props.enableZoomKeyboardUndo ?? true)) return;
+      if (event.repeat) return;
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
       const target = event.target;
       if (
@@ -1223,14 +1558,13 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       const previous = zoomHistoryRef.current.pop();
       if (!previous) return;
       event.preventDefault();
-      suppressZoomHistoryRef.current = true;
-      currentZoomRef.current = previous;
-      instance.dispatchAction({
-        type: "dataZoom",
-        dataZoomIndex: 0,
-        start: previous.start,
-        end: previous.end,
-      } as never);
+      const current = currentZoomRef.current;
+      // Restaura o domínio Y do nível anterior antes da reconsulta para que
+      // a resposta assíncrona não o sobrescreva.
+      if (previous.yAxisDomains) applyYDomain(previous.yAxisDomains);
+      else clearYDomain();
+      dispatchZoom(previous);
+      requestVisibleWindow(previous, current, "undo");
     };
     const forceUpdate = () => setRenderTick((t) => t + 1);
     instance.on("dataZoom", handleDataZoom);
@@ -1238,12 +1572,13 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     window.addEventListener("resize", forceUpdate);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
+      active = false;
       instance.off("dataZoom", handleDataZoom);
       instance.off("restore", handleRestore);
       window.removeEventListener("resize", forceUpdate);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [cancelAreaSelection, instance, props.enableZoomKeyboardUndo]);
+  }, [cancelAreaSelection, computeYDomainsFromPixels, contextKey, end, getGridBounds, instance, props.enableZoomKeyboardUndo, props.onRestoreInitialZoom, props.onVisibleWindowChange, readVisibleYDomains, start]);
 
   const handleGlobalPointerMove = useCallback(
     (e: PointerEvent) => {
@@ -1280,22 +1615,31 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       const activeIdx = draggingMarkerIdxRef.current;
       draggingMarkerIdxRef.current = null;
       setIsDraggingState(false);
+
+      // Notify the pinned cursor change with the final timestamp
+      if (activeIdx !== null && markersRef.current.length > 0 && activeIdx < markersRef.current.length) {
+        props.onPinnedCursorChange?.(markersRef.current[activeIdx]);
+      }
+
+      // Reset interaction state to idle
+      interactionStateRef.current = "idle";
+
       window.removeEventListener("pointermove", handleGlobalPointerMove);
       window.removeEventListener("pointerup", handleGlobalPointerUp);
       window.removeEventListener("pointercancel", handleGlobalPointerUp);
       window.removeEventListener("blur", handleGlobalPointerUp);
-
-      if (activeIdx !== null && activeIdx === 0 && markersRef.current.length > 0) {
-        props.onPinnedCursorChange?.(markersRef.current[0]);
-      }
     }
   }, [handleGlobalPointerMove, props.onPinnedCursorChange]);
 
   const startDrag = useCallback(
     (targetIdx: number) => {
+      // Do not allow marker dragging during zoom selection
+      if (interactionStateRef.current === "zoomSelecting") return;
+
       isDraggingRef.current = true;
       draggingMarkerIdxRef.current = targetIdx;
       setIsDraggingState(true);
+      interactionStateRef.current = "markerDragging";
 
       if (instanceRef.current) {
         instanceRef.current.dispatchAction({ type: "hideTip" });
@@ -1312,11 +1656,16 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   useEffect(() => {
     const clearAreaPointer = () => {
       areaPointerRef.current = null;
+      interactionStateRef.current = "idle";
     };
     window.addEventListener("pointerup", clearAreaPointer);
     window.addEventListener("pointercancel", cancelAreaSelection);
     window.addEventListener("blur", cancelAreaSelection);
     return () => {
+      areaPointerRef.current = null;
+      interactionStateRef.current = "idle";
+      isDraggingRef.current = false;
+      draggingMarkerIdxRef.current = null;
       window.removeEventListener("pointermove", handleGlobalPointerMove);
       window.removeEventListener("pointerup", handleGlobalPointerUp);
       window.removeEventListener("pointercancel", handleGlobalPointerUp);
@@ -1346,10 +1695,15 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       return;
     }
 
+    // Treat as a potential zoom selection: record pointer info and enter
+    // zoomSelecting synchronously so a fast pointerup can be arbitrated from
+    // the ref, not from stale React state.
+    interactionStateRef.current = "zoomSelecting";
     areaPointerRef.current = {
       pointerId: e.pointerId,
       startX: offsetX,
       startY: offsetY,
+      lastY: offsetY,
       moved: false,
     };
   };
@@ -1365,25 +1719,59 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       e.clientY - rect.top - candidate.startY,
     );
     if (distance >= AREA_ZOOM_DRAG_THRESHOLD_PX) candidate.moved = true;
+    // Registra a extensão vertical da seleção para o handler de dataZoom
+    // decidir entre zoom temporal (preserva Y) e recorte vertical.
+    lastSelectionRectRef.current = {
+      top: Math.min(candidate.startY, e.clientY - rect.top),
+      bottom: Math.max(candidate.startY, e.clientY - rect.top),
+    };
   };
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     const candidate = areaPointerRef.current;
-    areaPointerRef.current = null;
-    if (!candidate || candidate.pointerId !== e.pointerId || candidate.moved) return;
+    // Arbitrate from the synchronous ref and the pointer candidate, never
+    // from React state: this pointerup can fire before a rerender commits.
+    const state = interactionStateRef.current;
+
+    if (state === "markerDragging") {
+      areaPointerRef.current = null;
+      return;
+    }
+
+    if (candidate && candidate.pointerId === e.pointerId) {
+      areaPointerRef.current = null;
+      if (candidate.moved) {
+        // A zoom selection that actually moved must not create/move markers.
+        interactionStateRef.current = "idle";
+        return;
+      }
+      if (state !== "zoomSelecting") {
+        interactionStateRef.current = "idle";
+        return;
+      }
+    } else {
+      areaPointerRef.current = null;
+      // Untracked pointerup (e.g. after a cancel) must not create markers.
+      if (state !== "idle") {
+        interactionStateRef.current = "idle";
+      }
+      return;
+    }
+
+    interactionStateRef.current = "idle";
     const inst = instanceRef.current;
-    if (!inst) return;
+    if (!inst || !candidate) return;
     const rawTs = inst.convertFromPixel({ xAxisIndex: 0 }, candidate.startX);
     if (typeof rawTs !== "number" || !Number.isFinite(rawTs)) return;
     const clickedTs = Math.round(rawTs);
 
-    if (markers.length < 2) {
+    if (markersRef.current.length < 2) {
       setMarkers([clickedTs]);
       props.onPinnedCursorChange?.(clickedTs);
       return;
     }
-    const px0 = inst.convertToPixel({ xAxisIndex: 0 }, markers[0]);
-    const px1 = inst.convertToPixel({ xAxisIndex: 0 }, markers[1]);
+    const px0 = inst.convertToPixel({ xAxisIndex: 0 }, markersRef.current[0]);
+    const px1 = inst.convertToPixel({ xAxisIndex: 0 }, markersRef.current[1]);
     const targetIdx = Math.abs(candidate.startX - px0) <= Math.abs(candidate.startX - px1) ? 0 : 1;
     setMarkers((prev) => {
       const next = [...prev];
@@ -1784,6 +2172,19 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         preserveDataZoom
         activateAreaZoom
         syncGroup={props.syncGroup}
+        zoomKey={
+          props.chart.comparisonType === "periods"
+            ? undefined
+            : `${(props.baseStart ?? props.start).getTime()}-${(props.baseEnd ?? props.end).getTime()}`
+        }
+        onBeforeSetOption={() => {
+          isProgrammaticUpdateRef.current = true;
+        }}
+        onAfterSetOption={() => {
+          setTimeout(() => {
+            isProgrammaticUpdateRef.current = false;
+          }, 50);
+        }}
       />
     </div>
   );

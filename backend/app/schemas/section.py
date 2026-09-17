@@ -1,9 +1,8 @@
 """Section Pydantic schemas."""
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 def _normalize_code(value: str) -> str:
     return (value or "").strip().upper()
@@ -15,6 +14,9 @@ class SectionBase(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     active: bool = True
+    process_type: Optional[str] = Field(default=None, pattern=r"^(COM_FORNO|SEM_FORNO)$", max_length=32)
+    group_code: Optional[str] = Field(default=None, pattern=r"^(BQ|BF)$", max_length=8)
+    classification_tag_ids: Optional[List[int]] = None
     width_tag_id: Optional[int] = Field(default=None, gt=0)
     um_tag_id: Optional[int] = Field(default=None, gt=0)
     thickness_tag_id: Optional[int] = Field(default=None, gt=0)
@@ -54,6 +56,9 @@ class SectionUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     active: Optional[bool] = None
+    process_type: Optional[str] = Field(default=None, pattern=r"^(COM_FORNO|SEM_FORNO)$", max_length=32)
+    group_code: Optional[str] = Field(default=None, pattern=r"^(BQ|BF)$", max_length=8)
+    classification_tag_ids: List[int] = Field(default_factory=list)
     width_tag_id: Optional[int] = Field(default=None, gt=0)
     um_tag_id: Optional[int] = Field(default=None, gt=0)
     thickness_tag_id: Optional[int] = Field(default=None, gt=0)
@@ -96,8 +101,18 @@ class SectionResponse(BaseModel):
     name: str
     description: Optional[str] = None
     active: bool
+    process_type: Optional[str] = None
+    group_code: Optional[str] = None
+    classification_tag_ids: List[int] = Field(default_factory=list)
     width_tag_id: Optional[int] = None
     um_tag_id: Optional[int] = None
     thickness_tag_id: Optional[int] = None
     created_at: datetime
+
+    @field_validator("classification_tag_ids", mode="before")
+    @classmethod
+    def _extract_tag_ids(cls, value):
+        if value is None:
+            return []
+        return [tag.id if hasattr(tag, "id") else tag for tag in value]
     updated_at: datetime

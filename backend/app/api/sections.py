@@ -18,6 +18,9 @@ def list_sections(
     search: Optional[str] = None,
     equipment_id: Optional[int] = None,
     active: Optional[bool] = None,
+    process_type: Optional[str] = None,
+    group_code: Optional[str] = None,
+    classification_tag_id: Optional[int] = None,
     pagination: dict = Depends(pagination_params),
     db: Session = Depends(get_db_session),
 ):
@@ -26,6 +29,9 @@ def list_sections(
         search=search,
         equipment_id=equipment_id,
         active=active,
+        process_type=process_type,
+        group_code=group_code,
+        classification_tag_id=classification_tag_id,
         page=pagination["page"],
         page_size=pagination["page_size"],
     )

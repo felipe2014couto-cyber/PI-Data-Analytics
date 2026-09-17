@@ -3,9 +3,10 @@ import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
-import { equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
+import { classificationTagsApi, equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
 import { ApiError } from "../api/http";
 import type {
+  ClassificationTag,
   DataFilterConfiguration,
   Equipment,
   AnalysisModel,
@@ -30,7 +31,7 @@ import { DataFiltersPanel } from "../components/DataFiltersPanel";
 import { SeriesAssignmentsPanel, type SeriesConfigurationTag } from "../components/SeriesAssignmentsPanel";
 import { QuerySummary } from "../components/QuerySummary";
 import { ComparisonPanel } from "../components/ComparisonPanel";
-import { TimeSeriesChart } from "../components/TimeSeriesChart";
+import { TimeSeriesChart, type ZoomQueryOutcome } from "../components/TimeSeriesChart";
 import { HistogramChart } from "../components/HistogramChart";
 import { BoxPlotChart } from "../components/BoxPlotChart";
 import { ScatterPlotChart } from "../components/ScatterPlotChart";
@@ -73,7 +74,6 @@ import { buildUmChartSeries, type UmChartSeries } from "../utils/umChartSeries";
 import { EMPTY_VISUAL_CONFIGURATION, defaultNormLimitConfig } from "../utils/visualRules";
 import type { ChartSeries } from "../utils/chartData";
 
-const DEFAULT_MAX_COUNT = 2000;
 const TIME_CHART_SYNC_GROUP = "piad-data-visualization-time";
 
 function _generateQueryId(): string {
@@ -95,15 +95,16 @@ const NORM_LIMIT_CACHE_LIMIT = 50;
 interface FiltersState {
   analysisModel: AnalysisModel;
   equipmentId: number | null;
+  processType: string;
+  groupCode: string;
+  classificationTagId: number | null;
   sectionId: number | null;
   variableTypeId: number | null;
   timePeriod: TimePeriod;
   timezone: "America/Sao_Paulo";
   mode: TimeSeriesMode;
   interval: string;
-  maxCount: number;
   resolutionMode: string;
-  targetPointsPerTag: number;
   ignoreBadQuality: boolean;
   visualization: VisualizationType;
   timeAnalysisRule: TimeAnalysisRule;
@@ -119,15 +120,16 @@ const INITIAL_FILTER_CONFIG: DataFilterConfiguration = {
 const INITIAL_FILTERS: FiltersState = {
   analysisModel: "unit",
   equipmentId: null,
+  processType: "",
+  groupCode: "",
+  classificationTagId: null,
   sectionId: null,
   variableTypeId: null,
   timePeriod: { kind: "preset", preset: "PT1H" },
   timezone: APPLICATION_TIMEZONE,
   mode: "recorded",
   interval: "10s",
-  maxCount: DEFAULT_MAX_COUNT,
   resolutionMode: "automatic",
-  targetPointsPerTag: 1500,
   ignoreBadQuality: true,
   visualization: "automatic",
   timeAnalysisRule: "MEDIA",
@@ -178,6 +180,46 @@ const INITIAL_QUERY: QueryState = {
   errorDetails: null,
 };
 
+interface ZoomQueryState {
+  loading: boolean;
+  errorMessage: string | null;
+  errorDetails: HistoricalErrorDetails | null;
+}
+
+const INITIAL_ZOOM_QUERY: ZoomQueryState = {
+  loading: false,
+  errorMessage: null,
+  errorDetails: null,
+};
+
+function zoomCacheKey(start: Date, end: Date): string {
+  return `${start.getTime()}:${end.getTime()}`;
+}
+
+function hasSufficientZoomDetail(
+  result: TimeSeries,
+  visibleStart: Date,
+  visibleEnd: Date,
+  targetPointsPerTag: number,
+): boolean {
+  const loadedStart = Date.parse(result.start_time);
+  const loadedEnd = Date.parse(result.end_time);
+  if (
+    !Number.isFinite(loadedStart) || !Number.isFinite(loadedEnd) ||
+    visibleStart.getTime() < loadedStart || visibleEnd.getTime() > loadedEnd
+  ) {
+    return false;
+  }
+  const effectiveInterval = result.query_execution?.effective_interval?.toLowerCase();
+  if (effectiveInterval === "recorded") return true;
+  const currentBucketSeconds = effectiveInterval ? intervalToSeconds(effectiveInterval) : Number.POSITIVE_INFINITY;
+  const visibleSeconds = Math.max(1, (visibleEnd.getTime() - visibleStart.getTime()) / 1000);
+  const idealBucketSeconds = Math.max(1, Math.ceil(visibleSeconds / Math.max(1, targetPointsPerTag)));
+  return currentBucketSeconds <= idealBucketSeconds;
+}
+
+
+
 interface ComparisonState {
   type: ComparisonType | "disabled";
   contextBEquipmentId: number | null;
@@ -216,6 +258,37 @@ function syncQualityConfig(
 }
 
 export function DataVisualizationPage() {
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const [chartWidth, setChartWidth] = useState<number>(1500);
+
+  useEffect(() => {
+    const el = chartContainerRef.current;
+    if (!el) return;
+    const updateWidth = () => {
+      const width = el.getBoundingClientRect().width;
+      if (width > 0) setChartWidth(Math.round(width));
+    };
+    updateWidth();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.contentRect.width > 0) {
+            setChartWidth(Math.round(entry.contentRect.width));
+          }
+        }
+      });
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", updateWidth);
+    return () => window.removeEventListener("resize", updateWidth);
+  }, []);
+
+  const dynamicPointsPerTag = useMemo(() => {
+    // 1 ponto por pixel da largura do componente de gráfico (limitado tecnicamente entre 500 e 2500)
+    return Math.max(500, Math.min(2500, chartWidth || 1500));
+  }, [chartWidth]);
+
   const navigate = useNavigate();
   const { user } = useAuth();
   const [filters, setFilters] = useState<FiltersState>(INITIAL_FILTERS);
@@ -223,6 +296,8 @@ export function DataVisualizationPage() {
   const [seriesAssignments, setSeriesAssignments] = useState<SeriesAssignment[]>([]);
   const [metricConfiguration, setMetricConfiguration] = useState<MetricConfiguration>({ kind: "none" });
   const [query, setQuery] = useState<QueryState>(INITIAL_QUERY);
+  const [zoomQuery, setZoomQuery] = useState<ZoomQueryState>(INITIAL_ZOOM_QUERY);
+  const [zoomedRange, setZoomedRange] = useState<{ start: Date; end: Date } | null>(null);
   const [filterValidationError, setFilterValidationError] = useState<string | null>(null);
   const [comparison, setComparison] = useState<ComparisonState>(INITIAL_COMPARISON);
   const [visualRules, setVisualRules] = useState<VisualRulesState>(INITIAL_VISUAL_RULES);
@@ -241,6 +316,7 @@ export function DataVisualizationPage() {
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
+  const [classificationTags, setClassificationTags] = useState<ClassificationTag[]>([]);
   const [tags, setTags] = useState<PiTag[]>([]);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookupsLoaded, setLookupsLoaded] = useState(false);
@@ -251,22 +327,32 @@ export function DataVisualizationPage() {
   const [cancelling, setCancelling] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const zoomAbortRef = useRef<AbortController | null>(null);
   const requestSeqRef = useRef(0);
+  const zoomRequestSeqRef = useRef(0);
+  const initialQueryRef = useRef<QueryState | null>(null);
+  const activeQueryRef = useRef<QueryState>(INITIAL_QUERY);
+  const zoomCacheRef = useRef<Map<string, QueryState>>(new Map());
+  const zoomRejectedRef = useRef<Set<string>>(new Set());
+  const zoomInFlightRef = useRef<{ key: string; promise: Promise<ZoomQueryOutcome> } | null>(null);
   const queryIdRef = useRef<string | null>(null);
   const cancelledQueryIdsRef = useRef<Set<string>>(new Set());
   const scatterInitializedRef = useRef(false);
+  activeQueryRef.current = query;
 
   const loadLookups = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [eq, sec, vt] = await Promise.all([
+      const [eq, sec, vt, cls] = await Promise.all([
         equipmentsApi.list({ page: 1, page_size: 200 }),
         sectionsApi.list({ page: 1, page_size: 200 }),
         variableTypesApi.list({ page: 1, page_size: 200 }),
+        classificationTagsApi.list(),
       ]);
       if (signal?.aborted) return;
       setEquipments(eq.items ?? []);
       setSections(sec.items ?? []);
       setVariableTypes(vt.items ?? []);
+      setClassificationTags(Array.isArray(cls) ? cls : []);
       // Buscar tags via endpoint dedicado com paginacao ate o limite da POC
       const tagList: PiTag[] = [];
       let page = 1;
@@ -315,6 +401,23 @@ export function DataVisualizationPage() {
   }, [loadLookups, loadPiHealth]);
 
   const equipmentMap = useMemo(() => new Map(equipments.map((e) => [e.id, e])), [equipments]);
+  const sectionsMatchingAttributes = useMemo(() => {
+    return sections.filter((section) => {
+      if (filters.processType && section.process_type !== filters.processType) return false;
+      if (filters.groupCode && section.group_code !== filters.groupCode) return false;
+      if (filters.classificationTagId !== null && !section.classification_tag_ids.includes(filters.classificationTagId)) return false;
+      return true;
+    });
+  }, [sections, filters.processType, filters.groupCode, filters.classificationTagId]);
+  const matchingSectionIds = useMemo(
+    () => new Set(sectionsMatchingAttributes.map((s) => s.id)),
+    [sectionsMatchingAttributes],
+  );
+  const classificationTagOptions = useMemo(
+    () => classificationTags.map((tag) => ({ id: tag.id, name: tag.name })),
+    [classificationTags],
+  );
+
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const variableTypeMap = useMemo(() => new Map(variableTypes.map((v) => [v.id, v])), [variableTypes]);
 
@@ -322,7 +425,7 @@ export function DataVisualizationPage() {
   // consulta para que os filtros de largura e espessura possam mascarar
   // as demais séries. A UM é exibida no gráfico (não é ocultada).
   const analysisTagIds = useMemo(() => {
-    const candidateSections = sections.filter((section) => {
+    const candidateSections = sectionsMatchingAttributes.filter((section) => {
       if (filters.sectionId) return section.id === filters.sectionId;
       return filters.equipmentId !== null && section.equipment_id === filters.equipmentId;
     });
@@ -379,11 +482,13 @@ export function DataVisualizationPage() {
   }, [tags, equipmentMap, sectionMap, variableTypeMap]);
 
   const filteredTagOptions = useMemo(() => {
+    const attributeFiltersActive = Boolean(filters.processType || filters.groupCode || filters.classificationTagId !== null);
     return tagOptions.filter((option) => {
       if (filters.equipmentId) {
         const equipment = equipmentMap.get(filters.equipmentId);
         if (!equipment || option.equipmentCode !== equipment.code) return false;
       }
+      if (attributeFiltersActive && option.sectionId !== null && !matchingSectionIds.has(option.sectionId)) return false;
       if (filters.sectionId) {
         const section = sectionMap.get(filters.sectionId);
         if (!section || (option.sectionId !== null && option.sectionId !== filters.sectionId)) return false;
@@ -395,6 +500,15 @@ export function DataVisualizationPage() {
       return true;
     });
   }, [tagOptions, filters, equipmentMap, sectionMap, variableTypeMap]);
+
+  // Clear the selected section when it no longer matches the attribute filters.
+  useEffect(() => {
+    setFilters((prev) =>
+      prev.sectionId !== null && !matchingSectionIds.has(prev.sectionId)
+        ? { ...prev, sectionId: null }
+        : prev,
+    );
+  }, [matchingSectionIds]);
 
   // Whenever equipment or section changes, prune selectedTagIds that no longer match.
   useEffect(() => {
@@ -411,8 +525,8 @@ export function DataVisualizationPage() {
     [equipments],
   );
   const sectionOptions = useMemo(
-    () => sections.map((s) => ({ id: s.id, code: s.code, name: s.name, equipmentId: s.equipment_id })),
-    [sections],
+    () => sectionsMatchingAttributes.map((s) => ({ id: s.id, code: s.code, name: s.name, equipmentId: s.equipment_id })),
+    [sectionsMatchingAttributes],
   );
   const variableTypeOptions = useMemo(
     () => variableTypes.map((v) => ({ id: v.id, code: v.code, name: v.name })),
@@ -734,6 +848,18 @@ export function DataVisualizationPage() {
     setFilters((prev) => ({ ...prev, equipmentId: id, sectionId: null }));
   };
 
+  const handleProcessTypeChange = (value: string) => {
+    setFilters((prev) => ({ ...prev, processType: value }));
+  };
+
+  const handleGroupCodeChange = (value: string) => {
+    setFilters((prev) => ({ ...prev, groupCode: value }));
+  };
+
+  const handleClassificationTagChange = (value: number | null) => {
+    setFilters((prev) => ({ ...prev, classificationTagId: value }));
+  };
+
   const handleSectionChange = (id: number | null) => {
     setFilters((prev) => ({ ...prev, sectionId: id }));
   };
@@ -817,6 +943,12 @@ export function DataVisualizationPage() {
 
   const handleClear = () => {
     abortRef.current?.abort();
+    zoomAbortRef.current?.abort();
+    zoomRequestSeqRef.current += 1;
+    zoomInFlightRef.current = null;
+    zoomCacheRef.current.clear();
+    zoomRejectedRef.current.clear();
+    initialQueryRef.current = null;
     queryIdRef.current = null;
     setFilters(INITIAL_FILTERS);
     setSelectedTagIds([]);
@@ -826,11 +958,12 @@ export function DataVisualizationPage() {
     setVisualRules(INITIAL_VISUAL_RULES);
     scatterInitializedRef.current = false;
     setQuery(INITIAL_QUERY);
+    setZoomQuery(INITIAL_ZOOM_QUERY);
     setFilterValidationError(null);
   };
 
-  const openHistoricalReload = () => {
-    const details = query.errorDetails;
+  const openHistoricalReload = (overrideDetails?: HistoricalErrorDetails | null) => {
+    const details = overrideDetails ?? query.errorDetails;
     if (user?.role !== "admin" || !details?.reload_available) return;
     const tagIds = (details.affected_tags ?? []).map((entry) => entry.tag_id);
     const period = details.requested_period ?? (query.resolvedPeriod ? {
@@ -873,6 +1006,7 @@ export function DataVisualizationPage() {
       rules: stripRetiredNamedFilterRules(baseFilterConfiguration.rules),
     };
     setFilters({
+      ...INITIAL_FILTERS,
       ...restored.filters,
       timeAnalysisRule: restored.filters.timeAnalysisRule ?? "DEFAULT",
       filtersEnabled: restored.filters.filtersEnabled ?? true,
@@ -906,12 +1040,99 @@ export function DataVisualizationPage() {
     if (filters.mode === "interpolated" && intervalToSeconds(filters.interval) < 10) {
       return "O intervalo mínimo para valores interpolados é de 10 segundos.";
     }
-    if (filters.maxCount < 1) return "Maximo de pontos por tag deve ser >= 1.";
     if ((filters.visualization === "automatic" || filters.visualization === "line") && !assignmentValidation.validAxes) {
       return assignmentValidation.axisErrors[0];
     }
     return null;
   };
+
+  const fetchTimeSeriesPeriod = useCallback(async (
+    period: ResolvedTimePeriod,
+    qid: string,
+    signal: AbortSignal,
+    zoomBasePeriod?: ResolvedTimePeriod,
+  ): Promise<TimeSeries> => {
+    if (comparison.type === "disabled") {
+      return timeSeriesApi.query(
+        {
+          tag_ids: queryTagIds,
+          start_time: period.startTime,
+          end_time: period.endTime,
+          mode: filters.mode,
+          interval: filters.mode === "interpolated" ? filters.interval : undefined,
+          resolution_mode: filters.resolutionMode,
+          target_points_per_tag: dynamicPointsPerTag,
+          relative_period: zoomBasePeriod ? false : filters.timePeriod.kind !== "absolute",
+          query_id: qid,
+        },
+        signal,
+      );
+    }
+
+    let contextBStart = comparison.type === "periods"
+      ? new Date(comparison.contextBStart)
+      : new Date(period.startTime);
+    let contextBEnd = comparison.type === "periods"
+      ? new Date(comparison.contextBEnd)
+      : new Date(period.endTime);
+    if (comparison.type === "periods" && zoomBasePeriod) {
+      const baseAStart = Date.parse(zoomBasePeriod.startTime);
+      const baseBStart = Date.parse(comparison.contextBStart);
+      contextBStart = new Date(baseBStart + Date.parse(period.startTime) - baseAStart);
+      contextBEnd = new Date(baseBStart + Date.parse(period.endTime) - baseAStart);
+    }
+
+    const comparisonResult = await timeSeriesApi.compare({
+      comparison_type: comparison.type,
+      contexts: [
+        {
+          context_id: "A",
+          context_label: "Contexto A — Referência",
+          tag_ids: queryTagIds,
+          start_time: period.startTime,
+          end_time: period.endTime,
+        },
+        {
+          context_id: "B",
+          context_label: "Contexto B — Comparação",
+          tag_ids: comparison.type === "periods" ? queryTagIds : comparison.contextBTagIds,
+          start_time: contextBStart.toISOString(),
+          end_time: contextBEnd.toISOString(),
+        },
+      ],
+      mode: filters.mode,
+      interval: filters.mode === "interpolated" ? filters.interval : undefined,
+      resolution_mode: filters.resolutionMode,
+      target_points_per_tag: dynamicPointsPerTag,
+      query_id: qid,
+    }, signal);
+    const series = comparisonResult.contexts.flatMap((context) =>
+      (context.time_series?.series ?? []).map((entry) => ({
+        ...entry,
+        original_tag_id: entry.tag_id,
+        display_name: `${entry.display_name} — ${context.context_label}`,
+      })),
+    );
+    const errors = comparisonResult.contexts.flatMap((context) =>
+      context.time_series?.errors ?? (context.error ? [{ tag_id: 0, ...context.error }] : []),
+    );
+    return {
+      start_time: comparisonResult.contexts[0].start_time,
+      end_time: comparisonResult.contexts[0].end_time,
+      mode: filters.mode,
+      series,
+      errors,
+      query_execution: {
+        resolution_mode: filters.resolutionMode,
+        sampled: false,
+        partial: comparisonResult.metadata.partial,
+        duration_ms: comparisonResult.metadata.duration_ms,
+        complete: comparisonResult.metadata.complete,
+        points_returned: Object.values(comparisonResult.metadata.points_returned_by_context).reduce((sum, count) => sum + count, 0),
+        query_id: comparisonResult.metadata.query_id,
+      },
+    };
+  }, [comparison, filters.interval, filters.mode, filters.resolutionMode, dynamicPointsPerTag, filters.timePeriod.kind, queryTagIds]);
 
   const runQuery = async () => {
     const error = computeValidationError();
@@ -942,6 +1163,14 @@ export function DataVisualizationPage() {
     }
     setCancelling(false);
     abortRef.current?.abort();
+    zoomAbortRef.current?.abort();
+    zoomRequestSeqRef.current += 1;
+    zoomInFlightRef.current = null;
+    zoomCacheRef.current.clear();
+    zoomRejectedRef.current.clear();
+    initialQueryRef.current = null;
+    setZoomQuery(INITIAL_ZOOM_QUERY);
+    setZoomedRange(null);
     const controller = new AbortController();
     abortRef.current = controller;
     const mySeq = ++requestSeqRef.current;
@@ -962,76 +1191,11 @@ export function DataVisualizationPage() {
     });
 
     try {
-      const result = comparison.type === "disabled" ? await timeSeriesApi.query(
-        {
-          tag_ids: queryTagIds,
-          start_time: resolvedPeriod.startTime,
-          end_time: resolvedPeriod.endTime,
-          mode: filters.mode,
-          interval: filters.mode === "interpolated" ? filters.interval : undefined,
-          max_count: filters.mode === "recorded" && filters.resolutionMode === "manual" ? filters.maxCount : undefined,
-          resolution_mode: filters.resolutionMode,
-          target_points_per_tag: filters.targetPointsPerTag,
-          relative_period: filters.timePeriod.kind !== "absolute",
-          query_id: qid,
-        },
-        controller.signal,
-      ) : await timeSeriesApi.compare({
-        comparison_type: comparison.type,
-        contexts: [
-          {
-            context_id: "A",
-            context_label: "Contexto A — Referência",
-            tag_ids: queryTagIds,
-            start_time: resolvedPeriod.startTime,
-            end_time: resolvedPeriod.endTime,
-          },
-          {
-            context_id: "B",
-            context_label: "Contexto B — Comparação",
-            tag_ids: comparison.type === "periods" ? queryTagIds : comparison.contextBTagIds,
-            start_time: comparison.type === "periods" ? new Date(comparison.contextBStart).toISOString() : resolvedPeriod.startTime,
-            end_time: comparison.type === "periods" ? new Date(comparison.contextBEnd).toISOString() : resolvedPeriod.endTime,
-          },
-        ],
-        mode: filters.mode,
-        interval: filters.mode === "interpolated" ? filters.interval : undefined,
-        max_count: filters.mode === "recorded" && filters.resolutionMode === "manual" ? filters.maxCount : undefined,
-        resolution_mode: filters.resolutionMode,
-        target_points_per_tag: filters.targetPointsPerTag,
-        query_id: qid,
-      }, controller.signal).then((comparisonResult): TimeSeries => {
-        const series = comparisonResult.contexts.flatMap((context) =>
-          (context.time_series?.series ?? []).map((entry) => ({
-            ...entry,
-            original_tag_id: entry.tag_id,
-            display_name: `${entry.display_name} — ${context.context_label}`,
-          })),
-        );
-        const errors = comparisonResult.contexts.flatMap((context) =>
-          context.time_series?.errors ?? (context.error ? [{ tag_id: 0, ...context.error }] : []),
-        );
-        return {
-          start_time: comparisonResult.contexts[0].start_time,
-          end_time: comparisonResult.contexts[0].end_time,
-          mode: filters.mode,
-          series,
-          errors,
-          query_execution: {
-            resolution_mode: filters.resolutionMode,
-            sampled: false,
-            partial: comparisonResult.metadata.partial,
-            duration_ms: comparisonResult.metadata.duration_ms,
-            complete: comparisonResult.metadata.complete,
-            points_returned: Object.values(comparisonResult.metadata.points_returned_by_context).reduce((sum, count) => sum + count, 0),
-            query_id: comparisonResult.metadata.query_id,
-          },
-        };
-      });
+      const result = await fetchTimeSeriesPeriod(resolvedPeriod, qid, controller.signal);
       if (mySeq !== requestSeqRef.current) return;
       queryIdRef.current = null;
       const finishedAt = Date.now();
-      setQuery({
+      const initialQueryState: QueryState = {
         timeSeries: result,
         loading: false,
         errorMessage: null,
@@ -1041,7 +1205,13 @@ export function DataVisualizationPage() {
         startedAt,
         finishedAt,
         resolvedPeriod,
-      });
+      };
+      initialQueryRef.current = initialQueryState;
+      zoomCacheRef.current.set(
+        zoomCacheKey(new Date(resolvedPeriod.startTime), new Date(resolvedPeriod.endTime)),
+        initialQueryState,
+      );
+      setQuery(initialQueryState);
     } catch (err) {
       if (mySeq !== requestSeqRef.current) return;
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -1078,6 +1248,134 @@ export function DataVisualizationPage() {
     }
   };
 
+  const handleVisibleWindowChange = useCallback((
+    visibleStart: Date,
+    visibleEnd: Date,
+  ): Promise<ZoomQueryOutcome> => {
+    const initial = initialQueryRef.current;
+    if (!initial?.timeSeries || !initial.resolvedPeriod) {
+      return Promise.resolve("superseded");
+    }
+
+    // Enforce 1 second minimum zoom window (clamp to center)
+    let effectiveStart = visibleStart;
+    let effectiveEnd = visibleEnd;
+    const windowMs = effectiveEnd.getTime() - effectiveStart.getTime();
+    if (windowMs < 1000) {
+      const center = (effectiveStart.getTime() + effectiveEnd.getTime()) / 2;
+      effectiveStart = new Date(Math.round(center - 500));
+      effectiveEnd = new Date(Math.round(center + 500));
+    }
+
+    // Cache hit: restore stored query state immediately
+    const key = zoomCacheKey(effectiveStart, effectiveEnd);
+    const cached = zoomCacheRef.current.get(key);
+    if (cached) {
+      zoomAbortRef.current?.abort();
+      zoomRequestSeqRef.current += 1;
+      zoomInFlightRef.current = null;
+      setZoomQuery(INITIAL_ZOOM_QUERY);
+      setZoomedRange({ start: effectiveStart, end: effectiveEnd });
+      setQuery(cached);
+      return Promise.resolve("applied");
+    }
+
+    const activeResult = activeQueryRef.current.timeSeries;
+
+    // Current resolution already covers this window with sufficient detail:
+    // no re-fetch needed, just update the visible range.
+    if (activeResult && hasSufficientZoomDetail(activeResult, effectiveStart, effectiveEnd, dynamicPointsPerTag)) {
+      zoomAbortRef.current?.abort();
+      zoomRequestSeqRef.current += 1;
+      zoomInFlightRef.current = null;
+      setZoomQuery(INITIAL_ZOOM_QUERY);
+      setZoomedRange({ start: effectiveStart, end: effectiveEnd });
+      return Promise.resolve("applied");
+    }
+
+    // In-flight request for the exact same window: reuse the promise
+    if (zoomInFlightRef.current?.key === key) {
+      return zoomInFlightRef.current.promise;
+    }
+
+    // Fire a new zoom query — always fetch finer data, never reject based on point count
+    zoomAbortRef.current?.abort();
+    const controller = new AbortController();
+    zoomAbortRef.current = controller;
+    const mySeq = ++zoomRequestSeqRef.current;
+    const qid = _generateQueryId();
+    const startedAt = Date.now();
+    setZoomQuery({ loading: true, errorMessage: null, errorDetails: null });
+    const visiblePeriod: ResolvedTimePeriod = {
+      startTime: effectiveStart.toISOString(),
+      endTime: effectiveEnd.toISOString(),
+      timezone: initial.resolvedPeriod.timezone,
+      referenceTime: initial.resolvedPeriod.referenceTime,
+    };
+
+    const promise = (async (): Promise<ZoomQueryOutcome> => {
+      try {
+        const result = await fetchTimeSeriesPeriod(
+          visiblePeriod,
+          qid,
+          controller.signal,
+          initial.resolvedPeriod ?? undefined,
+        );
+        if (mySeq !== zoomRequestSeqRef.current) return "superseded";
+        const next: QueryState = {
+          ...initial,
+          timeSeries: result,
+          loading: false,
+          errorMessage: null,
+          errorDetails: null,
+          partial: result.errors.length > 0 || result.query_execution?.partial === true,
+          errorPerSeries: result.errors,
+          startedAt,
+          finishedAt: Date.now(),
+        };
+        zoomCacheRef.current.set(key, next);
+        setZoomedRange({ start: effectiveStart, end: effectiveEnd });
+        setQuery(next);
+        setZoomQuery(INITIAL_ZOOM_QUERY);
+        return "applied";
+      } catch (error) {
+        if (mySeq !== zoomRequestSeqRef.current || controller.signal.aborted) {
+          return "superseded";
+        }
+        const details = error instanceof ApiError && error.details && typeof error.details === "object"
+          ? error.details as HistoricalErrorDetails
+          : null;
+        const coverageMissing = error instanceof ApiError && error.status === 409;
+        setZoomQuery({
+          loading: false,
+          errorMessage: coverageMissing
+            ? "Não há cobertura RECORDED completa na resolução necessária para este zoom. O detalhe agregado não será exibido como dado de segundos."
+            : error instanceof Error ? error.message : "Falha ao carregar o detalhe do zoom.",
+          errorDetails: details,
+        });
+        return "rejected";
+      } finally {
+        if (zoomInFlightRef.current?.key === key) zoomInFlightRef.current = null;
+      }
+    })();
+    zoomInFlightRef.current = { key, promise };
+    return promise;
+  }, [fetchTimeSeriesPeriod, dynamicPointsPerTag]);
+
+  const handleRestoreInitialZoom = useCallback(() => {
+    zoomAbortRef.current?.abort();
+    zoomRequestSeqRef.current += 1;
+    zoomInFlightRef.current = null;
+    setZoomQuery(INITIAL_ZOOM_QUERY);
+    setZoomedRange(null);
+    if (initialQueryRef.current) setQuery(initialQueryRef.current);
+  }, []);
+
+  useEffect(() => () => {
+    zoomAbortRef.current?.abort();
+    zoomRequestSeqRef.current += 1;
+  }, []);
+
   const handleSubmit = () => void runQuery();
 
   const selectedEquipment = filters.equipmentId
@@ -1093,8 +1391,16 @@ export function DataVisualizationPage() {
   const resolvedLabels = resolvedForResult
     ? formatResolvedTimePeriod(resolvedForResult).split(" até ")
     : ["—", "—"];
-  const chartStart = resolvedForResult ? new Date(resolvedForResult.startTime) : new Date(0);
-  const chartEnd = resolvedForResult ? new Date(resolvedForResult.endTime) : new Date(0);
+  const baseStart = resolvedForResult ? new Date(resolvedForResult.startTime) : new Date(0);
+  const baseEnd = resolvedForResult ? new Date(resolvedForResult.endTime) : new Date(0);
+  const chartStart = zoomedRange ? zoomedRange.start : baseStart;
+  const chartEnd = zoomedRange ? zoomedRange.end : baseEnd;
+  const zoomedLabels = zoomedRange
+    ? [
+        zoomedRange.start.toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE }),
+        zoomedRange.end.toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE }),
+      ]
+    : null;
 
   const selectedSeriesInstanceId = visualRules.selectedSeriesInstanceId;
   const selectedPiTagForNorm = selectedSeriesInstanceId ? seriesToPiTag.get(selectedSeriesInstanceId) ?? null : null;
@@ -1470,14 +1776,6 @@ export function DataVisualizationPage() {
     }
   }, [query.resolvedPeriod, selectedTagIds, filters.mode, filters.interval]);
 
-  const estimatedVisualPoints = useMemo(() => {
-    if (!query.resolvedPeriod) return null;
-    const tagCount = selectedTagIds.length;
-    const target = filters.targetPointsPerTag || 10000;
-    const total = tagCount * target;
-    return total > 0 ? Math.min(total, 200000) : null;
-  }, [query.resolvedPeriod, selectedTagIds.length, filters.targetPointsPerTag]);
-
   const errorByTagId = useMemo(() => {
     const map = new Map<number, { code: string; message: string }>();
     for (const entry of query.errorPerSeries) {
@@ -1590,6 +1888,13 @@ export function DataVisualizationPage() {
                 tagOptions={filteredTagOptions}
                 selectedEquipmentId={filters.equipmentId}
                 onEquipmentChange={handleEquipmentChange}
+                selectedProcessType={filters.processType}
+                onProcessTypeChange={handleProcessTypeChange}
+                selectedGroupCode={filters.groupCode}
+                onGroupCodeChange={handleGroupCodeChange}
+                selectedClassificationTagId={filters.classificationTagId}
+                onClassificationTagChange={handleClassificationTagChange}
+                classificationTagOptions={classificationTagOptions}
                 selectedSectionId={filters.sectionId}
                 onSectionChange={handleSectionChange}
                 selectedVariableTypeId={filters.variableTypeId}
@@ -1610,10 +1915,6 @@ export function DataVisualizationPage() {
                 onIntervalChange={(value) => setFilters((prev) => ({ ...prev, interval: value }))}
                 resolutionMode={filters.resolutionMode}
                 onResolutionModeChange={(value) => setFilters((prev) => ({ ...prev, resolutionMode: value }))}
-                targetPointsPerTag={filters.targetPointsPerTag}
-                onTargetPointsPerTagChange={(value) => setFilters((prev) => ({ ...prev, targetPointsPerTag: value }))}
-                targetPointsPerTagLimit={50000}
-                estimatedVisualPoints={estimatedVisualPoints}
                 ignoreBadQuality={filters.ignoreBadQuality}
                 onCancel={handleCancel}
                 csvCompleteLoading={csvCompleteLoading}
@@ -1716,11 +2017,35 @@ export function DataVisualizationPage() {
         </Col>
         <Col xs={12} lg={8} xl={9}>
           <Card className="piad-card mb-3">
-            <Card.Body>
+            <Card.Body ref={chartContainerRef}>
               {query.timeSeries?.query_execution?.data_available_until && query.timeSeries.query_execution.effective_end &&
               query.timeSeries.query_execution.requested_end !== query.timeSeries.query_execution.effective_end ? (
                 <Alert variant="info" data-testid="data-available-until">
                   Dados disponíveis até: {new Date(query.timeSeries.query_execution.data_available_until).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}
+                </Alert>
+              ) : null}
+              {zoomQuery.errorMessage && query.timeSeries ? (
+                <Alert variant="warning" data-testid="zoom-coverage-error">
+                  <div className="fw-semibold mb-1">Detalhamento do zoom indisponível</div>
+                  <div>{zoomQuery.errorMessage}</div>
+                  {zoomQuery.errorDetails?.requested_period ? (
+                    <div className="small mt-1">
+                      Janela solicitada: {new Date(zoomQuery.errorDetails.requested_period.start).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })} até {new Date(zoomQuery.errorDetails.requested_period.end).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}
+                    </div>
+                  ) : null}
+                  {zoomQuery.errorDetails?.reload_available && user?.role === "admin" ? (
+                    <Button
+                      variant="warning"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => openHistoricalReload(zoomQuery.errorDetails)}
+                      data-testid="zoom-historical-reload-button"
+                    >
+                      Recarregar período
+                    </Button>
+                  ) : zoomQuery.errorDetails?.reload_available ? (
+                    <div className="small mt-2">A cobertura precisa ser carregada por um administrador.</div>
+                  ) : null}
                 </Alert>
               ) : null}
               {query.loading ? (
@@ -1745,7 +2070,7 @@ export function DataVisualizationPage() {
                     <div className="small">Dados disponíveis até: {new Date(query.errorDetails.data_available_until).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}</div>
                   ) : null}
                   {query.errorDetails?.reload_available && user?.role === "admin" ? (
-                    <Button variant="warning" size="sm" className="mt-2 me-2" onClick={openHistoricalReload} data-testid="historical-reload-button">
+                    <Button variant="warning" size="sm" className="mt-2 me-2" onClick={() => openHistoricalReload()} data-testid="historical-reload-button">
                       Recarregar período
                     </Button>
                   ) : query.errorDetails?.reload_available ? (
@@ -1800,8 +2125,11 @@ export function DataVisualizationPage() {
                         equipment={equipmentTitle}
                         start={chartStart}
                         end={chartEnd}
+                        baseStart={baseStart}
+                        baseEnd={baseEnd}
+                        isZoomed={Boolean(zoomedRange)}
                         mode={filters.mode}
-                        loading={query.loading}
+                        loading={zoomQuery.loading}
                         titleLabel={
                           filters.visualization === "line" ? "Linha temporal" : undefined
                         }
@@ -1811,6 +2139,8 @@ export function DataVisualizationPage() {
                         umSeries={umChartSeries}
                         syncGroup={TIME_CHART_SYNC_GROUP}
                         enableZoomKeyboardUndo
+                        onVisibleWindowChange={handleVisibleWindowChange}
+                        onRestoreInitialZoom={handleRestoreInitialZoom}
                       />
                     </div>
                   ) : null}
@@ -1886,11 +2216,15 @@ export function DataVisualizationPage() {
                         equipment={equipmentTitle}
                         start={chartStart}
                         end={chartEnd}
+                        baseStart={baseStart}
+                        baseEnd={baseEnd}
+                        isZoomed={Boolean(zoomedRange)}
                         mode={filters.mode}
-                        loading={query.loading}
                         visualRules={visualRules}
                         syncGroup={TIME_CHART_SYNC_GROUP}
                         enableZoomKeyboardUndo={!numericChart || filters.visualization === "states"}
+                        onVisibleWindowChange={handleVisibleWindowChange}
+                        onRestoreInitialZoom={handleRestoreInitialZoom}
                       />
                     </div>
                   ) : null}
@@ -1976,6 +2310,8 @@ export function DataVisualizationPage() {
                 chart={chart}
                 startLocal={resolvedLabels[0]}
                 endLocal={resolvedLabels[1]}
+                zoomedStartLocal={zoomedLabels ? zoomedLabels[0] : undefined}
+                zoomedEndLocal={zoomedLabels ? zoomedLabels[1] : undefined}
                 durationMs={durationMs}
                 seriesCount={filteredTimeSeries?.series.length ?? query.timeSeries.series.length}
                 partial={query.partial}

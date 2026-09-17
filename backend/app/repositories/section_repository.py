@@ -26,6 +26,9 @@ class SectionRepository:
         search: Optional[str] = None,
         equipment_id: Optional[int] = None,
         active: Optional[bool] = None,
+        process_type: Optional[str] = None,
+        group_code: Optional[str] = None,
+        classification_tag_id: Optional[int] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> Tuple[Sequence[Section], int]:
@@ -40,6 +43,14 @@ class SectionRepository:
             conditions.append(Section.equipment_id == equipment_id)
         if active is not None:
             conditions.append(Section.active == active)
+        if process_type:
+            conditions.append(Section.process_type == process_type.strip().upper())
+        if group_code:
+            conditions.append(Section.group_code == group_code.strip().upper())
+        if classification_tag_id is not None:
+            conditions.append(
+                Section.classification_tags.any(id=classification_tag_id)
+            )
 
         if conditions:
             stmt = stmt.where(*conditions)

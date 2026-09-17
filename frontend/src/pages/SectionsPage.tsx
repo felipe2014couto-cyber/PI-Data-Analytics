@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal, Form, Button, Table } from "react-bootstrap";
 
-import { equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
-import type { Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
+import { classificationTagsApi, equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
+import type { ClassificationTag, Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
 import { ActiveBadge } from "../components/ActiveBadge";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { EmptyState } from "../components/EmptyState";
@@ -32,10 +32,23 @@ interface FormState {
   name: string;
   description: string;
   active: boolean;
+  process_type: string;
+  group_code: string;
+  classification_tag_ids: number[];
   width_tag_id: string;
   um_tag_id: string;
   thickness_tag_id: string;
 }
+
+const PROCESS_TYPE_OPTIONS = [
+  { value: "COM_FORNO", label: "Com forno" },
+  { value: "SEM_FORNO", label: "Sem forno" },
+];
+
+const GROUP_CODE_OPTIONS = [
+  { value: "BQ", label: "BQ" },
+  { value: "BF", label: "BF" },
+];
 
 const EMPTY_FORM: FormState = {
   equipment_id: "",
@@ -43,6 +56,9 @@ const EMPTY_FORM: FormState = {
   name: "",
   description: "",
   active: true,
+  process_type: "",
+  group_code: "",
+  classification_tag_ids: [],
   width_tag_id: "",
   um_tag_id: "",
   thickness_tag_id: "",
@@ -64,6 +80,10 @@ export function SectionsPage() {
   const [piTags, setPiTags] = useState<PiTag[]>([]);
   const [loadingPiTags, setLoadingPiTags] = useState(false);
   const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
+  const [classificationTags, setClassificationTags] = useState<ClassificationTag[]>([]);
+  const [tagSearch, setTagSearch] = useState("");
+  const [creatingTag, setCreatingTag] = useState(false);
+  const [newTagName, setNewTagName] = useState("");
 
   const [showFormModal, setShowFormModal] = useState(false);
   const [editing, setEditing] = useState<Section | null>(null);
@@ -131,6 +151,31 @@ export function SectionsPage() {
     }
   };
 
+  const loadClassificationTags = async (search?: string) => {
+    try {
+      const response = await classificationTagsApi.list(search ? { search } : undefined);
+      setClassificationTags(response ?? []);
+    } catch (err) {
+      setError(err);
+    }
+  };
+
+  const handleCreateTag = async () => {
+    const name = newTagName.trim();
+    if (!name) return;
+    setCreatingTag(true);
+    try {
+      const tag = await classificationTagsApi.create({ name });
+      setClassificationTags((prev) => [...prev, tag].sort((a, b) => a.name.localeCompare(b.name)));
+      setForm((prev) => ({ ...prev, classification_tag_ids: [...prev.classification_tag_ids, tag.id] }));
+      setNewTagName("");
+    } catch (err) {
+      setFormError(err);
+    } finally {
+      setCreatingTag(false);
+    }
+  };
+
   const loadVariableTypes = async () => {
     try {
       const response = await variableTypesApi.list({ page: 1, page_size: 200, active: true });
@@ -144,6 +189,7 @@ export function SectionsPage() {
     void loadEquipments();
     void loadPiTags();
     void loadVariableTypes();
+    void loadClassificationTags();
   }, []);
 
   useEffect(() => {
@@ -173,6 +219,9 @@ export function SectionsPage() {
       name: item.name,
       description: item.description ?? "",
       active: item.active,
+      process_type: item.process_type ?? "",
+      group_code: item.group_code ?? "",
+      classification_tag_ids: item.classification_tag_ids ?? [],
       width_tag_id: item.width_tag_id ? String(item.width_tag_id) : "",
       um_tag_id: item.um_tag_id ? String(item.um_tag_id) : "",
       thickness_tag_id: item.thickness_tag_id ? String(item.thickness_tag_id) : "",
@@ -197,6 +246,9 @@ export function SectionsPage() {
           name: form.name.trim(),
           description: form.description.trim() || null,
           active: form.active,
+          process_type: form.process_type || null,
+          group_code: form.group_code || null,
+          classification_tag_ids: form.classification_tag_ids,
           width_tag_id: form.width_tag_id ? Number(form.width_tag_id) : null,
           um_tag_id: form.um_tag_id ? Number(form.um_tag_id) : null,
           thickness_tag_id: form.thickness_tag_id ? Number(form.thickness_tag_id) : null,
@@ -210,6 +262,9 @@ export function SectionsPage() {
           name: form.name.trim(),
           description: form.description.trim() || null,
           active: form.active,
+          process_type: form.process_type || null,
+          group_code: form.group_code || null,
+          classification_tag_ids: form.classification_tag_ids,
           width_tag_id: null,
           um_tag_id: null,
           thickness_tag_id: null,
@@ -488,6 +543,90 @@ export function SectionsPage() {
                 onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
                 maxLength={500}
               />
+            </Form.Group>
+            <Form.Group className="mb-3" controlId="section-process-type">
+              <Form.Label>Processo</Form.Label>
+              <Form.Select
+                value={form.process_type}
+                onChange={(event) => setForm((prev) => ({ ...prev, process_type: event.target.value }))}
+                data-testid="section-process-type"
+              >
+                <option value="">Não informado</option>
+                {PROCESS_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </Form.Select>
+            </Form.Group>
+            <Form.Group className="mb-3" controlId="section-group-code">
+              <Form.Label>Grupo</Form.Label>
+              <Form.Select
+                value={form.group_code}
+                onChange={(event) => setForm((prev) => ({ ...prev, group_code: event.target.value }))}
+                data-testid="section-group-code"
+              >
+                <option value="">Não informado</option>
+                {GROUP_CODE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </Form.Select>
+            </Form.Group>
+            <Form.Group className="mb-3" controlId="section-classification-tags">
+              <Form.Label>Tags de classificacao</Form.Label>
+              <Form.Control
+                value={tagSearch}
+                onChange={(event) => {
+                  setTagSearch(event.target.value);
+                  void loadClassificationTags(event.target.value || undefined);
+                }}
+                placeholder="Pesquisar tags..."
+                data-testid="section-tag-search"
+                className="mb-2"
+              />
+              <div className="d-flex flex-wrap gap-2 mb-2" data-testid="section-tag-options">
+                {classificationTags.map((tag) => {
+                  const checked = form.classification_tag_ids.includes(tag.id);
+                  return (
+                    <Form.Check
+                      key={tag.id}
+                      type="checkbox"
+                      id={`section-tag-${tag.id}`}
+                      label={tag.name}
+                      checked={checked}
+                      onChange={() =>
+                        setForm((prev) => ({
+                          ...prev,
+                          classification_tag_ids: checked
+                            ? prev.classification_tag_ids.filter((id) => id !== tag.id)
+                            : [...prev.classification_tag_ids, tag.id],
+                        }))
+                      }
+                    />
+                  );
+                })}
+                {classificationTags.length === 0 && (
+                  <Form.Text className="text-muted">Nenhuma tag encontrada.</Form.Text>
+                )}
+              </div>
+              <div className="d-flex gap-2">
+                <Form.Control
+                  value={newTagName}
+                  onChange={(event) => setNewTagName(event.target.value.toUpperCase())}
+                  placeholder="Nova tag..."
+                  maxLength={64}
+                  data-testid="section-new-tag-name"
+                />
+                <Button
+                  variant="outline-secondary"
+                  onClick={handleCreateTag}
+                  disabled={creatingTag || !newTagName.trim()}
+                  data-testid="section-create-tag"
+                >
+                  Criar
+                </Button>
+              </div>
+              <Form.Text className="text-muted">
+                Selecione uma ou mais tags, pesquise pelo nome ou crie uma nova.
+              </Form.Text>
             </Form.Group>
             <div className="border rounded p-3 mb-3 bg-light">
               <h6 className="mb-1">Tags para análise da seção</h6>

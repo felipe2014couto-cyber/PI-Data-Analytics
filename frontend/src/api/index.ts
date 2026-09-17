@@ -1,5 +1,6 @@
 import { httpClient } from "./http";
 import type {
+  ClassificationTag,
   Equipment,
   EquipmentCreate,
   EquipmentUpdate,
@@ -91,6 +92,9 @@ function buildListQuery(params?: ListParams): Record<string, unknown> {
     variable_type_id: params.variable_type_id,
     validation_status: params.validation_status,
     include_dependencies: params.include_dependencies,
+    process_type: params.process_type,
+    group_code: params.group_code,
+    classification_tag_id: params.classification_tag_id,
   };
 }
 
@@ -145,6 +149,22 @@ export const variableTypesApi = {
   },
   remove(id: number) {
     return httpClient.delete<void>(`/variable-types/${id}`);
+  },
+};
+
+export const classificationTagsApi = {
+  list(params?: { search?: string }) {
+    const query = params?.search ? `?search=${encodeURIComponent(params.search)}` : "";
+    return httpClient.get<ClassificationTag[]>(`/classification-tags${query}`);
+  },
+  get(id: number) {
+    return httpClient.get<ClassificationTag>(`/classification-tags/${id}`);
+  },
+  create(payload: { name: string }) {
+    return httpClient.post<ClassificationTag>("/classification-tags", payload);
+  },
+  remove(id: number) {
+    return httpClient.delete<void>(`/classification-tags/${id}`);
   },
 };
 

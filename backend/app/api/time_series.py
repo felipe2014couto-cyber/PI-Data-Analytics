@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import logging
 import time
 import uuid
 from datetime import datetime
 from typing import List, Optional, Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.routing import APIRoute
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import (
@@ -32,7 +34,50 @@ from app.services.query_registry import QueryRegistry, get_query_registry
 
 logger = logging.getLogger("pi_analytics_data.api.time_series")
 
-router = APIRouter(prefix="/time-series", tags=["time-series"])
+class HistoricalQueryRoute(APIRoute):
+    """Compress only historical JSON queries; preserve the validated payload."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+        if self.name not in {"get_time_series", "compare_time_series"}:
+            return handler
+
+        async def compressed(request: Request):
+            started = time.perf_counter()
+            response = await handler(request)
+            ready = time.perf_counter()
+            if response.status_code == 200 and len(response.body) >= 1024:
+                response.headers.add_vary_header("Accept-Encoding")
+                if _accepts_gzip(request.headers.get("accept-encoding", "")):
+                    response.body = gzip.compress(response.body, compresslevel=1, mtime=0)
+                    response.headers["Content-Encoding"] = "gzip"
+                    response.headers["Content-Length"] = str(len(response.body))
+            response.headers["Server-Timing"] = (
+                f"api;dur={(ready - started) * 1000:.2f}, "
+                f"encode;dur={(time.perf_counter() - ready) * 1000:.2f}"
+            )
+            return response
+
+        return compressed
+
+
+def _accepts_gzip(header: str) -> bool:
+    accepted = {}
+    for item in header.lower().split(","):
+        name, *parameters = item.strip().split(";")
+        quality = 1.0
+        for parameter in parameters:
+            key, separator, value = parameter.strip().partition("=")
+            if key == "q" and separator:
+                try:
+                    quality = float(value)
+                except ValueError:
+                    quality = 0.0
+        accepted[name.strip()] = 0 < quality <= 1
+    return accepted.get("gzip", accepted.get("*", False))
+
+
+router = APIRouter(prefix="/time-series", tags=["time-series"], route_class=HistoricalQueryRoute)
 
 
 def _parse_iso(value: str) -> datetime:
@@ -100,9 +145,9 @@ async def get_time_series(
     end_time: str = Query(..., description="Fim do periodo (ISO 8601)."),
     mode: TimeSeriesMode = Query("recorded", description="Tipo de consulta."),
     interval: Optional[str] = Query(None, description="Intervalo (obrigatorio para interpolated)."),
-    max_count: Optional[int] = Query(None, ge=1, le=1_000_000),
+    max_count: Optional[int] = Query(None, ge=1, le=1_000_000, description="Parametro legado."),
     resolution_mode: Optional[str] = Query(None, pattern="^(automatic|manual)$"),
-    target_points_per_tag: Optional[int] = Query(None, ge=1000, le=50000),
+    target_points_per_tag: Optional[int] = Query(None, ge=100, le=5000),
     relative_period: bool = Query(False, description="Período relativo terminado no instante atual."),
     refresh: bool = Query(False, description="Ignorar cache visual e forçar nova consulta."),
     query_id: Optional[str] = Query(None, description="ID da consulta para cancelamento."),

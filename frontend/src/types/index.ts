@@ -74,6 +74,9 @@ export interface Section {
   name: string;
   description: string | null;
   active: boolean;
+  process_type: string | null;
+  group_code: string | null;
+  classification_tag_ids: number[];
   width_tag_id: number | null;
   um_tag_id: number | null;
   thickness_tag_id: number | null;
@@ -87,6 +90,9 @@ export interface SectionCreate {
   name: string;
   description?: string | null;
   active?: boolean;
+  process_type?: string | null;
+  group_code?: string | null;
+  classification_tag_ids?: number[];
   width_tag_id?: number | null;
   um_tag_id?: number | null;
   thickness_tag_id?: number | null;
@@ -98,6 +104,9 @@ export interface SectionUpdate {
   name?: string;
   description?: string | null;
   active?: boolean;
+  process_type?: string | null;
+  group_code?: string | null;
+  classification_tag_ids?: number[];
   width_tag_id?: number | null;
   um_tag_id?: number | null;
   thickness_tag_id?: number | null;
@@ -220,11 +229,28 @@ export interface ListParams {
   variable_type_id?: number;
   validation_status?: PiTagValidationStatus;
   include_dependencies?: boolean;
+  process_type?: string;
+  group_code?: string;
+  classification_tag_id?: number;
 }
 
 // PI Web API integration types (Phase 2)
 
 export type PiConnectionStatus = "connected" | "unavailable" | "not_configured" | "verifying";
+
+export interface ClassificationTag {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClassificationTag {
+  id: number;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface PiHealth {
   status: PiConnectionStatus;
@@ -359,9 +385,9 @@ export interface VisualConfigurationSidebarState {
     timezone: TimezoneId;
     mode: TimeSeriesMode;
     interval: string;
-    maxCount: number;
+    maxCount?: number;
     resolutionMode: string;
-    targetPointsPerTag: number;
+    targetPointsPerTag?: number;
     ignoreBadQuality: boolean;
     visualization: VisualizationType;
     timeAnalysisRule?: TimeAnalysisRule;
@@ -483,6 +509,7 @@ export interface TimeSeriesSeries {
 
 export interface QueryExecutionMetadata {
   source?: "timescaledb" | "pi_web_api" | "hybrid" | null;
+  effective_source_mode?: string | null;
   strategy?: string | null;
   resolution_mode: string;
   requested_target_points_per_tag?: number | null;

@@ -1,5 +1,5 @@
 """Section business rules."""
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -38,13 +38,19 @@ class SectionService:
         search: Optional[str],
         equipment_id: Optional[int],
         active: Optional[bool],
-        page: int,
-        page_size: int,
+        process_type: Optional[str] = None,
+        group_code: Optional[str] = None,
+        classification_tag_id: Optional[int] = None,
+        page: int = 1,
+        page_size: int = 20,
     ):
         return self.repo.list(
             search=search,
             equipment_id=equipment_id,
             active=active,
+            process_type=process_type,
+            group_code=group_code,
+            classification_tag_id=classification_tag_id,
             page=page,
             page_size=page_size,
         )
@@ -127,11 +133,14 @@ class SectionService:
             name=payload.name,
             description=payload.description,
             active=payload.active,
+            process_type=payload.process_type,
+            group_code=payload.group_code,
             width_tag_id=payload.width_tag_id,
             um_tag_id=payload.um_tag_id,
             thickness_tag_id=payload.thickness_tag_id,
         )
         self.repo.add(section)
+        self._set_classification_tags(section.id, payload.classification_tag_ids)
         self._validate_analysis_tags(
             equipment_id=section.equipment_id,
             section_id=section.id,
@@ -140,8 +149,16 @@ class SectionService:
             thickness_tag_id=section.thickness_tag_id,
         )
         self.db.commit()
+        self.db.expire(section, ["classification_tags"])
         self.db.refresh(section)
         return section
+
+    def _set_classification_tags(self, section_id: int, tag_ids: Optional[List[int]]) -> None:
+        from app.services.classification_tag_service import ClassificationTagService
+
+        if tag_ids is None:
+            return
+        ClassificationTagService(self.db).set_section_tags(section_id, tag_ids)
 
     def update(self, section_id: int, payload: SectionUpdate) -> Section:
         section = self.get(section_id)
@@ -163,6 +180,12 @@ class SectionService:
             section.description = payload.description
         if payload.active is not None:
             section.active = payload.active
+        if "process_type" in payload.model_fields_set:
+            section.process_type = payload.process_type
+        if "group_code" in payload.model_fields_set:
+            section.group_code = payload.group_code
+        if "classification_tag_ids" in payload.model_fields_set and payload.classification_tag_ids is not None:
+            self._set_classification_tags(section.id, payload.classification_tag_ids)
         self._validate_analysis_tags(
             equipment_id=target_equipment_id,
             section_id=section.id,
@@ -177,6 +200,7 @@ class SectionService:
         if "thickness_tag_id" in payload.model_fields_set:
             section.thickness_tag_id = payload.thickness_tag_id
         self.db.commit()
+        self.db.expire(section, ["classification_tags"])
         self.db.refresh(section)
         return section
 

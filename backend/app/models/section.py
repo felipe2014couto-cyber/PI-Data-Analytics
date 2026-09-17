@@ -20,6 +20,8 @@ class Section(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    process_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    group_code: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     # These are validated as same-section PI tags by SectionService. They are
     # intentionally plain nullable IDs because pi_tags already references
     # sections; database foreign keys here would create a circular ORM/DDL
@@ -39,6 +41,12 @@ class Section(Base, TimestampMixin):
         cascade="save-update, merge",
         passive_deletes=True,
     )
+    classification_tags: Mapped[List["ClassificationTag"]] = relationship(  # noqa: F821
+        "ClassificationTag",
+        secondary="section_classification_tags",
+        back_populates="sections",
+        lazy="selectin",
+    )
     cep_variables: Mapped[List["CepVariable"]] = relationship(  # noqa: F821
         "CepVariable",
         back_populates="section",
@@ -54,6 +62,10 @@ class Section(Base, TimestampMixin):
         Index("ix_sections_um_tag_id", "um_tag_id"),
         Index("ix_sections_thickness_tag_id", "thickness_tag_id"),
     )
+
+    @property
+    def classification_tag_ids(self) -> List[int]:
+        return [tag.id for tag in self.classification_tags]
 
     def __repr__(self) -> str:
         return f"Section(id={self.id}, equipment_id={self.equipment_id}, code={self.code!r})"

@@ -32,6 +32,16 @@ interface DataFiltersPanelProps {
   selectedEquipmentId: number | null;
   onEquipmentChange: (id: number | null) => void;
 
+  selectedProcessType: string;
+  onProcessTypeChange: (value: string) => void;
+
+  selectedGroupCode: string;
+  onGroupCodeChange: (value: string) => void;
+
+  selectedClassificationTagId: number | null;
+  onClassificationTagChange: (value: number | null) => void;
+  classificationTagOptions: Array<{ id: number; name: string }>;
+
   selectedSectionId: number | null;
   onSectionChange: (id: number | null) => void;
 
@@ -59,10 +69,6 @@ interface DataFiltersPanelProps {
 
   resolutionMode: string;
   onResolutionModeChange: (value: string) => void;
-  targetPointsPerTag: number;
-  onTargetPointsPerTagChange: (value: number) => void;
-  targetPointsPerTagLimit: number;
-  estimatedVisualPoints: number | null;
 
   onCancel: () => void;
 
@@ -98,6 +104,13 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
     tagOptions,
     selectedEquipmentId,
     onEquipmentChange,
+    selectedProcessType,
+    onProcessTypeChange,
+    selectedGroupCode,
+    onGroupCodeChange,
+    selectedClassificationTagId,
+    onClassificationTagChange,
+    classificationTagOptions,
     selectedSectionId,
     onSectionChange,
     selectedVariableTypeId,
@@ -112,10 +125,6 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
     onAnalysisModelChange,
     timeAnalysisRule,
     onTimeAnalysisRuleChange,
-    targetPointsPerTag,
-    onTargetPointsPerTagChange,
-    targetPointsPerTagLimit,
-    estimatedVisualPoints,
     ignoreBadQuality,
     onIgnoreBadQualityChange,
     visualization,
@@ -310,6 +319,48 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
         </Form.Select>
       </Form.Group>
 
+      <Form.Group controlId="process-type-filter">
+        <Form.Label>Processo</Form.Label>
+        <Form.Select
+          value={selectedProcessType}
+          onChange={(event) => onProcessTypeChange(event.target.value)}
+          data-testid="process-type-filter"
+        >
+          <option value="">Todos</option>
+          <option value="COM_FORNO">Com forno</option>
+          <option value="SEM_FORNO">Sem forno</option>
+        </Form.Select>
+      </Form.Group>
+
+      <Form.Group controlId="group-code-filter">
+        <Form.Label>Grupo</Form.Label>
+        <Form.Select
+          value={selectedGroupCode}
+          onChange={(event) => onGroupCodeChange(event.target.value)}
+          data-testid="group-code-filter"
+        >
+          <option value="">Todos</option>
+          <option value="BQ">BQ</option>
+          <option value="BF">BF</option>
+        </Form.Select>
+      </Form.Group>
+
+      <Form.Group controlId="classification-tag-filter">
+        <Form.Label>Tag de classificacao</Form.Label>
+        <Form.Select
+          value={selectedClassificationTagId === null ? "" : String(selectedClassificationTagId)}
+          onChange={(event) =>
+            onClassificationTagChange(event.target.value ? Number(event.target.value) : null)
+          }
+          data-testid="classification-tag-filter"
+        >
+          <option value="">Todas</option>
+          {classificationTagOptions.map((tag) => (
+            <option key={tag.id} value={tag.id}>{tag.name}</option>
+          ))}
+        </Form.Select>
+      </Form.Group>
+
       <Form.Group controlId="section-select">
         <Form.Label>Secao</Form.Label>
         <Form.Select
@@ -413,49 +464,21 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
 
       {advancedFilters}
 
-      <Alert variant="info" className="mb-3" data-testid="plot-aggregate-mode">
-        O histórico é consultado exclusivamente pelos agregados Plot do TimescaleDB
-        (10 segundos, horário ou diário conforme o período).
-      </Alert>
-
-      <Row className="g-2">
-        <Col xs={6}>
-          <Form.Group controlId="max-count">
-            <Form.Label>Max. pontos exibidos por tag</Form.Label>
-            <Form.Control
-              type="number"
-              min={1000}
-              max={targetPointsPerTagLimit}
-              value={targetPointsPerTag}
-              onChange={(event) => onTargetPointsPerTagChange(Number(event.target.value))}
-              data-testid="max-count"
-            />
-            <Form.Text className="text-muted">Max: {targetPointsPerTagLimit}</Form.Text>
-          </Form.Group>
-        </Col>
-        <Col xs={6} className="d-flex align-items-end">
-          <Form.Check
-            type="switch"
-            id="ignore-bad-quality"
-            label="Ignorar qualidade ruim"
-            checked={ignoreBadQuality}
-            onChange={(event) => onIgnoreBadQualityChange(event.target.checked)}
-            data-testid="ignore-bad-quality"
-          />
-        </Col>
-      </Row>
-
-      {estimatedVisualPoints !== null ? (
-        <div className="small text-muted" data-testid="estimated-points">
-          Estimativa: ~{estimatedVisualPoints.toLocaleString("pt-BR")} pontos visuais
-        </div>
-      ) : null}
-
-      {estimatedVisualPoints !== null && estimatedVisualPoints > 200000 ? (
-        <div className="small text-danger" data-testid="visual-budget-warning">
-          A estimativa ultrapassa o limite global de 200.000 pontos. Utilize resolucao automatica ou exportacao completa.
-        </div>
-      ) : null}
+      <div className="d-flex flex-column gap-1 mb-2">
+        <Form.Check
+          type="switch"
+          id="ignore-bad-quality"
+          label="Ignorar qualidade ruim"
+          checked={ignoreBadQuality}
+          onChange={(event) => onIgnoreBadQualityChange(event.target.checked)}
+          data-testid="ignore-bad-quality"
+        />
+        {!ignoreBadQuality ? (
+          <Form.Text className="text-warning small" data-testid="ignore-bad-quality-warning">
+            Modo de investigação de instrumentação ativo: a exibição de dados com qualidade ruim consulta eventos brutos e pode levar mais tempo em períodos extensos.
+          </Form.Text>
+        ) : null}
+      </div>
 
       <div className="d-flex gap-2">
         <Button

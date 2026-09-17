@@ -204,3 +204,339 @@ def test_section_analysis_tags_reject_wrong_variable_type(client: TestClient) ->
     ).json()
     response = client.put(f"/api/sections/{section['id']}", json={"width_tag_id": tag["id"]})
     assert response.status_code == 422
+
+
+def _create_classification_tag(client: TestClient, name: str) -> dict:
+    response = client.post("/api/classification-tags", json={"name": name})
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _create_section_with_attributes(client: TestClient, equipment_id: int, code: str, **attrs) -> dict:
+    payload = {
+        "equipment_id": equipment_id,
+        "code": code,
+        "name": f"Secao {code}",
+        **attrs,
+    }
+    response = client.post("/api/sections", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_create_section_with_new_attributes(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_a = _create_classification_tag(client, "304")
+    body = _create_section_with_attributes(
+        client,
+        equipment["id"],
+        "A",
+        process_type="COM_FORNO",
+        group_code="BQ",
+        classification_tag_ids=[tag_a["id"]],
+    )
+    assert body["process_type"] == "COM_FORNO"
+    assert body["group_code"] == "BQ"
+    assert body["classification_tag_ids"] == [tag_a["id"]]
+
+
+def test_update_section_attributes(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_430 = _create_classification_tag(client, "430")
+    body = _create_section_with_attributes(client, equipment["id"], "B", process_type="SEM_FORNO")
+    response = client.put(
+        f"/api/sections/{body['id']}",
+        json={"process_type": "COM_FORNO", "group_code": "BF", "classification_tag_ids": [tag_430["id"]]},
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert updated["process_type"] == "COM_FORNO"
+    assert updated["group_code"] == "BF"
+    assert updated["classification_tag_ids"] == [tag_430["id"]]
+
+
+def test_section_legacy_null_attributes(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    body = _create_section_with_attributes(client, equipment["id"], "C")
+    assert body["process_type"] is None
+    assert body["group_code"] is None
+    assert body["classification_tag_ids"] == []
+
+
+def test_reject_invalid_process_type(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    response = client.post(
+        "/api/sections",
+        json={"equipment_id": equipment["id"], "code": "X", "name": "X", "process_type": "FORNO"},
+    )
+    assert response.status_code == 422
+
+
+def test_reject_invalid_group_code(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    response = client.post(
+        "/api/sections",
+        json={"equipment_id": equipment["id"], "code": "X", "name": "X", "group_code": "BX"},
+    )
+    assert response.status_code == 422
+
+
+def test_classification_tag_create_normalizes_and_dedupes(client: TestClient) -> None:
+    body = _create_classification_tag(client, "  abc  ")
+    assert body["name"] == "ABC"
+    response = client.post("/api/classification-tags", json={"name": "abc"})
+    assert response.status_code == 409
+
+
+def test_section_associates_multiple_tags_and_remove_keeps_global_tag(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_304 = _create_classification_tag(client, "304")
+    tag_430 = _create_classification_tag(client, "430")
+    body = _create_section_with_attributes(
+        client, equipment["id"], "D", classification_tag_ids=[tag_304["id"], tag_430["id"]]
+    )
+    assert sorted(body["classification_tag_ids"]) == sorted([tag_304["id"], tag_430["id"]])
+    # Remove one association; the global tag still exists.
+    response = client.put(
+        f"/api/sections/{body['id']}",
+        json={"classification_tag_ids": [tag_430["id"]]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["classification_tag_ids"] == [tag_430["id"]]
+    tag_response = client.get(f"/api/classification-tags/{tag_304['id']}")
+    assert tag_response.status_code == 200
+    assert tag_response.json()["name"] == "304"
+
+
+def test_delete_classification_tag_blocked_when_in_use(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag = _create_classification_tag(client, "304")
+    _create_section_with_attributes(
+        client, equipment["id"], "E", classification_tag_ids=[tag["id"]]
+    )
+    response = client.delete(f"/api/classification-tags/{tag['id']}")
+    assert response.status_code == 409
+
+
+def test_section_rejects_unknown_classification_tag(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    response = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": equipment["id"],
+            "code": "F",
+            "name": "F",
+            "classification_tag_ids": [9999],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_section_filters_process_group_steel(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_304 = _create_classification_tag(client, "304")
+    tag_430 = _create_classification_tag(client, "430")
+    _create_section_with_attributes(
+        client, equipment["id"], "SA", process_type="COM_FORNO", group_code="BQ",
+        classification_tag_ids=[tag_304["id"]]
+    )
+    _create_section_with_attributes(
+        client, equipment["id"], "SB", process_type="COM_FORNO", group_code="BF",
+        classification_tag_ids=[tag_430["id"]]
+    )
+    _create_section_with_attributes(
+        client, equipment["id"], "SC", process_type="SEM_FORNO", group_code="BQ",
+        classification_tag_ids=[tag_304["id"]]
+    )
+    _create_section_with_attributes(client, equipment["id"], "LEG")  # nulls
+
+    def codes(**params):
+        resp = client.get("/api/sections", params=params)
+        assert resp.status_code == 200, resp.text
+        return sorted(item["code"] for item in resp.json()["items"])
+
+    assert codes(process_type="COM_FORNO") == ["SA", "SB"]
+    assert codes(group_code="BQ") == ["SA", "SC"]
+    assert codes(classification_tag_id=tag_304["id"]) == ["SA", "SC"]
+    assert codes(process_type="COM_FORNO", group_code="BQ", classification_tag_id=tag_304["id"]) == ["SA"]
+    # null sections visible without filter, excluded with any incompatible value
+    assert codes() == ["LEG", "SA", "SB", "SC"]
+    assert "LEG" not in codes(process_type="SEM_FORNO", group_code="BF")
+    # empty string does not filter
+    assert codes(process_type="", group_code="") == ["LEG", "SA", "SB", "SC"]
+
+
+def test_section_list_unchanged_without_new_filters(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    _create_section_with_attributes(client, equipment["id"], "NA", process_type="SEM_FORNO")
+    resp = client.get("/api/sections", params={"equipment_id": equipment["id"]})
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 1
+
+
+def _create_classification_tag(client: TestClient, name: str) -> dict:
+    response = client.post("/api/classification-tags", json={"name": name})
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _create_section_with_attributes(client: TestClient, equipment_id: int, code: str, **attrs) -> dict:
+    payload = {
+        "equipment_id": equipment_id,
+        "code": code,
+        "name": f"Secao {code}",
+        **attrs,
+    }
+    response = client.post("/api/sections", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_create_section_with_new_attributes(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_a = _create_classification_tag(client, "304")
+    body = _create_section_with_attributes(
+        client,
+        equipment["id"],
+        "A",
+        process_type="COM_FORNO",
+        group_code="BQ",
+        classification_tag_ids=[tag_a["id"]],
+    )
+    assert body["process_type"] == "COM_FORNO"
+    assert body["group_code"] == "BQ"
+    assert body["classification_tag_ids"] == [tag_a["id"]]
+
+
+def test_update_section_attributes(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_430 = _create_classification_tag(client, "430")
+    body = _create_section_with_attributes(client, equipment["id"], "B", process_type="SEM_FORNO")
+    response = client.put(
+        f"/api/sections/{body['id']}",
+        json={"process_type": "COM_FORNO", "group_code": "BF", "classification_tag_ids": [tag_430["id"]]},
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert updated["process_type"] == "COM_FORNO"
+    assert updated["group_code"] == "BF"
+    assert updated["classification_tag_ids"] == [tag_430["id"]]
+
+
+def test_section_legacy_null_attributes(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    body = _create_section_with_attributes(client, equipment["id"], "C")
+    assert body["process_type"] is None
+    assert body["group_code"] is None
+    assert body["classification_tag_ids"] == []
+
+
+def test_reject_invalid_process_type(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    response = client.post(
+        "/api/sections",
+        json={"equipment_id": equipment["id"], "code": "X", "name": "X", "process_type": "FORNO"},
+    )
+    assert response.status_code == 422
+
+
+def test_reject_invalid_group_code(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    response = client.post(
+        "/api/sections",
+        json={"equipment_id": equipment["id"], "code": "X", "name": "X", "group_code": "BX"},
+    )
+    assert response.status_code == 422
+
+
+def test_classification_tag_create_normalizes_and_dedupes(client: TestClient) -> None:
+    body = _create_classification_tag(client, "  abc  ")
+    assert body["name"] == "ABC"
+    response = client.post("/api/classification-tags", json={"name": "abc"})
+    assert response.status_code == 409
+
+
+def test_section_associates_multiple_tags_and_remove_keeps_global_tag(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_304 = _create_classification_tag(client, "304")
+    tag_430 = _create_classification_tag(client, "430")
+    body = _create_section_with_attributes(
+        client, equipment["id"], "D", classification_tag_ids=[tag_304["id"], tag_430["id"]]
+    )
+    assert sorted(body["classification_tag_ids"]) == sorted([tag_304["id"], tag_430["id"]])
+    # Remove one association; the global tag still exists.
+    response = client.put(
+        f"/api/sections/{body['id']}",
+        json={"classification_tag_ids": [tag_430["id"]]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["classification_tag_ids"] == [tag_430["id"]]
+    tag_response = client.get(f"/api/classification-tags/{tag_304['id']}")
+    assert tag_response.status_code == 200
+    assert tag_response.json()["name"] == "304"
+
+
+def test_delete_classification_tag_blocked_when_in_use(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag = _create_classification_tag(client, "304")
+    _create_section_with_attributes(
+        client, equipment["id"], "E", classification_tag_ids=[tag["id"]]
+    )
+    response = client.delete(f"/api/classification-tags/{tag['id']}")
+    assert response.status_code == 409
+
+
+def test_section_rejects_unknown_classification_tag(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    response = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": equipment["id"],
+            "code": "F",
+            "name": "F",
+            "classification_tag_ids": [9999],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_section_filters_process_group_and_classification_tag(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    tag_304 = _create_classification_tag(client, "304")
+    tag_430 = _create_classification_tag(client, "430")
+    _create_section_with_attributes(
+        client, equipment["id"], "SA", process_type="COM_FORNO", group_code="BQ",
+        classification_tag_ids=[tag_304["id"]],
+    )
+    _create_section_with_attributes(
+        client, equipment["id"], "SB", process_type="COM_FORNO", group_code="BF",
+        classification_tag_ids=[tag_430["id"]],
+    )
+    _create_section_with_attributes(
+        client, equipment["id"], "SC", process_type="SEM_FORNO", group_code="BQ",
+        classification_tag_ids=[tag_304["id"]],
+    )
+    _create_section_with_attributes(client, equipment["id"], "LEG")  # no tags
+
+    def codes(**params):
+        resp = client.get("/api/sections", params=params)
+        assert resp.status_code == 200, resp.text
+        return sorted(item["code"] for item in resp.json()["items"])
+
+    assert codes(process_type="COM_FORNO") == ["SA", "SB"]
+    assert codes(group_code="BQ") == ["SA", "SC"]
+    assert codes(classification_tag_id=tag_304["id"]) == ["SA", "SC"]
+    assert codes(
+        process_type="COM_FORNO", group_code="BQ", classification_tag_id=tag_304["id"]
+    ) == ["SA"]
+    assert codes() == ["LEG", "SA", "SB", "SC"]
+    assert "LEG" not in codes(process_type="SEM_FORNO", group_code="BF")
+    assert codes(process_type="", group_code="") == ["LEG", "SA", "SB", "SC"]
+
+
+def test_section_list_unchanged_without_new_filters(client: TestClient) -> None:
+    equipment = _create_equipment(client)
+    _create_section_with_attributes(client, equipment["id"], "NA", process_type="SEM_FORNO")
+    resp = client.get("/api/sections", params={"equipment_id": equipment["id"]})
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 1

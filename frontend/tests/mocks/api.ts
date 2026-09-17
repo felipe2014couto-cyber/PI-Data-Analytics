@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import type {
+  ClassificationTag,
   Equipment,
   PaginatedResponse,
   PiHealth,
@@ -27,6 +28,9 @@ export const sectionFixture: Section = {
   name: "Forno",
   description: null,
   active: true,
+  process_type: null,
+  group_code: null,
+  classification_tag_ids: [],
   width_tag_id: null,
   um_tag_id: null,
   thickness_tag_id: null,
@@ -83,6 +87,20 @@ export const notConfiguredHealthFixture: PiHealth = {
   error_code: null,
 };
 
+export const classificationTagFixture: ClassificationTag = {
+  id: 1,
+  name: "304",
+  created_at: "2026-01-01T00:00:00",
+  updated_at: "2026-01-01T00:00:00",
+};
+
+export const classificationTagFixture2: ClassificationTag = {
+  id: 2,
+  name: "430",
+  created_at: "2026-01-01T00:00:00",
+  updated_at: "2026-01-01T00:00:00",
+};
+
 export function paginated<T>(items: T[], page = 1, pageSize = 10, total?: number): PaginatedResponse<T> {
   const t = total ?? items.length;
   return {
@@ -116,10 +134,14 @@ export const apiMock = {
   visualConfigRemove: vi.fn(),
   healthCheck: vi.fn(),
   piHealth: vi.fn(),
+  listClassificationTags: vi.fn().mockResolvedValue([classificationTagFixture, classificationTagFixture2]),
+  createClassificationTag: vi.fn(),
+  removeClassificationTag: vi.fn(),
   listEquipments: vi.fn(),
   createEquipment: vi.fn(),
   listSections: vi.fn(),
   createSection: vi.fn(),
+  updateSection: vi.fn(),
   listVariableTypes: vi.fn(),
   createVariableType: vi.fn(),
   listPiTags: vi.fn(),
@@ -143,6 +165,12 @@ export function mockApiModule() {
     piApi: {
       health: apiMock.piHealth,
     },
+    classificationTagsApi: {
+      list: apiMock.listClassificationTags,
+      get: vi.fn(),
+      create: apiMock.createClassificationTag,
+      remove: apiMock.removeClassificationTag,
+    },
     equipmentsApi: {
       list: apiMock.listEquipments,
       get: vi.fn(),
@@ -154,7 +182,7 @@ export function mockApiModule() {
       list: apiMock.listSections,
       get: vi.fn(),
       create: apiMock.createSection,
-      update: vi.fn(),
+      update: apiMock.updateSection,
       remove: vi.fn(),
     },
     variableTypesApi: {

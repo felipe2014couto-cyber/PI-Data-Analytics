@@ -135,6 +135,7 @@ class TimeSeriesSeries(BaseModel):
 
 class QueryExecutionMetadata(BaseModel):
     source: Optional[Literal["timescaledb", "pi_web_api", "hybrid"]] = None
+    effective_source_mode: Optional[str] = None
     strategy: Optional[str] = None
     resolution_mode: str = "automatic"
     requested_target_points_per_tag: Optional[int] = None
@@ -193,9 +194,9 @@ class TimeSeriesRequest(BaseModel):
     end_time: datetime
     mode: TimeSeriesMode = "recorded"
     interval: Optional[str] = Field(default=None, max_length=16, pattern=r"^\d+[smhd]$")
-    max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+    max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000, description="Parametro legado; ignorado no fluxo visual seguro.")
     resolution_mode: Optional[str] = Field(default=None, pattern="^(automatic|manual)$")
-    target_points_per_tag: Optional[int] = Field(default=None, ge=1000, le=50000)
+    target_points_per_tag: Optional[int] = Field(default=None, ge=100, le=5000)
     relative_period: bool = False
 
     @field_validator("start_time", "end_time")
@@ -256,9 +257,9 @@ class TimeSeriesComparisonRequest(BaseModel):
     contexts: List[ComparisonContextRequest] = Field(min_length=2, max_length=2)
     mode: TimeSeriesMode = "recorded"
     interval: Optional[str] = Field(default=None, max_length=16, pattern=r"^\d+[smhd]$")
-    max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+    max_count: Optional[int] = Field(default=None, ge=1, le=1_000_000, description="Parametro legado; ignorado no fluxo visual seguro.")
     resolution_mode: str = Field(default="automatic", pattern="^(automatic|manual)$")
-    target_points_per_tag: Optional[int] = Field(default=10000, ge=1000, le=50000)
+    target_points_per_tag: Optional[int] = Field(default=1200, ge=100, le=5000)
     query_id: Optional[str] = None
 
     @field_validator("contexts")

@@ -104,16 +104,16 @@ class Settings(BaseSettings):
         description="Limite de pontos por chamada ao PI Web API.",
     )
     pi_query_visual_default_points_per_tag: int = Field(
-        default=1500,
-        ge=1000,
-        le=50000,
-        description="Alvo visual padrao de pontos exibidos por tag.",
+        default=1200,
+        ge=100,
+        le=5000,
+        description="Alvo visual padrao de pontos por tag baseado na largura tipica de tela.",
     )
     pi_query_visual_max_points_per_tag: int = Field(
-        default=50000,
-        ge=1000,
-        le=100000,
-        description="Alvo visual maximo de pontos exibidos por tag.",
+        default=2500,
+        ge=100,
+        le=5000,
+        description="Limite maximo tecnico de protecao server-side por tag.",
     )
     pi_query_visual_max_total_points: int = Field(
         default=200000,

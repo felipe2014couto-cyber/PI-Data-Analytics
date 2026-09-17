@@ -13,7 +13,7 @@ let currentZoom = { start: 0, end: 100 };
 let wrapperRenderCount = 0;
 
 vi.mock("../src/components/EChartsWrapper", () => ({
-  EChartsWrapper: ({ onInit, height, activateAreaZoom, syncGroup }: any) => {
+  EChartsWrapper: ({ onInit, height, activateAreaZoom, syncGroup, loading }: any) => {
     wrapperRenderCount += 1;
     useEffect(() => {
       if (onInit && mockEChartsInstance) {
@@ -25,6 +25,7 @@ vi.mock("../src/components/EChartsWrapper", () => ({
         data-testid="echarts-wrapper"
         data-area-zoom={Boolean(activateAreaZoom)}
         data-sync-group={syncGroup ?? ""}
+        data-global-loading={Boolean(loading)}
         style={{ height }}
       />
     );
@@ -166,7 +167,7 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
     expect(screen.getByTestId("echarts-wrapper")).toHaveAttribute("data-area-zoom", "true");
   });
 
-  it("clique simples mantém o marcador, mas arraste de 6 px não cria marcador", () => {
+  it("clique simples cria marcador, mas arraste de 6 px não cria marcador", () => {
     const { rerender } = render(
       <TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />,
     );
@@ -189,6 +190,67 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
     expect(screen.queryByTestId("marker-line-0")).not.toBeInTheDocument();
   });
 
+  it("corrida: pointerup imediatamente após o movimento de seleção, antes de qualquer rerender, não altera o marcador", () => {
+    const originalMarkerTs = START_TS + 1800000;
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+        pinnedCursorTs={originalMarkerTs}
+      />,
+    );
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+
+    const toolbar = screen.getByTestId("markers-toolbar");
+    const initialText = toolbar.textContent;
+
+    // pointerdown, movimento suficiente para seleção e pointerup disparados
+    // de forma síncrona — nenhum rerender do React acontece entre eles, então
+    // a arbitragem depende exclusivamente da ref síncrona do componente.
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 7, clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(plot, { pointerId: 7, clientX: 320, clientY: 150 });
+    fireEvent.pointerUp(plot, { button: 0, pointerId: 7, clientX: 320, clientY: 150 });
+
+    expect(toolbar.textContent).toBe(initialText);
+    expect(screen.getByTestId("marker-line-0")).toBeInTheDocument();
+  });
+
+  it("arraste no canvas inicia zoom selection e suprime criação de marcador", () => {
+    const onVisibleWindowChange = vi.fn().mockResolvedValue("applied");
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+
+    // Arraste no canvas deve iniciar zoom selection
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 2, clientX: 200, clientY: 150 });
+    fireEvent.pointerMove(plot, { pointerId: 2, clientX: 260, clientY: 150 });
+    fireEvent.pointerUp(plot, { button: 0, pointerId: 2, clientX: 260, clientY: 150 });
+
+    // Marcador NÃO deve ser criado por arraste no canvas
+    expect(screen.queryByTestId("marker-line-0")).not.toBeInTheDocument();
+    // Botão de adicionar marcador deve continuar disponível
+    expect(screen.getByTitle("Adicionar marcador temporal")).toBeInTheDocument();
+  });
+
   it("Escape encerra a seleção nativa e restaura o dataZoom anterior", () => {
     render(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />);
     const plot = screen.getByTestId("echarts-wrapper").parentElement!;
@@ -209,7 +271,7 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
     });
   });
 
-  it("não renderiza React nem aplica zoom durante pointermove da seleção", () => {
+  it("não renderiza React durante pointerdown/pointermove da seleção", () => {
     render(<TimeSeriesChart chart={mockChart()} equipment="Turbina 1" start={new Date(START_TS)} end={new Date(END_TS)} mode="recorded" />);
     const plot = screen.getByTestId("echarts-wrapper").parentElement!;
     Object.defineProperty(plot, "getBoundingClientRect", {
@@ -219,12 +281,104 @@ describe("TimeSeriesChart - Arraste e Zoom sem Interferência", () => {
     const rendersBeforeDrag = wrapperRenderCount;
 
     fireEvent.pointerDown(plot, { button: 0, pointerId: 4, clientX: 150, clientY: 150 });
+
     for (let x = 151; x <= 650; x += 5) {
       fireEvent.pointerMove(plot, { pointerId: 4, clientX: x, clientY: 150 });
     }
 
+    // Nenhum render durante toda a seleção — a arbitragem usa ref síncrona
     expect(wrapperRenderCount).toBe(rendersBeforeDrag);
+    // dispatchAction com dataZoom NÃO deve ser chamado durante o drag
     expect(mockEChartsInstance.dispatchAction).not.toHaveBeenCalledWith(expect.objectContaining({ type: "dataZoom" }));
+  });
+
+  it("consulta a janela normalizada uma única vez somente após o dataZoom final", () => {
+    const onVisibleWindowChange = vi.fn().mockResolvedValue("applied");
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+    const plot = screen.getByTestId("echarts-wrapper").parentElement!;
+    Object.defineProperty(plot, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 820, bottom: 420, width: 820, height: 420, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    fireEvent.pointerDown(plot, { button: 0, pointerId: 9, clientX: 650, clientY: 150 });
+    fireEvent.pointerMove(plot, { pointerId: 9, clientX: 150, clientY: 150 });
+    expect(onVisibleWindowChange).not.toHaveBeenCalled();
+
+    currentZoom = { start: 25, end: 75 };
+    act(() => registeredEventHandlers.dataZoom?.forEach((handler) => handler({})));
+
+    expect(onVisibleWindowChange).toHaveBeenCalledTimes(1);
+    expect(onVisibleWindowChange).toHaveBeenCalledWith(
+      new Date(START_TS + 900_000),
+      new Date(START_TS + 2_700_000),
+      "selection",
+    );
+  });
+
+  it("mantém o ECharts interativo sem indicador ou overlay durante o refinamento", () => {
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+      />,
+    );
+
+    expect(screen.getByTestId("echarts-wrapper")).toHaveAttribute("data-global-loading", "false");
+    expect(screen.queryByTestId("zoom-detail-loading")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Detalhando intervalo/i)).not.toBeInTheDocument();
+  });
+
+  it("restaura o domínio anterior quando o detalhamento do zoom é rejeitado", async () => {
+    const onVisibleWindowChange = vi.fn().mockResolvedValue("rejected");
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+    currentZoom = { start: 40, end: 60 };
+    await act(async () => {
+      registeredEventHandlers.dataZoom?.forEach((handler) => handler({}));
+      await Promise.resolve();
+    });
+    expect(mockEChartsInstance.dispatchAction).toHaveBeenLastCalledWith({
+      type: "dataZoom",
+      dataZoomIndex: 0,
+      start: 0,
+      end: 100,
+    });
+  });
+
+  it("restauração nativa solicita o resultado inicial em cache", () => {
+    const onRestoreInitialZoom = vi.fn();
+    render(
+      <TimeSeriesChart
+        chart={mockChart()}
+        equipment="Turbina 1"
+        start={new Date(START_TS)}
+        end={new Date(END_TS)}
+        mode="recorded"
+        onRestoreInitialZoom={onRestoreInitialZoom}
+      />,
+    );
+    act(() => registeredEventHandlers.restore?.forEach((handler) => handler({})));
+    expect(onRestoreInitialZoom).toHaveBeenCalledTimes(1);
   });
 
   it("pointercancel limpa a seleção e não converte o gesto em clique de marcador", () => {

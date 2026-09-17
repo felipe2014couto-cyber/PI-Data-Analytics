@@ -39,8 +39,11 @@ export interface EChartsWrapperProps {
   height?: number | string;
   onInit?: (instance: ECharts) => void;
   preserveDataZoom?: boolean;
+  zoomKey?: string | number;
   activateAreaZoom?: boolean;
   syncGroup?: string;
+  onBeforeSetOption?: () => void;
+  onAfterSetOption?: () => void;
 }
 
 const connectedGroupCounts = new Map<string, number>();
@@ -77,12 +80,16 @@ export function EChartsWrapper({
   height = 360,
   onInit,
   preserveDataZoom = true,
+  zoomKey,
   activateAreaZoom = false,
   syncGroup,
+  onBeforeSetOption,
+  onAfterSetOption,
 }: EChartsWrapperProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<ECharts | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
+  const lastZoomKeyRef = useRef<string | number | undefined>(undefined);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -96,7 +103,9 @@ export function EChartsWrapper({
         connectInstance(instance, syncGroup);
         joinedSyncGroup = true;
       }
+      onBeforeSetOption?.();
       instance.setOption(option, { notMerge: true });
+      onAfterSetOption?.();
       if (activateAreaZoom) {
         activateDataZoomSelection(instance);
       }
@@ -141,30 +150,38 @@ export function EChartsWrapper({
         const currentOpt = chartRef.current.getOption() as any;
         let effectiveOption = option;
 
-        // Preserve user's active zoom window (start/end or startValue/endValue) across option updates
-        if (
-          preserveDataZoom &&
-          currentOpt?.dataZoom &&
-          Array.isArray(currentOpt.dataZoom) &&
-          Array.isArray((option as any)?.dataZoom)
-        ) {
-          const currentDz = currentOpt.dataZoom[0];
-          if (
-            currentDz &&
-            (currentDz.start !== undefined || currentDz.startValue !== undefined)
-          ) {
-            effectiveOption = {
-              ...option,
-              dataZoom: (option as any).dataZoom.map((dzItem: any) => ({
-                ...dzItem,
-                ...(currentDz.start !== undefined ? { start: currentDz.start } : {}),
-                ...(currentDz.end !== undefined ? { end: currentDz.end } : {}),
-                ...(currentDz.startValue !== undefined ? { startValue: currentDz.startValue } : {}),
-                ...(currentDz.endValue !== undefined ? { endValue: currentDz.endValue } : {}),
-              })),
-            };
+        // `zoomKey` identifies the query/domain the current zoom window belongs
+        // to. When it changes (new query, new time range), reset the zoom;
+        // otherwise always carry the user's window over — even though the
+        // incoming option declares start: 0 / end: 100, that is just the
+        // static config, not an intent to reset.
+        const sameZoomKey = lastZoomKeyRef.current !== undefined && lastZoomKeyRef.current === zoomKey;
+
+        if (preserveDataZoom && sameZoomKey) {
+          const currentDz = currentOpt?.dataZoom?.[0];
+          if (currentDz && Array.isArray((option as any)?.dataZoom)) {
+            if (currentDz.startValue !== undefined && currentDz.endValue !== undefined) {
+              effectiveOption = {
+                ...option,
+                dataZoom: (option as any).dataZoom.map((dzItem: any) => ({
+                  ...dzItem,
+                  startValue: currentDz.startValue,
+                  endValue: currentDz.endValue,
+                })),
+              };
+            } else if (currentDz.start !== undefined && currentDz.end !== undefined) {
+              effectiveOption = {
+                ...option,
+                dataZoom: (option as any).dataZoom.map((dzItem: any) => ({
+                  ...dzItem,
+                  start: currentDz.start,
+                  end: currentDz.end,
+                })),
+              };
+            }
           }
         }
+        lastZoomKeyRef.current = zoomKey;
 
         // Also preserve user's legend selection if present
         if (
@@ -180,18 +197,22 @@ export function EChartsWrapper({
           }
         }
 
+        onBeforeSetOption?.();
         chartRef.current.setOption(effectiveOption, { notMerge: true });
+        onAfterSetOption?.();
         if (activateAreaZoom) {
           activateDataZoomSelection(chartRef.current);
         }
       } catch {
+        onBeforeSetOption?.();
         chartRef.current.setOption(option, { notMerge: true });
+        onAfterSetOption?.();
         if (activateAreaZoom) {
           activateDataZoomSelection(chartRef.current);
         }
       }
     }
-  }, [activateAreaZoom, option, preserveDataZoom]);
+  }, [activateAreaZoom, option, preserveDataZoom, zoomKey, onBeforeSetOption, onAfterSetOption]);
 
   useEffect(() => {
     if (chartRef.current) {

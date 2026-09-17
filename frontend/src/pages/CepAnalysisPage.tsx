@@ -18,6 +18,7 @@ import type {
   CepNonConformingPoint,
 } from "../types";
 import { EChartsWrapper } from "../components/EChartsWrapper";
+import { APPLICATION_TIMEZONE, civilToUtc } from "../utils/timePeriod";
 
 const CEP_PROGRESS_POLL_INTERVAL_MS = 500;
 
@@ -27,6 +28,19 @@ const CEP_PROGRESS_POLL_INTERVAL_MS = 500;
 
 export function toIsoUtc(dateStr: string): string {
   if (!dateStr) return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(dateStr);
+  if (match) {
+    // datetime-local inputs are Brasilia civil time (America/Sao_Paulo).
+    return civilToUtc({
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+      hour: Number(match[4]),
+      minute: Number(match[5]),
+      second: Number(match[6] ?? 0),
+      millisecond: 0,
+    }).toISOString();
+  }
   return new Date(dateStr).toISOString();
 }
 
@@ -37,7 +51,7 @@ function formatPct(value: number | null | undefined): string {
 
 function formatDatetime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString("pt-BR", { timeZone: "UTC" });
+    return new Date(iso).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE });
   } catch {
     return iso;
   }
@@ -46,7 +60,7 @@ function formatDatetime(iso: string): string {
 function formatOccurrenceDatetime(iso: string): string {
   try {
     return new Date(iso).toLocaleString("pt-BR", {
-      timeZone: "UTC",
+      timeZone: APPLICATION_TIMEZONE,
       day: "2-digit",
       month: "2-digit",
       year: "numeric",
@@ -86,7 +100,20 @@ export function buildCepSeriesChartOption(series: CepVariableSeries): EChartsOpt
     tooltip: { trigger: "axis" },
     legend: { data: ["Tag de análise", "Limite inferior", "Limite superior"] },
     grid: { left: 60, right: 24, top: 48, bottom: 72 },
-    xAxis: { type: "time" },
+    xAxis: {
+      type: "time",
+      axisLabel: {
+        formatter: (value: number) =>
+          new Date(value).toLocaleString("pt-BR", {
+            timeZone: APPLICATION_TIMEZONE,
+            day: "2-digit",
+            month: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hourCycle: "h23",
+          }),
+      },
+    },
     yAxis: { type: "value" },
     dataZoom: [
       { type: "inside", xAxisIndex: 0 },

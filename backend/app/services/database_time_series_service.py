@@ -91,18 +91,33 @@ def _dynamic_plot_plan(
     target_points_per_tag: int,
     raw_point_count: int,
     raw_point_limit: int,
+    available_aggregates: tuple[tuple[int, str, str], ...] = _PLOT_AGGREGATES,
 ) -> DynamicPlotPlan:
     """Choose raw data or the closest lossless aggregate below the ideal bucket."""
     ideal_seconds = max(1, int(math.ceil(duration.total_seconds() / target_points_per_tag)))
     if raw_point_count <= raw_point_limit:
         return DynamicPlotPlan(None, None, None, True, raw_point_count)
 
+    if not available_aggregates:
+        return DynamicPlotPlan(None, None, None, True, raw_point_count)
     eligible = [entry for entry in _PLOT_AGGREGATES if entry[0] <= ideal_seconds]
-    source_seconds, view_name, _ = max(eligible or [_PLOT_AGGREGATES[0]], key=lambda entry: entry[0])
+    expected = max(eligible or [_PLOT_AGGREGATES[0]], key=lambda entry: entry[0])
+    if expected in available_aggregates:
+        source_seconds, view_name, _ = expected
+    else:
+        # A canonical level may be absent while its migration is pending. Use
+        # the closest installed level instead of failing or multiplying the
+        # response size by selecting an arbitrarily fine source.
+        source_seconds, view_name, _ = min(
+            available_aggregates,
+            key=lambda entry: abs(math.log(entry[0] / ideal_seconds)),
+        )
     return DynamicPlotPlan(
         view_name=view_name,
         source_bucket_seconds=source_seconds,
-        display_bucket_seconds=max(source_seconds, ideal_seconds),
+        # Source buckets are indivisible. Splitting a 300s bucket across a
+        # 404s display boundary misassigns extrema and loses their timestamps.
+        display_bucket_seconds=source_seconds * max(1, math.ceil(ideal_seconds / source_seconds)),
         use_raw=False,
         raw_point_count=raw_point_count,
     )
@@ -119,6 +134,22 @@ class DatabaseTimeSeriesService:
     def __init__(self, db: Session, pi_service: Optional[object] = None):
         self.db = db
         self.repo = PiTagRepository(db)
+
+    def _available_plot_aggregates(self) -> tuple[tuple[int, str, str], ...]:
+        if self.db.bind is None or self.db.bind.dialect.name != "postgresql":
+            return ()
+        names = tuple(row[0] for row in self.db.execute(text("""
+            SELECT name
+            FROM (VALUES
+              ('pi_recorded_plot_10s'),
+              ('pi_recorded_plot_1m'),
+              ('pi_recorded_plot_5m'),
+              ('pi_recorded_plot_hourly'),
+              ('pi_recorded_plot_daily')
+            ) AS candidates(name)
+            WHERE to_regclass(name) IS NOT NULL
+        """)).fetchall())
+        return tuple(entry for entry in _PLOT_AGGREGATES if entry[1] in names)
 
     async def fetch_time_series(self, request: TimeSeriesRequest, **_kwargs: Any) -> TimeSeries:
         if request.start_time >= request.end_time:
@@ -138,7 +169,16 @@ class DatabaseTimeSeriesService:
             tags.append(tag)
 
         postgres = self.db.bind is not None and self.db.bind.dialect.name == "postgresql"
+        available_plot_aggregates = self._available_plot_aggregates() if postgres else ()
         plot_aggregate = _plot_aggregate_for(request, postgres=postgres)
+        if plot_aggregate and plot_aggregate[0] not in {entry[1] for entry in available_plot_aggregates}:
+            desired_seconds = _interval_seconds(plot_aggregate[1]) or 1
+            replacement = min(
+                available_plot_aggregates,
+                key=lambda entry: abs(math.log(entry[0] / desired_seconds)),
+                default=None,
+            )
+            plot_aggregate = (replacement[1], replacement[2]) if replacement else None
         dynamic_requested = postgres and request.target_points_per_tag is not None
 
         # Plot aggregates are the only visual read path. RECORDED remains the
@@ -207,7 +247,7 @@ class DatabaseTimeSeriesService:
         cache_key: Optional[tuple[Any, ...]] = None
         if dynamic_requested:
             effective_target_points = min(
-                request.target_points_per_tag or settings.pi_query_visual_default_points_per_tag,
+                max(100, request.target_points_per_tag or settings.pi_query_visual_default_points_per_tag),
                 settings.pi_query_visual_max_points_per_tag,
                 max(1, settings.pi_query_visual_max_total_points // len(tags)),
             )
@@ -222,7 +262,8 @@ class DatabaseTimeSeriesService:
             if not bool(_kwargs.get("refresh")):
                 cached = _timescaledb_query_cache.get(cache_key)
                 if cached is not None:
-                    result = cached.model_copy(deep=True)
+                    # LruCache.get already returns an isolated deep copy.
+                    result = cached
                     if result.query_execution is not None:
                         result.query_execution.cache_hit = True
                     return result
@@ -238,6 +279,7 @@ class DatabaseTimeSeriesService:
                 effective_target_points,
                 raw_point_count,
                 settings.timescaledb_dynamic_raw_point_limit,
+                available_plot_aggregates,
             )
             raw_visual = dynamic_plan.use_raw
             if dynamic_plan.view_name is not None and dynamic_plan.display_bucket_seconds is not None:
@@ -248,7 +290,11 @@ class DatabaseTimeSeriesService:
             else:
                 plot_aggregate = None
 
-        effective_interval = plot_aggregate[1] if plot_aggregate else _format_interval(interval_seconds)
+        effective_interval = (
+            "recorded" if raw_visual
+            else plot_aggregate[1] if plot_aggregate
+            else _format_interval(interval_seconds)
+        )
 
         series: list[TimeSeriesSeries] = []
         missing_details: list[dict[str, Any]] = []
@@ -256,7 +302,27 @@ class DatabaseTimeSeriesService:
 
         for tag in tags:
             if raw_visual:
-                points = self._get_qualified_raw_points(tag.id, request.start_time, effective_end)
+                missing = CoverageService.get_missing_intervals(
+                    self.db, tag.id, request.start_time, effective_end,
+                    "RECORDED", None,
+                )
+                if missing:
+                    missing_details.append({
+                        "tag_id": tag.id,
+                        "tag_name": tag.pi_tag_name,
+                        "intervals": [
+                            {"start": start.astimezone(timezone.utc).isoformat(), "end": end.astimezone(timezone.utc).isoformat()}
+                            for start, end in missing
+                        ],
+                    })
+                    continue
+                all_points = self._get_qualified_raw_points(tag.id, request.start_time, effective_end)
+                # Apply visual bucketing when raw points exceed reasonable display limit
+                max_visual_points = 2000
+                if len(all_points) > max_visual_points:
+                    points = self._downsample_for_visual(all_points, max_visual_points)
+                else:
+                    points = all_points
             elif plot_aggregate:
                 points = self._get_from_plot(
                     tag.id,
@@ -287,7 +353,7 @@ class DatabaseTimeSeriesService:
                     })
                     continue
                 points = self._get_from_db(tag.id, covered, requested_mode)
-            if request.max_count and len(points) > request.max_count:
+            if not dynamic_requested and request.max_count and len(points) > request.max_count:
                 points = points[:request.max_count]
             total_returned_points += len(points)
             if total_returned_points > settings.pi_query_visual_max_total_points:
@@ -318,6 +384,7 @@ class DatabaseTimeSeriesService:
         query_execution: dict[str, Any] = {
             "strategy": "timescaledb_continuous_aggregate" if plot_aggregate else "timescaledb_direct",
             "source": "timescaledb",
+            "effective_source_mode": "RECORDED" if plot_aggregate or raw_visual else requested_mode,
             "complete": True,
             "partial": False,
             "effective_interval": effective_interval,
@@ -623,18 +690,14 @@ class DatabaseTimeSeriesService:
                 sample_count,
                 sample_count = 0 AS is_gapfilled
               FROM filled
-            )
-            SELECT
-              display_buckets.*,
-              extrema.min_ts,
-              extrema.max_ts,
-              (SELECT COUNT(*) > 0 FROM seed) AS has_previous_value
-            FROM display_buckets
-            LEFT JOIN LATERAL (
+            ), extrema AS (
               SELECT
+                display_buckets.bucket,
                 min(sample.ts) FILTER (WHERE sample.value_double = display_buckets.min_value) AS min_ts,
                 min(sample.ts) FILTER (WHERE sample.value_double = display_buckets.max_value) AS max_ts
-              FROM pi_samples_timescale AS sample
+              FROM display_buckets
+              JOIN pi_samples_timescale AS sample
+                ON time_bucket(INTERVAL '{interval}', sample.ts) = display_buckets.bucket
               WHERE display_buckets.sample_count > 0
                 AND sample.tag_id = :tag_id
                 AND sample.source_mode = 'RECORDED'
@@ -643,9 +706,17 @@ class DatabaseTimeSeriesService:
                 AND sample.good IS TRUE
                 AND sample.questionable IS FALSE
                 AND sample.substituted IS FALSE
-                AND sample.ts >= GREATEST(display_buckets.bucket, CAST(:start AS timestamptz))
-                AND sample.ts < LEAST(display_buckets.bucket + INTERVAL '{interval}', CAST(:end AS timestamptz))
-            ) AS extrema ON TRUE
+                AND sample.ts >= CAST(:start AS timestamptz)
+                AND sample.ts < CAST(:end AS timestamptz)
+              GROUP BY display_buckets.bucket
+            )
+            SELECT
+              display_buckets.*,
+              extrema.min_ts,
+              extrema.max_ts,
+              (SELECT COUNT(*) > 0 FROM seed) AS has_previous_value
+            FROM display_buckets
+            LEFT JOIN extrema ON extrema.bucket = display_buckets.bucket
             ORDER BY display_buckets.bucket ASC
         """), {"tag_id": tag_id, "start": start, "end": end}).fetchall()
         points: list[TimeSeriesPoint] = []
