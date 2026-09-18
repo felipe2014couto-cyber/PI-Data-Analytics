@@ -305,6 +305,44 @@ class Settings(BaseSettings):
     )
     ingestion_interpolated_10s_window_hours: float = Field(default=12.0, ge=0.25, le=24.0)
     ingestion_interpolated_300s_window_days: int = Field(default=14, ge=1, le=60)
+    ingestion_tag_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        description="Numero maximo de tags ingeridas simultaneamente por ciclo.",
+    )
+    ingestion_tag_budget_minutes: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description="Maximo de minutos pendentes processados por tag por turno.",
+    )
+    ingestion_tag_timeout_seconds: float = Field(
+        default=120.0,
+        ge=5.0,
+        le=1800.0,
+        description="Timeout total de um turno de ingestao por tag (independente do "
+        "timeout HTTP por requisicao). Ao expirar, a tag recebe backoff TAG_TIMEOUT.",
+    )
+    ingestion_tag_request_budget: int = Field(
+        default=8,
+        ge=1,
+        le=256,
+        description="Maximo de chamadas RecordedValues por tag por turno (paginacao incluida)."
+        " O tag volta para a fila no proximo ciclo sem avancar o watermark indevidamente.",
+    )
+    ingestion_no_watermark_minutes: int = Field(
+        default=1,
+        ge=1,
+        le=60,
+        description="Minutos concluidos iniciais para tags sem watermark (politica conservadora).",
+    )
+    ingestion_page_depth_limit: int = Field(
+        default=20,
+        ge=2,
+        le=64,
+        description="Profundidade maxima de subdivisao do intervalo RecordedValues.",
+    )
     backfill_chunk_days: int = Field(
         default=1,
         ge=1,

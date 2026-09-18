@@ -1,4 +1,4 @@
-import { render, act, fireEvent } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useEffect } from "react";
 import { TimeSeriesChart } from "../src/components/TimeSeriesChart";
@@ -155,6 +155,15 @@ function fireRestore() {
   }
 }
 
+function fireZrMouse(type: "mousedown" | "mousemove" | "mouseup", offsetX: number, offsetY: number) {
+  const handlers = registeredEventHandlers[type] ?? [];
+  for (const handler of handlers) {
+    act(() => {
+      handler({ offsetX, offsetY });
+    });
+  }
+}
+
 describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
   let onVisibleWindowChange: any;
   let dispatchAction: any;
@@ -200,7 +209,14 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
         if (!registeredEventHandlers[event]) registeredEventHandlers[event] = [];
         registeredEventHandlers[event].push(handler);
       }),
-      off: vi.fn(),
+      off: vi.fn((event: string, handler?: Function) => {
+        if (!registeredEventHandlers[event]) return;
+        if (handler) {
+          registeredEventHandlers[event] = registeredEventHandlers[event].filter((h) => h !== handler);
+        } else {
+          registeredEventHandlers[event] = [];
+        }
+      }),
       resize: vi.fn(),
       dispose: vi.fn(),
     };
@@ -344,9 +360,9 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     expect(container).toBeTruthy();
 
     // Simula ponteiro com deslocamento horizontal amplo e variação vertical de 25px
-    fireEvent.pointerDown(container!, { pointerId: 1, clientX: 100, clientY: 100 });
-    fireEvent.pointerMove(container!, { pointerId: 1, clientX: 300, clientY: 125 });
-    fireEvent.pointerUp(container!, { pointerId: 1, clientX: 300, clientY: 125 });
+    fireZrMouse("mousedown", 130, 150);
+    fireZrMouse("mousemove", 340, 160);
+    fireZrMouse("mouseup", 340, 160);
 
     fireDataZoom(10, 40);
 
@@ -559,6 +575,231 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     expect(lastOption.yAxis[0].min).toBeUndefined();
     expect(lastOption.yAxis[0].max).toBeUndefined();
     expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  // --- Testes obrigatórios da especificação do Zoom Híbrido Bidimensional (Seção 18) ---
+
+  it("A. seleção bidimensional define domínio Y explícito para cada eixo numérico", () => {
+    mockEChartsInstance.convertFromPixel.mockImplementation((finder: any, input: any) => {
+      if (finder && finder.yAxisIndex !== undefined) {
+        const py = typeof input === "number" ? input : input[1];
+        return py <= 150 ? 1050 : 920;
+      }
+      if (finder && finder.xAxisIndex !== undefined) {
+        const px = typeof input === "number" ? input : input[0];
+        return Math.round(START_TS + ((px - 60) / 700) * DURATION);
+      }
+      return START_TS;
+    });
+
+    const view = renderChart(BROAD_POINTS);
+    const container = view.container.querySelector('[data-testid="echarts-wrapper"]')?.parentElement;
+    expect(container).toBeTruthy();
+
+    // Seleção com altura de 120px (>= 30px threshold)
+    fireZrMouse("mousedown", 130, 100);
+    fireZrMouse("mousemove", 340, 220);
+    fireZrMouse("mouseup", 340, 220);
+
+    fireDataZoom(10, 40);
+
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+    expect(lastOption.yAxis[0].scale).toBe(false);
+    view.unmount();
+  });
+
+  it("B. refinamento assíncrono com chegada de novos pontos mantém exatamente o domínio Y selecionado", () => {
+    mockEChartsInstance.convertFromPixel.mockImplementation((finder: any, input: any) => {
+      if (finder && finder.yAxisIndex !== undefined) {
+        const py = typeof input === "number" ? input : input[1];
+        return py <= 150 ? 1050 : 920;
+      }
+      if (finder && finder.xAxisIndex !== undefined) {
+        const px = typeof input === "number" ? input : input[0];
+        return Math.round(START_TS + ((px - 60) / 700) * DURATION);
+      }
+      return START_TS;
+    });
+
+    const view = renderChart(BROAD_POINTS);
+
+    fireZrMouse("mousedown", 130, 100);
+    fireZrMouse("mousemove", 340, 220);
+    fireZrMouse("mouseup", 340, 220);
+    fireDataZoom(10, 40);
+
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+
+    // Simula chegada de novos dados refinados (pontos estreitos)
+    const refinedPoints: Array<[number, number]> = [
+      [START_TS + 400000, 935],
+      [START_TS + 800000, 960],
+      [START_TS + 1200000, 1005],
+      [START_TS + 1400000, 1040],
+    ];
+    view.rerender(
+      <TimeSeriesChart
+        chart={mockChart(refinedPoints)}
+        equipment="Turbina 1"
+        start={new Date(START_TS + (DURATION * 10) / 100)}
+        end={new Date(START_TS + (DURATION * 40) / 100)}
+        mode={"recorded" as const}
+        onVisibleWindowChange={onVisibleWindowChange}
+      />,
+    );
+
+    // O domínio Y selecionado pelo usuário permanece estritamente fixado
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+    expect(lastOption.yAxis[0].scale).toBe(false);
+    view.unmount();
+  });
+
+  it("C. pequeno jitter vertical (< 30px) trata como zoom puramente temporal e não fixa limites Y artificiais", () => {
+    mockEChartsInstance.convertFromPixel.mockImplementation((finder: any, input: any) => {
+      if (finder && finder.yAxisIndex !== undefined) {
+        const py = typeof input === "number" ? input : input[1];
+        return yPixelToValue(py);
+      }
+      return START_TS;
+    });
+
+    const view = renderChart(BROAD_POINTS);
+
+    // Movimento com 15px de variação vertical (< 30px)
+    fireZrMouse("mousedown", 100, 100);
+    fireZrMouse("mousemove", 300, 115);
+    fireZrMouse("mouseup", 300, 115);
+    fireDataZoom(10, 40);
+
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("D. Ctrl+Z restaura simultaneamente o intervalo X e o domínio Y anterior", () => {
+    let callCount = 0;
+    mockEChartsInstance.convertFromPixel.mockImplementation((finder: any, input: any) => {
+      if (finder && finder.yAxisIndex !== undefined) {
+        const py = typeof input === "number" ? input : input[1];
+        if (callCount <= 2) {
+          // Zoom 1: 920 - 1050
+          return py <= 150 ? 1050 : 920;
+        } else {
+          // Zoom 2: 950 - 1000
+          return py <= 150 ? 1000 : 950;
+        }
+      }
+      return START_TS;
+    });
+
+    const view = renderChart(BROAD_POINTS);
+
+    // Zoom 1: Y = 920..1050
+    callCount = 1;
+    fireZrMouse("mousedown", 100, 100);
+    fireZrMouse("mousemove", 300, 220);
+    fireZrMouse("mouseup", 300, 220);
+    fireDataZoom(10, 50);
+
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+
+    // Zoom 2: Y = 950..1000
+    callCount = 3;
+    fireZrMouse("mousedown", 150, 100);
+    fireZrMouse("mousemove", 250, 220);
+    fireZrMouse("mouseup", 250, 220);
+    fireDataZoom(20, 40);
+
+    expect(lastOption.yAxis[0].min).toBe(950);
+    expect(lastOption.yAxis[0].max).toBe(1000);
+
+    // Primeiro Ctrl+Z: restaura Zoom 1 (X=10..50%, Y=920..1050)
+    pressCtrlZ();
+    expect(dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 10, end: 50 }),
+    );
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+    expect(lastOption.yAxis[0].scale).toBe(false);
+
+    // Segundo Ctrl+Z: restaura viewport inicial (X=0..100%, Y automático)
+    pressCtrlZ();
+    expect(dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+    );
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("E. restauração completa remove domínios Y manuais e volta eixos para autoescala", () => {
+    mockEChartsInstance.convertFromPixel.mockImplementation((finder: any, input: any) => {
+      if (finder && finder.yAxisIndex !== undefined) {
+        const py = typeof input === "number" ? input : input[1];
+        return py <= 150 ? 1050 : 920;
+      }
+      return START_TS;
+    });
+
+    const onRestoreInitialZoom = vi.fn();
+    const view = renderChart(BROAD_POINTS, { onRestoreInitialZoom });
+
+    fireZrMouse("mousedown", 100, 100);
+    fireZrMouse("mousemove", 300, 220);
+    fireZrMouse("mouseup", 300, 220);
+    fireDataZoom(10, 50);
+
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+
+    // Restaurar
+    fireRestore();
+    expect(onRestoreInitialZoom).toHaveBeenCalledTimes(1);
+    expect(lastOption.yAxis[0].min).toBeUndefined();
+    expect(lastOption.yAxis[0].max).toBeUndefined();
+    expect(lastOption.yAxis[0].scale).toBe(true);
+    view.unmount();
+  });
+
+  it("F. eixo categórico de UM nunca recebe min/max numéricos do zoom", () => {
+    mockEChartsInstance.convertFromPixel.mockImplementation((finder: any, input: any) => {
+      if (finder && finder.yAxisIndex !== undefined) {
+        const py = typeof input === "number" ? input : input[1];
+        return py <= 150 ? 1050 : 920;
+      }
+      return START_TS;
+    });
+
+    const umChart = mockChart(BROAD_POINTS);
+    const view = renderChart(BROAD_POINTS, {
+      chart: umChart,
+      umSeries: {
+        categories: ["A", "B", "C"],
+        steps: [[START_TS, "A"], [END_TS, "B"]],
+      },
+    });
+
+    fireZrMouse("mousedown", 100, 100);
+    fireZrMouse("mousemove", 300, 220);
+    fireZrMouse("mouseup", 300, 220);
+    fireDataZoom(10, 50);
+
+    // Eixo numérico 0 recebe o domínio selecionado
+    expect(lastOption.yAxis[0].min).toBe(920);
+    expect(lastOption.yAxis[0].max).toBe(1050);
+    expect(lastOption.yAxis[0].scale).toBe(false);
+
+    // Eixo da UM (índice 1, categórico) NÃO recebe min/max
+    expect(lastOption.yAxis[1].type).toBe("category");
+    expect(lastOption.yAxis[1].min).toBeUndefined();
+    expect(lastOption.yAxis[1].max).toBeUndefined();
     view.unmount();
   });
 });

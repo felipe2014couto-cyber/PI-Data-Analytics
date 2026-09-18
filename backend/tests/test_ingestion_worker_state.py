@@ -22,7 +22,8 @@ def test_live_window_overlaps_a_recent_watermark() -> None:
     start, end = _live_window(now, previous_end, timedelta(minutes=1))
 
     assert start < previous_end
-    assert end == now
+    # minute-aligned semi-open boundary: start of the current minute
+    assert end == datetime(2026, 9, 12, 22, 31, tzinfo=timezone.utc)
 
 
 def test_state_watermark_tracks_complete_window_not_last_event() -> None:

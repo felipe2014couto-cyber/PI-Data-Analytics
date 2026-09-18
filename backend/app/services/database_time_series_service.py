@@ -354,6 +354,8 @@ class DatabaseTimeSeriesService:
                     continue
                 points = self._get_from_db(tag.id, covered, requested_mode)
             if not dynamic_requested and request.max_count and len(points) > request.max_count:
+                # Manual (non-dynamic) mode keeps its documented max_count
+                # contract; the dynamic path never reaches this truncation.
                 points = points[:request.max_count]
             total_returned_points += len(points)
             if total_returned_points > settings.pi_query_visual_max_total_points:
@@ -485,6 +487,59 @@ class DatabaseTimeSeriesService:
             "freshness_lag_seconds": lag_seconds,
             "is_stale": stale,
         }
+
+    def _downsample_for_visual(
+        self,
+        points: list[TimeSeriesPoint],
+        max_points: int,
+    ) -> list[TimeSeriesPoint]:
+        """Bucket reduction preserving real event timestamps.
+
+        Each bucket contributes first, min, max and last events with their
+        original timestamps; duplicates of the same event are collapsed and
+        the result is ordered chronologically (not first->min->max->last).
+        """
+        if max_points <= 0 or len(points) <= max_points:
+            return points
+        # Sort a copy: never depend on implicit DB ordering.
+        ordered = sorted(points, key=lambda p: p.timestamp)
+        start = ordered[0].timestamp
+        duration = (ordered[-1].timestamp - start).total_seconds()
+        buckets = max(1, max_points // 4)
+        if duration <= 0:
+            # Degenerate window: keep chronological first/last and extremes
+            # with real timestamps; the timestamp map deduplicates events.
+            width = 1e-9
+        else:
+            width = max(duration / buckets, 1e-9)
+        selected: dict = {}
+        for point in ordered:
+            index = min(int((point.timestamp - start).total_seconds() / width), buckets - 1)
+            current = selected.get(index)
+            if current is None:
+                selected[index] = {"first": point, "last": point, "min": point, "max": point}
+                continue
+            if point.timestamp < current["first"].timestamp:
+                current["first"] = point
+            if point.timestamp > current["last"].timestamp:
+                current["last"] = point
+            if isinstance(point.value, (int, float)) and not isinstance(point.value, bool) and (
+                not isinstance(current["min"].value, (int, float))
+                or isinstance(current["min"].value, bool)
+                or point.value < current["min"].value
+            ):
+                current["min"] = point
+            if isinstance(point.value, (int, float)) and not isinstance(point.value, bool) and (
+                not isinstance(current["max"].value, (int, float))
+                or isinstance(current["max"].value, bool)
+                or point.value > current["max"].value
+            ):
+                current["max"] = point
+        unique: dict = {}
+        for bucket in selected.values():
+            for point in (bucket["first"], bucket["min"], bucket["max"], bucket["last"]):
+                unique[point.timestamp] = point
+        return [unique[ts] for ts in sorted(unique)]
 
     def _get_from_db(self, tag_id: int, intervals: list[tuple[datetime, datetime]], mode: str) -> list[TimeSeriesPoint]:
         if not intervals:
