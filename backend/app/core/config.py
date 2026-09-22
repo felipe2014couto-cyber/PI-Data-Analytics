@@ -424,6 +424,65 @@ class Settings(BaseSettings):
         le=365,
         description="Tamanho em dias dos blocos de purga assincrona de tags.",
     )
+    db_health_cache_ttl_seconds: int = Field(
+        default=15,
+        ge=1,
+        le=300,
+        description="TTL do cache em memoria para metricas de saude do banco de dados.",
+    )
+    db_health_timeout_seconds: float = Field(
+        default=3.0,
+        ge=0.5,
+        le=30.0,
+        description="Timeout em segundos para execucao de metricas de saude do banco.",
+    )
+    db_health_high_connection_percent: float = Field(
+        default=80.0,
+        ge=10.0,
+        le=99.0,
+        description="Percentual de utilizacao de conexoes para alerta de warning.",
+    )
+    db_health_critical_connection_percent: float = Field(
+        default=90.0,
+        ge=10.0,
+        le=99.0,
+        description="Percentual de utilizacao de conexoes para alerta critico.",
+    )
+    db_health_long_transaction_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=3600.0,
+        description="Duracao em segundos a partir da qual uma transacao de usuario e considerada longa.",
+    )
+    db_health_long_query_seconds: float = Field(
+        default=10.0,
+        ge=0.5,
+        le=600.0,
+        description="Duracao em segundos a partir da qual uma consulta e considerada longa.",
+    )
+    db_health_max_idle_in_transaction: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Quantidade maxima tolerada de conexoes idle in transaction.",
+    )
+    db_health_max_deadlocks: int = Field(
+        default=0,
+        ge=0,
+        description="Quantidade tolerada de deadlocks acumulados antes de warning.",
+    )
+    db_health_freshness_tolerance_seconds: float = Field(
+        default=300.0,
+        ge=30.0,
+        le=86400.0,
+        description="Tolerancia em segundos para frescor dos dados RECORDED.",
+    )
+    db_health_freshness_critical_seconds: float = Field(
+        default=1800.0,
+        ge=60.0,
+        le=604800.0,
+        description="Limite em segundos para considerar atraso critico de dados.",
+    )
 
     def get_cors_origins(self) -> list[str]:
         if self.cors_origins:

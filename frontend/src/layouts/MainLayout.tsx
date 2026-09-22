@@ -64,6 +64,7 @@ function Sidebar({ open, onClose, admin }: { open: boolean; onClose: () => void;
           {admin ? <>
             <NavLink to="/admin/usuarios" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-people" /><span>Usuários</span></NavLink>
             <NavLink to="/admin/recargas-historicas" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-cloud-download" /><span>Recargas históricas</span></NavLink>
+            <NavLink to="/admin/saude-banco" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-database-check" /><span>Saúde do Banco</span></NavLink>
           </> : null}
         </nav>
         <div className="app-sidebar__footer">

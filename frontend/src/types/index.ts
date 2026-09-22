@@ -935,3 +935,129 @@ export type CepQueryResponse =
   | CepQueryRunning
   | CepQueryCancelled
   | CepAnalysisResult;
+
+export type DatabaseHealthStatus = "healthy" | "warning" | "critical" | "unavailable";
+
+export interface DatabaseConnectionInfo {
+  reachable: boolean;
+  latency_ms: number | null;
+  name: string | null;
+  postgresql_version: string | null;
+  timescaledb_version: string | null;
+  uptime_seconds: number | null;
+  alembic_revision: string | null;
+}
+
+export interface StorageRelationInfo {
+  schema_name: string;
+  relation_name: string;
+  relation_type: string;
+  data_bytes: number;
+  index_bytes: number;
+  total_bytes: number;
+  data_human: string;
+  index_human: string;
+  total_human: string;
+}
+
+export interface StorageInfo {
+  database_bytes: number;
+  database_human: string;
+  tables_bytes: number;
+  tables_human: string;
+  indexes_bytes: number;
+  indexes_human: string;
+  toast_bytes: number;
+  toast_human: string;
+  pi_samples_bytes: number | null;
+  pi_samples_human: string | null;
+  pi_backfill_bytes: number | null;
+  pi_backfill_human: string | null;
+  pi_ingestion_bytes: number | null;
+  pi_ingestion_human: string | null;
+  filesystem_available: boolean;
+  filesystem_reason: string | null;
+  largest_relations: StorageRelationInfo[];
+}
+
+export interface ConnectionsInfo {
+  current: number;
+  maximum: number;
+  usage_percent: number;
+  active: number;
+  idle: number;
+  idle_in_transaction: number;
+  waiting: number;
+  worker_leader_connections: number;
+  long_transactions_count: number;
+  oldest_transaction_seconds: number | null;
+  long_queries_count: number;
+  oldest_query_seconds: number | null;
+  commits: number | null;
+  rollbacks: number | null;
+  deadlocks: number | null;
+  temp_files: number | null;
+  temp_bytes: number | null;
+  temp_human: string | null;
+  stats_reset: string | null;
+}
+
+export interface LocksInfo {
+  total: number;
+  granted: number;
+  waiting: number;
+  advisory_locks: number;
+  blocked_sessions: number;
+  oldest_wait_seconds: number | null;
+}
+
+export interface TimescaleInfo {
+  available: boolean;
+  version: string | null;
+  hypertables: number;
+  chunks: number;
+  continuous_aggregates: number;
+  total_jobs: number;
+  failed_jobs: number;
+  last_run_status: string | null;
+  last_successful_finish: string | null;
+  compression_enabled: boolean | null;
+  retention_configured: boolean | null;
+}
+
+export interface FreshnessInfo {
+  latest_sample_at: string | null;
+  latest_recorded_sample_at: string | null;
+  lag_seconds: number | null;
+  oldest_watermark: string | null;
+  newest_watermark: string | null;
+  ingestion_states: number;
+  tags_in_backoff: number;
+  tags_with_failures: number;
+  backfill_jobs_by_status: Record<string, number>;
+  expired_backfill_leases: number;
+  consecutive_backfill_failures: number;
+  last_success_at: string | null;
+}
+
+export interface HealthCheckItem {
+  name: string;
+  status: DatabaseHealthStatus;
+  message: string;
+}
+
+export interface DatabaseHealthResponse {
+  status: DatabaseHealthStatus;
+  checked_at: string;
+  duration_ms: number;
+  cached: boolean;
+  database: DatabaseConnectionInfo;
+  storage: StorageInfo;
+  connections: ConnectionsInfo;
+  locks: LocksInfo;
+  timescale: TimescaleInfo;
+  freshness: FreshnessInfo;
+  checks: HealthCheckItem[];
+  unavailable_metrics: string[];
+}
+

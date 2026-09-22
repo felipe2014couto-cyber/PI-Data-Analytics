@@ -5,6 +5,7 @@ from app.api.admin_users import router as admin_users_router
 from app.api.auth import router as auth_router
 from app.api.cep import router as cep_router
 from app.api.cep_dependencies import router as cep_dependencies_router
+from app.api.database_health import router as database_health_router
 from app.api.deps import get_current_user, validate_csrf
 from app.api.equipments import router as equipments_router
 from app.api.health import router as health_router
@@ -19,6 +20,7 @@ from app.api.visual_configurations import router as visual_configurations_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
+api_router.include_router(database_health_router)
 api_router.include_router(auth_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(historical_reload_router)

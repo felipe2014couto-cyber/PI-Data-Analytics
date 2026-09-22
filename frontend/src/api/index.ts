@@ -38,6 +38,7 @@ import type {
   HistoricalReloadJob,
   HistoricalReloadRequest,
   HistoricalReloadSummary,
+  DatabaseHealthResponse,
 } from "../types";
 
 export const authApi = {
@@ -306,3 +307,10 @@ export const cepApi = {
     return httpClient.get<CepVariableSeries>(`/cep/analyze/${queryId}/variables/${variableId}/series`);
   },
 };
+
+export const databaseHealthApi = {
+  getHealth(refresh: boolean = false) {
+    return httpClient.get<DatabaseHealthResponse>(`/database/health${refresh ? "?refresh=true" : ""}`);
+  },
+};
+
