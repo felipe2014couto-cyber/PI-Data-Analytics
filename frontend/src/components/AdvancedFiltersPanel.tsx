@@ -1,13 +1,16 @@
 import { useState } from "react";
-import { Button, Col, Form, Row } from "react-bootstrap";
+import { Button, Col, Form, OverlayTrigger, Popover, Row } from "react-bootstrap";
 import type {
   DataFilterConfiguration,
   DataFilterRule,
+  DynamicAnalysisFilter,
   FilterApplicationSummary,
   FilterRuleResult,
   NumericFilterOperator,
+  SectionAnalysisTag,
 } from "../types";
 import { STEEL_MODELS } from "../constants/steelModels";
+import { validateStringFilter } from "../utils/stringFilter";
 
 interface AdvancedFiltersPanelProps {
   configuration: DataFilterConfiguration;
@@ -25,6 +28,9 @@ interface AdvancedFiltersPanelProps {
   hasData: boolean;
   initialExpanded?: boolean;
   onChange: (configuration: DataFilterConfiguration) => void;
+  analysisTags?: SectionAnalysisTag[];
+  dynamicFilters?: Record<number, DynamicAnalysisFilter>;
+  onDynamicFilterChange?: (filters: Record<number, DynamicAnalysisFilter>) => void;
 }
 
 type FilterControl = "text" | "number" | "select";
@@ -93,6 +99,8 @@ const FIELD_ALIASES: Record<string, string[]> = {
   lengthPercentMin: ["comprimento mínimo %", "comprimento minimo %"],
   lengthPercentMax: ["comprimento máximo %", "comprimento maximo %"],
 };
+
+const FIXED_VARIABLE_TYPE_CODES = new Set(["LARGURA", "ESPESSURA", "UM"]);
 
 export const RETIRED_NAMED_FILTER_FIELDS: readonly string[] = [
   "umSequenceCode",
@@ -208,11 +216,50 @@ export function AdvancedFiltersPanel({
   hasData,
   initialExpanded = true,
   onChange,
+  analysisTags = [],
+  dynamicFilters = {},
+  onDynamicFilterChange,
 }: AdvancedFiltersPanelProps) {
   const [expanded, setExpanded] = useState(initialExpanded);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [applied, setApplied] = useState(false);
   const [unmappedFields, setUnmappedFields] = useState<string[]>([]);
+  const [stringValidationErrors, setStringValidationErrors] = useState<Record<number, string | undefined>>({});
+
+  const nonFixedAnalysisTags = analysisTags.filter(
+    (t) => !FIXED_VARIABLE_TYPE_CODES.has((t.variable_type_code || "").toUpperCase()),
+  );
+
+  const handleRealMinChange = (variableTypeId: number, rawVal: string) => {
+    const current = dynamicFilters[variableTypeId] ?? { variable_type_id: variableTypeId };
+    const min = rawVal.trim() !== "" ? parseFloat(rawVal) : null;
+    const next: DynamicAnalysisFilter = { ...current, min: Number.isNaN(min) ? null : min };
+    onDynamicFilterChange?.({ ...dynamicFilters, [variableTypeId]: next });
+  };
+
+  const handleRealMaxChange = (variableTypeId: number, rawVal: string) => {
+    const current = dynamicFilters[variableTypeId] ?? { variable_type_id: variableTypeId };
+    const max = rawVal.trim() !== "" ? parseFloat(rawVal) : null;
+    const next: DynamicAnalysisFilter = { ...current, max: Number.isNaN(max) ? null : max };
+    onDynamicFilterChange?.({ ...dynamicFilters, [variableTypeId]: next });
+  };
+
+  const handleDigitalChange = (variableTypeId: number, val: "ALL" | "ON" | "OFF") => {
+    const current = dynamicFilters[variableTypeId] ?? { variable_type_id: variableTypeId };
+    const next: DynamicAnalysisFilter = { ...current, value: val };
+    onDynamicFilterChange?.({ ...dynamicFilters, [variableTypeId]: next });
+  };
+
+  const handleStringChange = (variableTypeId: number, rawVal: string) => {
+    const validation = validateStringFilter(rawVal);
+    setStringValidationErrors((prev) => ({
+      ...prev,
+      [variableTypeId]: validation.isValid ? undefined : validation.error,
+    }));
+    const current = dynamicFilters[variableTypeId] ?? { variable_type_id: variableTypeId };
+    const next: DynamicAnalysisFilter = { ...current, expression: rawVal };
+    onDynamicFilterChange?.({ ...dynamicFilters, [variableTypeId]: next });
+  };
 
   const applyDraft = (values: Record<string, string>, markApplied: boolean) => {
     const rules: DataFilterRule[] = [];
@@ -264,10 +311,20 @@ export function AdvancedFiltersPanel({
     setDraft({});
     setUnmappedFields([]);
     setApplied(false);
+    setStringValidationErrors({});
     onChange({ ...configuration, rules: [] });
+    onDynamicFilterChange?.({});
   };
 
   const activeDraftCount = Object.values(draft).filter((value) => value.trim()).length;
+  const activeDynamicCount = Object.values(dynamicFilters).filter((f) => {
+    if (f.min !== null && f.min !== undefined) return true;
+    if (f.max !== null && f.max !== undefined) return true;
+    if (f.expression && f.expression.trim()) return true;
+    if (f.value === "ON" || f.value === "OFF") return true;
+    return false;
+  }).length;
+  const totalActiveCount = activeDraftCount + activeDynamicCount;
 
   return (
     <div data-testid="advanced-filters-panel" className="named-filters-panel">
@@ -343,6 +400,125 @@ export function AdvancedFiltersPanel({
             </section>
           ))}
 
+          {nonFixedAnalysisTags.length > 0 && (
+            <section className="named-filter-section" data-testid="named-filter-group-section-variables">
+              <h6 className="named-filter-section-title">Variáveis da Seção</h6>
+              <Row className="g-2">
+                {nonFixedAnalysisTags.map((tag) => {
+                  const filterVal = dynamicFilters[tag.variable_type_id];
+                  return (
+                    <Col key={tag.id} xs={12} md={6}>
+                      <Form.Group controlId={`dynamic-filter-${tag.variable_type_id}`}>
+                        <div className="d-flex align-items-center justify-content-between mb-1">
+                          <Form.Label className="mb-0 small fw-semibold">
+                            {tag.variable_type_name}{" "}
+                            <span className="text-muted fw-normal">({tag.pi_tag_name})</span>
+                          </Form.Label>
+                          {tag.filter_data_type === "STRING" && (
+                            <OverlayTrigger
+                              trigger={["hover", "focus"]}
+                              placement="left"
+                              overlay={
+                                <Popover id={`popover-info-${tag.variable_type_id}`}>
+                                  <Popover.Header as="h3">Sintaxe de Filtro</Popover.Header>
+                                  <Popover.Body className="small">
+                                    <div><strong>Exato:</strong> <code>P99</code></div>
+                                    <div><strong>Múltiplos:</strong> <code>P99; P100; P101</code></div>
+                                    <div><strong>Curingas:</strong> <code>P*</code>, <code>*99</code>, <code>*99*</code></div>
+                                    <div><strong>Intervalo:</strong> <code>P1:P100</code> ou <code>ABC001:ABC050</code></div>
+                                  </Popover.Body>
+                                </Popover>
+                              }
+                            >
+                              <span
+                                role="button"
+                                tabIndex={0}
+                                className="text-info cursor-pointer ms-1"
+                                style={{ fontSize: "0.85rem" }}
+                                title="Ajuda sobre expressões de texto"
+                                data-testid={`info-popover-${tag.variable_type_id}`}
+                              >
+                                <i className="bi bi-info-circle" />
+                              </span>
+                            </OverlayTrigger>
+                          )}
+                        </div>
+
+                        {tag.filter_data_type === "REAL" && (
+                          <Row className="g-1">
+                            <Col xs={6}>
+                              <Form.Control
+                                size="sm"
+                                type="number"
+                                step="any"
+                                placeholder="Mínimo"
+                                disabled={!enabled}
+                                value={filterVal?.min ?? ""}
+                                onChange={(e) => handleRealMinChange(tag.variable_type_id, e.target.value)}
+                                data-testid={`dynamic-filter-min-${tag.variable_type_id}`}
+                              />
+                            </Col>
+                            <Col xs={6}>
+                              <Form.Control
+                                size="sm"
+                                type="number"
+                                step="any"
+                                placeholder="Máximo"
+                                disabled={!enabled}
+                                value={filterVal?.max ?? ""}
+                                onChange={(e) => handleRealMaxChange(tag.variable_type_id, e.target.value)}
+                                data-testid={`dynamic-filter-max-${tag.variable_type_id}`}
+                              />
+                            </Col>
+                          </Row>
+                        )}
+
+                        {tag.filter_data_type === "DIGITAL" && (
+                          <Form.Select
+                            size="sm"
+                            disabled={!enabled}
+                            value={filterVal?.value ?? "ALL"}
+                            onChange={(e) =>
+                              handleDigitalChange(
+                                tag.variable_type_id,
+                                e.target.value as "ALL" | "ON" | "OFF",
+                              )
+                            }
+                            data-testid={`dynamic-filter-digital-${tag.variable_type_id}`}
+                          >
+                            <option value="ALL">Todos</option>
+                            <option value="ON">Ligado (On)</option>
+                            <option value="OFF">Desligado (Off)</option>
+                          </Form.Select>
+                        )}
+
+                        {tag.filter_data_type === "STRING" && (
+                          <>
+                            <Form.Control
+                              size="sm"
+                              type="text"
+                              placeholder="Digite valor ou expressão..."
+                              disabled={!enabled}
+                              value={filterVal?.expression ?? ""}
+                              onChange={(e) => handleStringChange(tag.variable_type_id, e.target.value)}
+                              isInvalid={Boolean(stringValidationErrors[tag.variable_type_id])}
+                              data-testid={`dynamic-filter-string-${tag.variable_type_id}`}
+                            />
+                            {stringValidationErrors[tag.variable_type_id] && (
+                              <Form.Control.Feedback type="invalid">
+                                {stringValidationErrors[tag.variable_type_id]}
+                              </Form.Control.Feedback>
+                            )}
+                          </>
+                        )}
+                      </Form.Group>
+                    </Col>
+                  );
+                })}
+              </Row>
+            </section>
+          )}
+
           {unmappedFields.length > 0 ? (
             <div className="alert alert-warning small py-2 mt-3 mb-0" data-testid="named-filters-unmapped">
               Os campos abaixo foram guardados, mas ainda não têm uma tag PI correspondente entre as séries selecionadas: {unmappedFields.join(", ")}.
@@ -356,7 +532,7 @@ export function AdvancedFiltersPanel({
             <Button variant="outline-secondary" size="sm" onClick={clearFilters} disabled={!enabled} data-testid="filter-reset">
               Limpar filtros
             </Button>
-            {activeDraftCount > 0 ? <span className="small text-muted">{activeDraftCount} parâmetro(s) preenchido(s)</span> : null}
+            {totalActiveCount > 0 ? <span className="small text-muted">{totalActiveCount} parâmetro(s) preenchido(s)</span> : null}
             {applied ? <span className="small text-success">Filtros aplicados</span> : null}
           </div>
 

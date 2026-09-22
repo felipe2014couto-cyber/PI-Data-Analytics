@@ -3,10 +3,9 @@ import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
-import { classificationTagsApi, equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
+import { equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
 import { ApiError } from "../api/http";
 import type {
-  ClassificationTag,
   DataFilterConfiguration,
   Equipment,
   AnalysisModel,
@@ -21,6 +20,7 @@ import type {
   SeriesAssignment,
   SeriesAxis,
   MetricConfiguration,
+  DynamicAnalysisFilter,
   VariableType,
   VisualizationType,
   VisualRulesState,
@@ -95,9 +95,6 @@ const NORM_LIMIT_CACHE_LIMIT = 50;
 interface FiltersState {
   analysisModel: AnalysisModel;
   equipmentId: number | null;
-  processType: string;
-  groupCode: string;
-  classificationTagId: number | null;
   sectionId: number | null;
   variableTypeId: number | null;
   timePeriod: TimePeriod;
@@ -120,9 +117,6 @@ const INITIAL_FILTER_CONFIG: DataFilterConfiguration = {
 const INITIAL_FILTERS: FiltersState = {
   analysisModel: "unit",
   equipmentId: null,
-  processType: "",
-  groupCode: "",
-  classificationTagId: null,
   sectionId: null,
   variableTypeId: null,
   timePeriod: { kind: "preset", preset: "PT1H" },
@@ -298,6 +292,7 @@ export function DataVisualizationPage() {
   const [query, setQuery] = useState<QueryState>(INITIAL_QUERY);
   const [zoomQuery, setZoomQuery] = useState<ZoomQueryState>(INITIAL_ZOOM_QUERY);
   const [zoomedRange, setZoomedRange] = useState<{ start: Date; end: Date } | null>(null);
+  const [dynamicFilters, setDynamicFilters] = useState<Record<number, DynamicAnalysisFilter>>({});
   const [filterValidationError, setFilterValidationError] = useState<string | null>(null);
   const [comparison, setComparison] = useState<ComparisonState>(INITIAL_COMPARISON);
   const [visualRules, setVisualRules] = useState<VisualRulesState>(INITIAL_VISUAL_RULES);
@@ -316,7 +311,6 @@ export function DataVisualizationPage() {
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
-  const [classificationTags, setClassificationTags] = useState<ClassificationTag[]>([]);
   const [tags, setTags] = useState<PiTag[]>([]);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookupsLoaded, setLookupsLoaded] = useState(false);
@@ -342,17 +336,15 @@ export function DataVisualizationPage() {
 
   const loadLookups = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [eq, sec, vt, cls] = await Promise.all([
+      const [eq, sec, vt] = await Promise.all([
         equipmentsApi.list({ page: 1, page_size: 200 }),
         sectionsApi.list({ page: 1, page_size: 200 }),
         variableTypesApi.list({ page: 1, page_size: 200 }),
-        classificationTagsApi.list(),
       ]);
       if (signal?.aborted) return;
       setEquipments(eq.items ?? []);
       setSections(sec.items ?? []);
       setVariableTypes(vt.items ?? []);
-      setClassificationTags(Array.isArray(cls) ? cls : []);
       // Buscar tags via endpoint dedicado com paginacao ate o limite da POC
       const tagList: PiTag[] = [];
       let page = 1;
@@ -401,22 +393,6 @@ export function DataVisualizationPage() {
   }, [loadLookups, loadPiHealth]);
 
   const equipmentMap = useMemo(() => new Map(equipments.map((e) => [e.id, e])), [equipments]);
-  const sectionsMatchingAttributes = useMemo(() => {
-    return sections.filter((section) => {
-      if (filters.processType && section.process_type !== filters.processType) return false;
-      if (filters.groupCode && section.group_code !== filters.groupCode) return false;
-      if (filters.classificationTagId !== null && !section.classification_tag_ids.includes(filters.classificationTagId)) return false;
-      return true;
-    });
-  }, [sections, filters.processType, filters.groupCode, filters.classificationTagId]);
-  const matchingSectionIds = useMemo(
-    () => new Set(sectionsMatchingAttributes.map((s) => s.id)),
-    [sectionsMatchingAttributes],
-  );
-  const classificationTagOptions = useMemo(
-    () => classificationTags.map((tag) => ({ id: tag.id, name: tag.name })),
-    [classificationTags],
-  );
 
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const variableTypeMap = useMemo(() => new Map(variableTypes.map((v) => [v.id, v])), [variableTypes]);
@@ -425,7 +401,7 @@ export function DataVisualizationPage() {
   // consulta para que os filtros de largura e espessura possam mascarar
   // as demais séries. A UM é exibida no gráfico (não é ocultada).
   const analysisTagIds = useMemo(() => {
-    const candidateSections = sectionsMatchingAttributes.filter((section) => {
+    const candidateSections = sections.filter((section) => {
       if (filters.sectionId) return section.id === filters.sectionId;
       return filters.equipmentId !== null && section.equipment_id === filters.equipmentId;
     });
@@ -482,13 +458,11 @@ export function DataVisualizationPage() {
   }, [tags, equipmentMap, sectionMap, variableTypeMap]);
 
   const filteredTagOptions = useMemo(() => {
-    const attributeFiltersActive = Boolean(filters.processType || filters.groupCode || filters.classificationTagId !== null);
     return tagOptions.filter((option) => {
       if (filters.equipmentId) {
         const equipment = equipmentMap.get(filters.equipmentId);
         if (!equipment || option.equipmentCode !== equipment.code) return false;
       }
-      if (attributeFiltersActive && option.sectionId !== null && !matchingSectionIds.has(option.sectionId)) return false;
       if (filters.sectionId) {
         const section = sectionMap.get(filters.sectionId);
         if (!section || (option.sectionId !== null && option.sectionId !== filters.sectionId)) return false;
@@ -501,14 +475,29 @@ export function DataVisualizationPage() {
     });
   }, [tagOptions, filters, equipmentMap, sectionMap, variableTypeMap]);
 
-  // Clear the selected section when it no longer matches the attribute filters.
+  // Reset dynamic filters when section changes
   useEffect(() => {
-    setFilters((prev) =>
-      prev.sectionId !== null && !matchingSectionIds.has(prev.sectionId)
-        ? { ...prev, sectionId: null }
-        : prev,
-    );
-  }, [matchingSectionIds]);
+    setDynamicFilters({});
+  }, [filters.sectionId]);
+
+  const activeDynamicFilters = useMemo<DynamicAnalysisFilter[]>(() => {
+    if (!filters.filtersEnabled || !filters.sectionId) return [];
+    return Object.values(dynamicFilters).filter((f) => {
+      if (f.min !== null && f.min !== undefined) return true;
+      if (f.max !== null && f.max !== undefined) return true;
+      if (f.expression && f.expression.trim()) return true;
+      if (f.value === "ON" || f.value === "OFF") return true;
+      return false;
+    });
+  }, [filters.filtersEnabled, filters.sectionId, dynamicFilters]);
+
+  const currentSection = useMemo(() => {
+    return filters.sectionId ? sectionMap.get(filters.sectionId) : undefined;
+  }, [filters.sectionId, sectionMap]);
+
+  const currentSectionAnalysisTags = useMemo(() => {
+    return currentSection?.analysis_tags ?? [];
+  }, [currentSection]);
 
   // Whenever equipment or section changes, prune selectedTagIds that no longer match.
   useEffect(() => {
@@ -525,8 +514,8 @@ export function DataVisualizationPage() {
     [equipments],
   );
   const sectionOptions = useMemo(
-    () => sectionsMatchingAttributes.map((s) => ({ id: s.id, code: s.code, name: s.name, equipmentId: s.equipment_id })),
-    [sectionsMatchingAttributes],
+    () => sections.map((s) => ({ id: s.id, code: s.code, name: s.name, equipmentId: s.equipment_id })),
+    [sections],
   );
   const variableTypeOptions = useMemo(
     () => variableTypes.map((v) => ({ id: v.id, code: v.code, name: v.name })),
@@ -848,17 +837,7 @@ export function DataVisualizationPage() {
     setFilters((prev) => ({ ...prev, equipmentId: id, sectionId: null }));
   };
 
-  const handleProcessTypeChange = (value: string) => {
-    setFilters((prev) => ({ ...prev, processType: value }));
-  };
 
-  const handleGroupCodeChange = (value: string) => {
-    setFilters((prev) => ({ ...prev, groupCode: value }));
-  };
-
-  const handleClassificationTagChange = (value: number | null) => {
-    setFilters((prev) => ({ ...prev, classificationTagId: value }));
-  };
 
   const handleSectionChange = (id: number | null) => {
     setFilters((prev) => ({ ...prev, sectionId: id }));
@@ -1064,6 +1043,8 @@ export function DataVisualizationPage() {
           target_points_per_tag: dynamicPointsPerTag,
           relative_period: zoomBasePeriod ? false : filters.timePeriod.kind !== "absolute",
           query_id: qid,
+          section_id: filters.sectionId ?? undefined,
+          analysis_filters: activeDynamicFilters.length > 0 ? activeDynamicFilters : undefined,
         },
         signal,
       );
@@ -1933,13 +1914,7 @@ export function DataVisualizationPage() {
                 tagOptions={filteredTagOptions}
                 selectedEquipmentId={filters.equipmentId}
                 onEquipmentChange={handleEquipmentChange}
-                selectedProcessType={filters.processType}
-                onProcessTypeChange={handleProcessTypeChange}
-                selectedGroupCode={filters.groupCode}
-                onGroupCodeChange={handleGroupCodeChange}
-                selectedClassificationTagId={filters.classificationTagId}
-                onClassificationTagChange={handleClassificationTagChange}
-                classificationTagOptions={classificationTagOptions}
+
                 selectedSectionId={filters.sectionId}
                 onSectionChange={handleSectionChange}
                 selectedVariableTypeId={filters.variableTypeId}
@@ -2029,6 +2004,9 @@ export function DataVisualizationPage() {
                     ruleResults={filterResult?.ruleResults ?? []}
                     hasData={query.timeSeries !== null}
                     onChange={handleFilterConfigurationChange}
+                    analysisTags={currentSectionAnalysisTags}
+                    dynamicFilters={dynamicFilters}
+                    onDynamicFilterChange={setDynamicFilters}
                   />
                 }
                 comparisonConfiguration={

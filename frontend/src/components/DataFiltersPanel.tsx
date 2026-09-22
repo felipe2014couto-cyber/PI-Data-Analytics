@@ -32,15 +32,6 @@ interface DataFiltersPanelProps {
   selectedEquipmentId: number | null;
   onEquipmentChange: (id: number | null) => void;
 
-  selectedProcessType: string;
-  onProcessTypeChange: (value: string) => void;
-
-  selectedGroupCode: string;
-  onGroupCodeChange: (value: string) => void;
-
-  selectedClassificationTagId: number | null;
-  onClassificationTagChange: (value: number | null) => void;
-  classificationTagOptions: Array<{ id: number; name: string }>;
 
   selectedSectionId: number | null;
   onSectionChange: (id: number | null) => void;
@@ -104,13 +95,6 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
     tagOptions,
     selectedEquipmentId,
     onEquipmentChange,
-    selectedProcessType,
-    onProcessTypeChange,
-    selectedGroupCode,
-    onGroupCodeChange,
-    selectedClassificationTagId,
-    onClassificationTagChange,
-    classificationTagOptions,
     selectedSectionId,
     onSectionChange,
     selectedVariableTypeId,
@@ -319,47 +303,6 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
         </Form.Select>
       </Form.Group>
 
-      <Form.Group controlId="process-type-filter">
-        <Form.Label>Processo</Form.Label>
-        <Form.Select
-          value={selectedProcessType}
-          onChange={(event) => onProcessTypeChange(event.target.value)}
-          data-testid="process-type-filter"
-        >
-          <option value="">Todos</option>
-          <option value="COM_FORNO">Com forno</option>
-          <option value="SEM_FORNO">Sem forno</option>
-        </Form.Select>
-      </Form.Group>
-
-      <Form.Group controlId="group-code-filter">
-        <Form.Label>Grupo</Form.Label>
-        <Form.Select
-          value={selectedGroupCode}
-          onChange={(event) => onGroupCodeChange(event.target.value)}
-          data-testid="group-code-filter"
-        >
-          <option value="">Todos</option>
-          <option value="BQ">BQ</option>
-          <option value="BF">BF</option>
-        </Form.Select>
-      </Form.Group>
-
-      <Form.Group controlId="classification-tag-filter">
-        <Form.Label>Tag de classificacao</Form.Label>
-        <Form.Select
-          value={selectedClassificationTagId === null ? "" : String(selectedClassificationTagId)}
-          onChange={(event) =>
-            onClassificationTagChange(event.target.value ? Number(event.target.value) : null)
-          }
-          data-testid="classification-tag-filter"
-        >
-          <option value="">Todas</option>
-          {classificationTagOptions.map((tag) => (
-            <option key={tag.id} value={tag.id}>{tag.name}</option>
-          ))}
-        </Form.Select>
-      </Form.Group>
 
       <Form.Group controlId="section-select">
         <Form.Label>Secao</Form.Label>

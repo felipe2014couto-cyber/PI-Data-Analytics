@@ -34,6 +34,7 @@ export const sectionFixture: Section = {
   width_tag_id: null,
   um_tag_id: null,
   thickness_tag_id: null,
+  analysis_tags: [],
   created_at: "2026-01-01T00:00:00",
   updated_at: "2026-01-01T00:00:00",
 };
@@ -44,6 +45,7 @@ export const variableTypeFixture: VariableType = {
   name: "Temperatura",
   description: null,
   default_unit: "C",
+  filter_data_type: "REAL",
   active: true,
   created_at: "2026-01-01T00:00:00",
   updated_at: "2026-01-01T00:00:00",

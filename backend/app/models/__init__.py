@@ -1,8 +1,9 @@
 """SQLAlchemy ORM models."""
 from app.models.equipment import Equipment
 from app.models.section import Section
+from app.models.section_analysis_tag import SectionAnalysisTag
 from app.models.classification_tag import ClassificationTag, SectionClassificationTag
-from app.models.variable_type import VariableType
+from app.models.variable_type import VariableType, VariableFilterDataType
 from app.models.pi_tag import PiTag, PiTagDataType, PiTagValidationStatus, PiTagKind
 from app.models.user import User, UserRole
 from app.models.visual_configuration import VisualConfiguration, VisualConfigurationVersion
@@ -20,9 +21,11 @@ from app.models.postgres import (
 __all__ = [
     "Equipment",
     "Section",
+    "SectionAnalysisTag",
     "ClassificationTag",
     "SectionClassificationTag",
     "VariableType",
+    "VariableFilterDataType",
     "PiTag",
     "PiTagDataType",
     "PiTagValidationStatus",

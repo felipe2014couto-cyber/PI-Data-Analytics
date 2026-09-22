@@ -5,7 +5,7 @@ PI Web API. Real validation/resolution will be implemented in a later phase.
 """
 import enum
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -121,6 +121,12 @@ class PiTag(Base, TimestampMixin):
         "VariableType",
         back_populates="pi_tags",
         lazy="joined",
+    )
+    section_analysis_tags: Mapped[List["SectionAnalysisTag"]] = relationship(  # noqa: F821
+        "SectionAnalysisTag",
+        back_populates="pi_tag",
+        cascade="save-update, merge",
+        passive_deletes=True,
     )
 
     __table_args__ = (

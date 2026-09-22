@@ -1,4 +1,10 @@
-"""Run the durable PI workers as separate processes or one supervised group."""
+"""Run the durable PI workers as separate processes or one supervised group.
+
+This script is preserved for administrative and diagnostic use. When the
+backend is running with integrated workers (the default), running this
+script simultaneously is safe because the advisory lock mechanism prevents
+duplicate execution.
+"""
 from __future__ import annotations
 
 import argparse
@@ -32,7 +38,13 @@ async def main(
             tasks.append(run_backfill_loop(**backfill_options))
         if worker in {"all", "deletion"}:
             tasks.append(run_deletion_loop(once=once))
-        await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                import logging
+                logging.getLogger("workers.run").error(
+                    "worker_task_failed index=%d error=%s", i, str(result)[:500],
+                )
     finally:
         await shutdown_pi_provider()
 

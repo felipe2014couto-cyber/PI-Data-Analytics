@@ -20,6 +20,7 @@ import type {
   TimeSeriesComparison,
   TimeSeriesComparisonRequest,
   TimeSeriesMode,
+  DynamicAnalysisFilter,
   VariableType,
   VariableTypeCreate,
   VariableTypeUpdate,
@@ -235,6 +236,8 @@ export const timeSeriesApi = {
       target_points_per_tag?: number;
       relative_period?: boolean;
       query_id?: string;
+      section_id?: number;
+      analysis_filters?: DynamicAnalysisFilter[];
     },
     signal?: AbortSignal,
   ) {
@@ -249,6 +252,11 @@ export const timeSeriesApi = {
       target_points_per_tag: params.target_points_per_tag,
       relative_period: params.relative_period,
       query_id: params.query_id,
+      section_id: params.section_id,
+      analysis_filters:
+        params.analysis_filters && params.analysis_filters.length > 0
+          ? JSON.stringify(params.analysis_filters)
+          : undefined,
     };
     return httpClient.get<TimeSeries>("/time-series", query, signal);
   },

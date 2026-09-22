@@ -13,6 +13,8 @@ class HistoricalReloadRequest(BaseModel):
     mode: ReloadMode = "recorded"
     interval: str | None = Field(default=None, pattern=r"^\d+[smhd]$", max_length=8)
     tag_id: int | None = Field(default=None, gt=0)
+    section_id: int | None = Field(default=None, gt=0)
+    equipment_id: int | None = Field(default=None, gt=0)
     variable_id: int | None = Field(default=None, gt=0)
     all_active: bool = False
 
@@ -26,14 +28,20 @@ class HistoricalReloadRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_request(self) -> "HistoricalReloadRequest":
+        from datetime import timedelta, timezone
+        now = datetime.now(timezone.utc)
+        if self.start_time > now + timedelta(minutes=1):
+            raise ValueError("A data inicial não pode ser no futuro.")
+        if self.end_time > now + timedelta(minutes=1):
+            raise ValueError("A data final não pode ser no futuro.")
         if self.start_time >= self.end_time:
             raise ValueError("O início deve ser anterior ao fim.")
         if self.mode == "interpolated" and not self.interval:
             raise ValueError("A resolução é obrigatória no modo interpolated.")
         if self.mode == "recorded" and self.interval:
             raise ValueError("Recorded não aceita resolução.")
-        if sum(bool(value) for value in (self.tag_id, self.variable_id, self.all_active)) != 1:
-            raise ValueError("Informe tag_id, variable_id ou all_active.")
+        if sum(bool(value) for value in (self.tag_id, self.section_id, self.equipment_id, self.variable_id, self.all_active)) != 1:
+            raise ValueError("Informe tag_id, section_id, equipment_id, variable_id ou all_active.")
         return self
 
 

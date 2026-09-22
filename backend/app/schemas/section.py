@@ -4,8 +4,52 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.variable_type import VariableFilterDataType
+
+
 def _normalize_code(value: str) -> str:
     return (value or "").strip().upper()
+
+
+class SectionAnalysisTagItem(BaseModel):
+    variable_type_id: int = Field(gt=0)
+    pi_tag_id: int = Field(gt=0)
+
+
+class SectionAnalysisTagResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    variable_type_id: int
+    variable_type_code: str
+    variable_type_name: str
+    filter_data_type: VariableFilterDataType
+    pi_tag_id: int
+    pi_tag_name: str
+
+    @classmethod
+    def _from_orm(cls, data: object) -> dict:
+        var_type = getattr(data, "variable_type", None)
+        pi_tag = getattr(data, "pi_tag", None)
+        filter_type = getattr(data, "filter_data_type", None) or (var_type.filter_data_type if var_type else VariableFilterDataType.REAL)
+        return {
+            "id": getattr(data, "id", 0),
+            "variable_type_id": getattr(data, "variable_type_id", 0),
+            "variable_type_code": getattr(data, "variable_type_code", None) or (var_type.code if var_type else ""),
+            "variable_type_name": getattr(data, "variable_type_name", None) or (var_type.name if var_type else ""),
+            "filter_data_type": filter_type,
+            "pi_tag_id": getattr(data, "pi_tag_id", 0),
+            "pi_tag_name": getattr(data, "pi_tag_name", None) or (pi_tag.pi_tag_name if pi_tag else ""),
+        }
+
+    from pydantic import model_validator
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_before(cls, data):
+        if not isinstance(data, dict):
+            return cls._from_orm(data)
+        return data
 
 
 class SectionBase(BaseModel):
@@ -20,6 +64,7 @@ class SectionBase(BaseModel):
     width_tag_id: Optional[int] = Field(default=None, gt=0)
     um_tag_id: Optional[int] = Field(default=None, gt=0)
     thickness_tag_id: Optional[int] = Field(default=None, gt=0)
+    analysis_tags: Optional[List[SectionAnalysisTagItem]] = None
 
     @field_validator("code")
     @classmethod
@@ -62,6 +107,7 @@ class SectionUpdate(BaseModel):
     width_tag_id: Optional[int] = Field(default=None, gt=0)
     um_tag_id: Optional[int] = Field(default=None, gt=0)
     thickness_tag_id: Optional[int] = Field(default=None, gt=0)
+    analysis_tags: Optional[List[SectionAnalysisTagItem]] = None
 
     @field_validator("code")
     @classmethod
@@ -107,6 +153,7 @@ class SectionResponse(BaseModel):
     width_tag_id: Optional[int] = None
     um_tag_id: Optional[int] = None
     thickness_tag_id: Optional[int] = None
+    analysis_tags: List[SectionAnalysisTagResponse] = Field(default_factory=list)
     created_at: datetime
 
     @field_validator("classification_tag_ids", mode="before")

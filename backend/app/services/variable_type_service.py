@@ -53,6 +53,7 @@ class VariableTypeService:
             name=payload.name,
             description=payload.description,
             default_unit=payload.default_unit,
+            filter_data_type=payload.filter_data_type,
             active=payload.active,
         )
         self.repo.add(item)
@@ -76,6 +77,8 @@ class VariableTypeService:
             item.description = payload.description
         if payload.default_unit is not None:
             item.default_unit = payload.default_unit
+        if payload.filter_data_type is not None:
+            item.filter_data_type = payload.filter_data_type
         if payload.active is not None:
             item.active = payload.active
         self.db.commit()

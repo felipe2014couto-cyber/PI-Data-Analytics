@@ -109,15 +109,15 @@ def test_section_analysis_tags_are_saved_and_accept_equipment_wide_tags(client: 
     variable_types = [
         client.post(
             "/api/variable-types",
-            json={"code": "LARGURA", "name": "Largura", "default_unit": "mm"},
+            json={"code": "LARGURA", "name": "Largura", "default_unit": "mm", "filter_data_type": "REAL"},
         ).json(),
         client.post(
             "/api/variable-types",
-            json={"code": "UM", "name": "UM", "default_unit": None},
+            json={"code": "UM", "name": "UM", "default_unit": None, "filter_data_type": "STRING"},
         ).json(),
         client.post(
             "/api/variable-types",
-            json={"code": "ESPESSURA", "name": "Espessura", "default_unit": "mm"},
+            json={"code": "ESPESSURA", "name": "Espessura", "default_unit": "mm", "filter_data_type": "REAL"},
         ).json(),
     ]
 
@@ -189,7 +189,7 @@ def test_section_analysis_tags_reject_wrong_variable_type(client: TestClient) ->
     ).json()
     variable_type = client.post(
         "/api/variable-types",
-        json={"code": "TEMPERATURA", "name": "Temperatura", "default_unit": "C"},
+        json={"code": "TEMPERATURA", "name": "Temperatura", "default_unit": "C", "filter_data_type": "REAL"},
     ).json()
     tag = client.post(
         "/api/pi-tags",
@@ -540,3 +540,246 @@ def test_section_list_unchanged_without_new_filters(client: TestClient) -> None:
     resp = client.get("/api/sections", params={"equipment_id": equipment["id"]})
     assert resp.status_code == 200
     assert len(resp.json()["items"]) == 1
+
+
+def test_dynamic_analysis_tags_lifecycle_and_validation(client: TestClient) -> None:
+    equipment = _create_equipment(client, code="RB9")
+    eq_other = _create_equipment(client, code="RB8")
+
+    var_current = client.post(
+        "/api/variable-types",
+        json={"code": "CURRENT", "name": "Corrente", "default_unit": "A", "filter_data_type": "REAL"},
+    ).json()
+    var_pressure = client.post(
+        "/api/variable-types",
+        json={"code": "PRESSURE", "name": "Pressao", "default_unit": "bar", "filter_data_type": "REAL"},
+    ).json()
+    var_temperature = client.post(
+        "/api/variable-types",
+        json={"code": "TEMPERATURE", "name": "Temperatura", "default_unit": "C", "filter_data_type": "REAL"},
+    ).json()
+
+    tag_current_1 = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": equipment["id"],
+            "variable_type_id": var_current["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "RB9.CURRENT.1",
+            "display_name": "Corrente 1",
+        },
+    ).json()
+    tag_current_2 = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": equipment["id"],
+            "variable_type_id": var_current["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "RB9.CURRENT.2",
+            "display_name": "Corrente 2",
+        },
+    ).json()
+    tag_pressure_1 = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": equipment["id"],
+            "variable_type_id": var_pressure["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "RB9.PRESSURE.1",
+            "display_name": "Pressao 1",
+        },
+    ).json()
+    tag_temp_wrong_eq = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": eq_other["id"],
+            "variable_type_id": var_temperature["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "RB8.TEMP.1",
+            "display_name": "Temperatura RB8",
+        },
+    ).json()
+
+    # 1. Criação com analysis_tags válidas
+    create_resp = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": equipment["id"],
+            "code": "SEC1",
+            "name": "Secao 1",
+            "analysis_tags": [
+                {"variable_type_id": var_current["id"], "pi_tag_id": tag_current_1["id"]},
+                {"variable_type_id": var_pressure["id"], "pi_tag_id": tag_pressure_1["id"]},
+            ],
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    sec1 = create_resp.json()
+    assert len(sec1["analysis_tags"]) == 2
+    tags_by_code = {t["variable_type_code"]: t for t in sec1["analysis_tags"]}
+    assert tags_by_code["CURRENT"]["pi_tag_name"] == "RB9.CURRENT.1"
+    assert tags_by_code["CURRENT"]["variable_type_name"] == "Corrente"
+    assert tags_by_code["PRESSURE"]["pi_tag_name"] == "RB9.PRESSURE.1"
+
+    # 2. Rejeição de duplicidade de variable_type_id na mesma seção
+    dup_resp = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": equipment["id"],
+            "code": "SEC_DUP",
+            "name": "Secao Dup",
+            "analysis_tags": [
+                {"variable_type_id": var_current["id"], "pi_tag_id": tag_current_1["id"]},
+                {"variable_type_id": var_current["id"], "pi_tag_id": tag_current_2["id"]},
+            ],
+        },
+    )
+    assert dup_resp.status_code == 422
+
+    # 3. Permitir mesmo variable_type_id em seções diferentes
+    sec2_resp = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": equipment["id"],
+            "code": "SEC2",
+            "name": "Secao 2",
+            "analysis_tags": [
+                {"variable_type_id": var_current["id"], "pi_tag_id": tag_current_2["id"]},
+            ],
+        },
+    )
+    assert sec2_resp.status_code == 201
+
+    # 4. Rejeitar PI Tag com VariableType divergente
+    mismatch_resp = client.put(
+        f"/api/sections/{sec1['id']}",
+        json={
+            "analysis_tags": [
+                {"variable_type_id": var_current["id"], "pi_tag_id": tag_pressure_1["id"]},
+            ],
+        },
+    )
+    assert mismatch_resp.status_code == 422
+
+    # 5. Rejeitar PI Tag de outro equipamento
+    eq_mismatch_resp = client.put(
+        f"/api/sections/{sec1['id']}",
+        json={
+            "analysis_tags": [
+                {"variable_type_id": var_temperature["id"], "pi_tag_id": tag_temp_wrong_eq["id"]},
+            ],
+        },
+    )
+    assert eq_mismatch_resp.status_code == 422
+
+    # 6. Atualização não-destrutiva: alterar pi_tag de CURRENT e remover PRESSURE
+    update_sync_resp = client.put(
+        f"/api/sections/{sec1['id']}",
+        json={
+            "analysis_tags": [
+                {"variable_type_id": var_current["id"], "pi_tag_id": tag_current_2["id"]},
+            ],
+        },
+    )
+    assert update_sync_resp.status_code == 200
+    sec1_updated = update_sync_resp.json()
+    assert len(sec1_updated["analysis_tags"]) == 1
+    assert sec1_updated["analysis_tags"][0]["pi_tag_id"] == tag_current_2["id"]
+
+    # 7. PATCH / update de outro campo preserva analysis_tags existentes
+    patch_resp = client.put(
+        f"/api/sections/{sec1['id']}",
+        json={"name": "Novo nome Secao 1"},
+    )
+    assert patch_resp.status_code == 200
+    patch_body = patch_resp.json()
+    assert patch_body["name"] == "Novo nome Secao 1"
+    assert len(patch_body["analysis_tags"]) == 1
+    assert patch_body["analysis_tags"][0]["pi_tag_id"] == tag_current_2["id"]
+
+    # 8. analysis_tags=[] remove todas as tags dinâmicas sem afetar campos fixos
+    clean_resp = client.put(
+        f"/api/sections/{sec1['id']}",
+        json={"analysis_tags": []},
+    )
+    assert clean_resp.status_code == 200
+    assert len(clean_resp.json()["analysis_tags"]) == 0
+
+
+def test_legacy_section_with_fixed_tags_and_empty_analysis_tags(client: TestClient) -> None:
+    """Confirma que seção antiga com width/um/thickness mas sem tags dinâmicas é listada normalmente."""
+    equipment = _create_equipment(client, code="LEGACY_EQ")
+    var_width = client.post(
+        "/api/variable-types",
+        json={"code": "LARGURA", "name": "Largura", "default_unit": "mm", "filter_data_type": "REAL"},
+    ).json()
+    var_um = client.post(
+        "/api/variable-types",
+        json={"code": "UM", "name": "UM", "default_unit": None, "filter_data_type": "STRING"},
+    ).json()
+    var_thickness = client.post(
+        "/api/variable-types",
+        json={"code": "ESPESSURA", "name": "Espessura", "default_unit": "mm", "filter_data_type": "REAL"},
+    ).json()
+
+    tag_width = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": equipment["id"],
+            "variable_type_id": var_width["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "LEGACY.LARGURA",
+            "display_name": "Largura Legacy",
+        },
+    ).json()
+    tag_um = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": equipment["id"],
+            "variable_type_id": var_um["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "LEGACY.UM",
+            "display_name": "UM Legacy",
+            "data_type": "NON_NUMERIC",
+        },
+    ).json()
+    tag_thickness = client.post(
+        "/api/pi-tags",
+        json={
+            "equipment_id": equipment["id"],
+            "variable_type_id": var_thickness["id"],
+            "pi_server": "PIMS",
+            "pi_tag_name": "LEGACY.ESPESSURA",
+            "display_name": "Espessura Legacy",
+        },
+    ).json()
+
+    sec_resp = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": equipment["id"],
+            "code": "LEGACY_SEC",
+            "name": "Secao Antiga",
+            "width_tag_id": tag_width["id"],
+            "um_tag_id": tag_um["id"],
+            "thickness_tag_id": tag_thickness["id"],
+        },
+    )
+    assert sec_resp.status_code == 201
+    created_sec = sec_resp.json()
+    assert created_sec["width_tag_id"] == tag_width["id"]
+    assert created_sec["um_tag_id"] == tag_um["id"]
+    assert created_sec["thickness_tag_id"] == tag_thickness["id"]
+    assert created_sec["analysis_tags"] == []
+
+    list_resp = client.get("/api/sections", params={"equipment_id": equipment["id"]})
+    assert list_resp.status_code == 200
+    list_data = list_resp.json()
+    assert len(list_data["items"]) == 1
+    item = list_data["items"][0]
+    assert item["id"] == created_sec["id"]
+    assert item["width_tag_id"] == tag_width["id"]
+    assert item["um_tag_id"] == tag_um["id"]
+    assert item["thickness_tag_id"] == tag_thickness["id"]
+    assert item["analysis_tags"] == []
+

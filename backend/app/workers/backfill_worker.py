@@ -1,4 +1,17 @@
-"""Durable, restart-safe round-robin backfill worker."""
+"""Durable, restart-safe round-robin backfill worker.
+
+Fixes for stuck jobs:
+  - Expired leases are recovered automatically.
+  - Legacy RUNNING jobs without a lease are adopted when they are stale
+    (no heartbeat for ``backfill_legacy_stale_seconds``).
+  - A single RUNNING invalid job never blocks PENDING jobs.
+  - Round-robin across tags prevents monopolization.
+
+Session/HTTP phase separation:
+  - Phase A: short session to read tag/WebId, close before HTTP.
+  - Phase B: HTTP call directly to provider, NO open DB session.
+  - Phase C: short transaction for upsert + coverage + checkpoint.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -18,11 +31,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from app.core.config import settings
 from app.database.session import SessionLocal
 from app.integrations.pi.errors import PiIntegrationError
+from app.integrations.pi.manager import get_pi_data_provider
 from app.models.pi_tag import PiTag
 from app.models.postgres import PiBackfillJob, PiSample
-from app.schemas.pi import TimeSeriesRequest
 from app.services.coverage_service import CoverageService
-from app.services.pi_service import PiService
 
 logger = logging.getLogger("workers.backfill")
 BACKFILL_ROUNDS = (("R1", 7, 0), ("R2", 30, 7), ("R3", 90, 30), ("R4", 365, 90))
@@ -60,13 +72,13 @@ def _record(tag_id: int, point: Any, mode: str = "RECORDED") -> dict[str, Any]:
     }
 
 
-def _retry_delay(attempts: int, retry_after: Any = None) -> float:
+def _retry_delay(consecutive_failures: int, retry_after: Any = None) -> float:
     try:
         external_delay = float(retry_after)
     except (TypeError, ValueError):
         external_delay = 0.0
     exponential = min(
-        settings.backfill_retry_base_seconds * (2 ** max(0, attempts - 1)),
+        settings.backfill_retry_base_seconds * (2 ** max(0, consecutive_failures - 1)),
         settings.backfill_retry_max_seconds,
     )
     return min(
@@ -76,7 +88,7 @@ def _retry_delay(attempts: int, retry_after: Any = None) -> float:
 
 
 def _recover_expired_leases() -> list[int]:
-    """Recover leased jobs only; legacy RUNNING rows require explicit review."""
+    """Recover leased jobs whose lease has expired."""
     now = _now()
     with SessionLocal() as db:
         ids = list(db.scalars(select(PiBackfillJob.id).where(
@@ -98,6 +110,46 @@ def _recover_expired_leases() -> list[int]:
         ))
         db.commit()
     logger.warning("backfill_expired_leases_recovered job_ids=%s", ids)
+    return ids
+
+
+def _recover_legacy_running_jobs() -> list[int]:
+    """Adopt legacy RUNNING jobs that have no lease and are stale.
+
+    A legacy job is one with status=RUNNING, lease_expires_at IS NULL,
+    and either no heartbeat_at or heartbeat older than the configured
+    stale threshold.
+    """
+    now = _now()
+    stale_limit = now - timedelta(seconds=settings.backfill_legacy_stale_seconds)
+    with SessionLocal() as db:
+        # Find legacy RUNNING without lease, stale by updated_at/heartbeat.
+        ids = list(db.scalars(select(PiBackfillJob.id).where(
+            PiBackfillJob.status == "RUNNING",
+            PiBackfillJob.lease_expires_at.is_(None),
+            or_(
+                PiBackfillJob.heartbeat_at.is_(None),
+                PiBackfillJob.heartbeat_at < stale_limit,
+            ),
+            or_(
+                PiBackfillJob.updated_at.is_(None),
+                PiBackfillJob.updated_at < stale_limit,
+            ),
+        )).all())
+        if not ids:
+            return []
+        db.execute(update(PiBackfillJob).where(PiBackfillJob.id.in_(ids)).values(
+            status="PENDING",
+            stage="RETRY_WAIT",
+            lease_owner=None,
+            lease_expires_at=None,
+            heartbeat_at=None,
+            next_attempt_at=now,
+            error_message="Job legado RUNNING sem lease; adotado apos verificacao de obsolescencia.",
+            updated_at=now,
+        ))
+        db.commit()
+    logger.warning("backfill_legacy_running_recovered job_ids=%s", ids)
     return ids
 
 
@@ -160,7 +212,9 @@ def _defer_job(job_id: int, code: str, message: str, retry_after: Any = None) ->
         job = db.get(PiBackfillJob, job_id)
         if job is None or job.lease_owner != LEASE_OWNER:
             return
-        delay = _retry_delay(job.attempts or 1, retry_after)
+        new_failures = (job.consecutive_failures or 0) + 1
+        delay = _retry_delay(new_failures, retry_after)
+        job.consecutive_failures = new_failures
         job.status = "PENDING"
         job.stage = "RETRY_WAIT"
         job.next_attempt_at = now + timedelta(seconds=delay)
@@ -170,7 +224,10 @@ def _defer_job(job_id: int, code: str, message: str, retry_after: Any = None) ->
         job.lease_expires_at = None
         job.heartbeat_at = None
         db.commit()
-    logger.warning("backfill_transient_deferred job_id=%s code=%s delay_seconds=%.2f", job_id, code, delay)
+    logger.warning(
+        "backfill_transient_deferred job_id=%s code=%s delay_seconds=%.2f consecutive_failures=%d",
+        job_id, code, delay, new_failures,
+    )
 
 
 def _fail_job(job_id: int, message: str) -> None:
@@ -202,6 +259,29 @@ def _release_for_split(job_id: int) -> None:
         db.commit()
 
 
+async def _fetch_recorded_direct(
+    provider: Any,
+    web_id: str,
+    start: datetime,
+    end: datetime,
+    *,
+    max_count: int | None = None,
+) -> tuple[list[Any], int]:
+    """Fetch RecordedValues directly from the provider with NO open DB session.
+
+    Returns (filtered_points_in_half_open, raw_count).
+    Saturation is decided on the RAW count before semi-open filtering.
+    """
+    response = await provider.get_recorded_values(web_id, start, end, max_count=max_count)
+    raw_points = list(response.values)
+    raw_count = len(raw_points)
+    filtered = [
+        point for point in raw_points
+        if start <= point.timestamp.astimezone(timezone.utc) < end
+    ]
+    return filtered, raw_count
+
+
 async def backfill_tag_interval(
     tag_id: int,
     start: datetime,
@@ -217,6 +297,19 @@ async def backfill_tag_interval(
     allow_legacy_running: bool = False,
     _split_depth: int = 0,
 ) -> bool:
+    now = _now()
+    if start >= now:
+        logger.warning("backfill_reject_future_start job_id=%s start=%s now=%s", job_id, start, now)
+        if job_id:
+            _fail_job(job_id, "Data inicial no futuro não permitida.")
+        return False
+    if end > now:
+        end = now
+        if start >= end:
+            if job_id:
+                _fail_job(job_id, "Data no futuro não permitida.")
+            return False
+
     if job_id is None:
         with SessionLocal() as db:
             job = db.scalar(select(PiBackfillJob).where(
@@ -238,51 +331,105 @@ async def backfill_tag_interval(
                 db.refresh(job)
             job_id = job.id
 
-    if not _claim_job(job_id, allow_legacy_running=allow_legacy_running):
-        return False
-
-    stop_heartbeat = asyncio.Event()
-    heartbeat_task = asyncio.create_task(_heartbeat_job(job_id, stop_heartbeat))
     split_window: tuple[datetime, datetime] | None = None
     minimum_window = timedelta(minutes=15)
-    try:
-        async with semaphore:
+    async with semaphore:
+        if not _claim_job(job_id, allow_legacy_running=allow_legacy_running):
+            return False
+
+        stop_heartbeat = asyncio.Event()
+        heartbeat_task = asyncio.create_task(_heartbeat_job(job_id, stop_heartbeat))
+        try:
+            # Phase A: read tag in short session, close before HTTP.
             with SessionLocal() as db:
                 tag = db.get(PiTag, tag_id)
                 if tag is None or not tag.active:
                     _fail_job(job_id, "Tag inexistente ou inativa.")
                     return False
-                request_mode = "interpolated" if mode.startswith("INTERPOLATED_") else "recorded"
-                request_interval = f"{interval_seconds}s" if request_mode == "interpolated" else None
-                result = await PiService(db).fetch_time_series(TimeSeriesRequest(
-                    tag_ids=[tag_id], start_time=start, end_time=end,
-                    mode=request_mode, interval=request_interval, max_count=max_count,
-                ))
-                error = next(iter(result.errors), None)
-                if error:
-                    code = str(error.get("code") or "PI_ERROR")
-                    if code == "PI_TIMEOUT" and end - start > minimum_window:
-                        split_window = (start, start + (end - start) / 2)
-                    elif code in TRANSIENT_PI_CODES:
-                        _defer_job(job_id, code, str(error.get("message") or "Falha transitoria no PI."), error.get("retry_after"))
-                        return False
-                    else:
-                        _fail_job(job_id, f"{code}: {error.get('message') or 'resposta incompleta do PI'}")
-                        return False
+                tag_web_id = tag.pi_web_id
+                if not tag_web_id:
+                    _fail_job(job_id, "Tag sem pi_web_id.")
+                    return False
+            # Session is now closed.
 
-                points = [
-                    point for point in (result.series[0].points if result.series else [])
-                    if start <= point.timestamp.astimezone(timezone.utc) < end
-                ]
-                if max_count is not None and len(points) >= max_count:
+            # Phase B: HTTP call with NO open session.
+            provider = get_pi_data_provider()
+            if provider is None:
+                _defer_job(job_id, "PI_NOT_CONFIGURED", "Provider indisponivel")
+                return False
+
+            try:
+                points, raw_count = await _fetch_recorded_direct(
+                    provider, tag_web_id, start, end, max_count=max_count,
+                )
+            except PiIntegrationError as exc:
+                if exc.code == "PI_TIMEOUT" and end - start > minimum_window:
+                    split_window = (start, start + (end - start) / 2)
+                elif exc.code in TRANSIENT_PI_CODES:
+                    retry_after = exc.details.get("retry_after") if isinstance(exc.details, dict) else None
+                    _defer_job(job_id, exc.code, exc.safe_message, retry_after)
+                    return False
+                else:
+                    _fail_job(job_id, f"{exc.code}: {exc.safe_message}")
+                    logger.exception("backfill_window_failed job_id=%s", job_id)
+                    return False
+            except Exception as exc:
+                _fail_job(job_id, str(exc)[:2000])
+                logger.exception("backfill_window_failed job_id=%s", job_id)
+                return False
+
+            if split_window is None:
+                # Check saturation on RAW count (before semi-open filtering).
+                if max_count is not None and raw_count >= max_count:
                     if end - start > minimum_window:
                         split_window = (start, start + (end - start) / 2)
                     else:
                         _fail_job(job_id, "Resposta PI atingiu maxCount na janela minima.")
                         return False
 
-                if split_window is None:
-                    points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
+            if split_window is None:
+                # Phase C: short transaction: atomic conditional checkpoint validation, upsert + coverage.
+                points = list({point.timestamp.astimezone(timezone.utc): point for point in points}.values())
+                with SessionLocal() as db:
+                    now = _now()
+                    # 1. Validate ownership, lease validity and checkpoint BEFORE persisting.
+                    # Conditional update requires exact match on lease_owner, active lease, and expected checkpoint_start.
+                    target_job = db.get(PiBackfillJob, job_id)
+                    if target_job is None:
+                        return False
+                    target_end = target_job.target_end
+                    is_final = _as_utc(end) >= _as_utc(target_end)
+
+                    claim_stmt = update(PiBackfillJob).where(
+                        PiBackfillJob.id == job_id,
+                        PiBackfillJob.status == "RUNNING",
+                        PiBackfillJob.lease_owner == LEASE_OWNER,
+                        or_(PiBackfillJob.lease_expires_at.is_(None), PiBackfillJob.lease_expires_at >= now),
+                        or_(PiBackfillJob.checkpoint_start == start, PiBackfillJob.checkpoint_start.is_(None)),
+                    ).values(
+                        next_start=end,
+                        checkpoint_start=end,
+                        stage="READY",
+                        status="COMPLETED" if is_final else "PENDING",
+                        consecutive_failures=0,
+                        error_message=None,
+                        last_error_at=None,
+                        next_attempt_at=None,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        heartbeat_at=None,
+                        updated_at=now,
+                    ).execution_options(synchronize_session=False)
+                    res = db.execute(claim_stmt)
+                    if res.rowcount == 0:
+                        db.rollback()
+                        logger.warning(
+                            "backfill_lease_lost_discarding_result job_id=%s start=%s end=%s",
+                            job_id, start, end,
+                        )
+                        return False
+
+                    # 2. Only persist points and coverage if lease and checkpoint validation succeeded
                     if points:
                         insert_factory = pg_insert if db.bind is not None and db.bind.dialect.name == "postgresql" else sqlite_insert
                         records = [_record(tag_id, point, mode) for point in points]
@@ -296,48 +443,33 @@ async def backfill_tag_interval(
                                 )},
                             )
                             db.execute(stmt)
-                    CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag.pi_web_id)
-                    job = db.get(PiBackfillJob, job_id)
-                    if job is None or job.lease_owner != LEASE_OWNER or job.status == "CANCELLED":
-                        db.rollback()
-                        return False
-                    job.next_start = end
-                    job.checkpoint_start = end
-                    is_final = end >= job.target_end
-                    job.stage = "READY"
-                    job.status = "COMPLETED" if is_final else "PENDING"
-                    job.error_message = None
-                    job.last_error_at = None
-                    job.next_attempt_at = None
-                    job.lease_owner = None
-                    job.lease_expires_at = None
-                    job.heartbeat_at = None
+                    CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag_web_id)
                     db.commit()
                     logger.info(
                         "backfill_window_completed job_id=%s tag_id=%s round=%s start=%s end=%s points=%d final=%s",
                         job_id, tag_id, round_name, start, end, len(points), is_final,
                     )
                     return True
-    except PiIntegrationError as exc:
-        if exc.code == "PI_TIMEOUT" and end - start > minimum_window:
-            split_window = (start, start + (end - start) / 2)
-        elif exc.code in TRANSIENT_PI_CODES:
-            retry_after = exc.details.get("retry_after") if isinstance(exc.details, dict) else None
-            _defer_job(job_id, exc.code, exc.safe_message, retry_after)
-            return False
-        else:
-            _fail_job(job_id, f"{exc.code}: {exc.safe_message}")
+        except PiIntegrationError as exc:
+            if exc.code == "PI_TIMEOUT" and end - start > minimum_window:
+                split_window = (start, start + (end - start) / 2)
+            elif exc.code in TRANSIENT_PI_CODES:
+                retry_after = exc.details.get("retry_after") if isinstance(exc.details, dict) else None
+                _defer_job(job_id, exc.code, exc.safe_message, retry_after)
+                return False
+            else:
+                _fail_job(job_id, f"{exc.code}: {exc.safe_message}")
+                logger.exception("backfill_window_failed job_id=%s", job_id)
+                return False
+        except Exception as exc:
+            _fail_job(job_id, str(exc)[:2000])
             logger.exception("backfill_window_failed job_id=%s", job_id)
             return False
-    except Exception as exc:
-        _fail_job(job_id, str(exc))
-        logger.exception("backfill_window_failed job_id=%s", job_id)
-        return False
-    finally:
-        stop_heartbeat.set()
-        heartbeat_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await heartbeat_task
+        finally:
+            stop_heartbeat.set()
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
 
     if split_window is None:
         return False
@@ -410,6 +542,27 @@ async def _resume_job_by_id(job_id: int, semaphore: asyncio.Semaphore, *, explic
     )
 
 
+async def _resume_job_to_completion(job_id: int, semaphore: asyncio.Semaphore, *, explicit: bool = False) -> bool:
+    """Process a single job continuously across its windows until it is COMPLETED, FAILED, or deferred."""
+    advanced_any = False
+    while True:
+        with SessionLocal() as db:
+            job = db.get(PiBackfillJob, job_id)
+            if job is None or job.status not in ("PENDING", "RUNNING"):
+                return advanced_any
+            if job.next_attempt_at is not None and _as_utc(job.next_attempt_at) > _now():
+                return advanced_any
+        ok = await _resume_job_by_id(job_id, semaphore, explicit=explicit)
+        if not ok:
+            break
+        advanced_any = True
+        with SessionLocal() as db:
+            job = db.get(PiBackfillJob, job_id)
+            if job is None or job.status in ("COMPLETED", "FAILED", "CANCELLED"):
+                break
+    return advanced_any
+
+
 async def _resume_jobs(job_ids: Iterable[int], *, explicit: bool = False) -> bool:
     ids = list(dict.fromkeys(job_ids))
     if not ids:
@@ -429,10 +582,12 @@ async def _resume_jobs(job_ids: Iterable[int], *, explicit: bool = False) -> boo
         advanced = False
         for offset in range(0, len(active_ids), concurrency):
             results = await asyncio.gather(*(
-                _resume_job_by_id(item, semaphore, explicit=explicit)
+                _resume_job_to_completion(item, semaphore, explicit=explicit)
                 for item in active_ids[offset:offset + concurrency]
-            ))
-            advanced = any(results) or advanced
+            ), return_exceptions=True)
+            for r in results:
+                if r is True:
+                    advanced = True
             processed = True
         if not advanced:
             return processed
@@ -460,8 +615,11 @@ async def _run_admin_jobs() -> bool:
 
 
 async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: int, days_to: int) -> None:
+    now = _now()
     round_start = t0 - timedelta(days=days_from)
-    round_end = t0 - timedelta(days=days_to)
+    round_end = min(t0 - timedelta(days=days_to), now)
+    if round_start >= now or round_start >= round_end:
+        return
     semaphore = asyncio.Semaphore(max(1, settings.pi_query_concurrency))
 
     async def process_tag(tag_id: int) -> None:
@@ -469,51 +627,112 @@ async def _run_round(tags: list[int], t0: datetime, round_name: str, days_from: 
             missing = CoverageService.get_missing_intervals(db, tag_id, round_start, round_end, "RECORDED")
         for start, end in missing:
             cursor = start
-            while cursor < end:
-                window_end = min(cursor + timedelta(days=settings.backfill_chunk_days), end)
+            while cursor < end and cursor < now:
+                window_end = min(cursor + timedelta(days=settings.backfill_chunk_days), end, now)
+                if window_end <= cursor:
+                    break
                 if not await backfill_tag_interval(tag_id, cursor, window_end, t0, round_name, semaphore):
                     return
                 cursor = window_end
 
-    await asyncio.gather(*(process_tag(tag_id) for tag_id in tags))
+    await asyncio.gather(*(process_tag(tag_id) for tag_id in tags), return_exceptions=True)
 
 
 async def run_backfill_loop(
-    *, once: bool = False, admin_only: bool = False, job_ids: list[int] | None = None,
+    *,
+    once: bool = False,
+    admin_only: bool = False,
+    job_ids: list[int] | None = None,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     while True:
+        if stop_event is not None and stop_event.is_set():
+            break
+        raw_lock_conn = None
         acquired = False
         try:
             t0 = _now()
-            with SessionLocal() as lock_db:
-                postgres = lock_db.bind is not None and lock_db.bind.dialect.name == "postgresql"
-                acquired = bool(lock_db.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": LOCK_KEY}).scalar()) if postgres else True
+            from app.database.session import engine
+            if getattr(engine, "dialect", None) is not None and engine.dialect.name == "postgresql":
                 try:
-                    if acquired:
-                        _recover_expired_leases()
-                        if job_ids:
-                            await _resume_jobs(job_ids, explicit=True)
-                        else:
-                            admin_ids = _active_job_ids(rounds=False)
-                            if admin_ids:
-                                await _run_admin_jobs()
-                            round_ids = [] if admin_only or admin_ids else _active_job_ids(rounds=True)
-                            if round_ids:
-                                await _resume_round_jobs()
-                            if not admin_only and not admin_ids and not round_ids:
-                                tags = list(lock_db.scalars(select(PiTag.id).where(PiTag.active.is_(True)).order_by(PiTag.id)).all())
-                                for round_name, days_from, days_to in BACKFILL_ROUNDS:
-                                    await _run_round(tags, t0, round_name, days_from, days_to)
-                            elif admin_only:
-                                logger.info("backfill_admin_cycle_completed")
-                        logger.info("backfill_run_completed t0=%s owner=%s", t0, LEASE_OWNER)
-                finally:
-                    if acquired and postgres:
-                        lock_db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
+                    raw_lock_conn = engine.raw_connection()
+                    cursor = raw_lock_conn.cursor()
+                    cursor.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_KEY,))
+                    row = cursor.fetchone()
+                    acquired = bool(row and row[0])
+                    raw_lock_conn.commit()
+                    if not acquired:
+                        try:
+                            raw_lock_conn.close()
+                        except Exception:
+                            pass
+                        raw_lock_conn = None
+                except Exception:
+                    if raw_lock_conn is not None:
+                        try:
+                            if hasattr(raw_lock_conn, "invalidate"):
+                                raw_lock_conn.invalidate()
+                            else:
+                                raw_lock_conn.close()
+                        except Exception:
+                            pass
+                        raw_lock_conn = None
+                    acquired = False
+            else:
+                acquired = True
+
+            if acquired:
+                _recover_expired_leases()
+                _recover_legacy_running_jobs()
+                if job_ids:
+                    await _resume_jobs(job_ids, explicit=True)
+                else:
+                    admin_ids = _active_job_ids(rounds=False)
+                    if admin_ids:
+                        await _run_admin_jobs()
+                    round_ids = [] if admin_only or admin_ids else _active_job_ids(rounds=True)
+                    if round_ids:
+                        await _resume_round_jobs()
+                    auto_rounds = getattr(settings, "backfill_auto_rounds_enabled", False)
+                    if not admin_only and auto_rounds and not admin_ids and not round_ids:
+                        with SessionLocal() as sdb:
+                            tags = list(sdb.scalars(select(PiTag.id).where(PiTag.active.is_(True)).order_by(PiTag.id)).all())
+                        for round_name, days_from, days_to in BACKFILL_ROUNDS:
+                            await _run_round(tags, t0, round_name, days_from, days_to)
+                    elif admin_only or not auto_rounds:
+                        logger.info("backfill_admin_cycle_completed")
+                logger.info("backfill_run_completed t0=%s owner=%s", t0, LEASE_OWNER)
         except Exception:
             if once:
                 raise
             logger.exception("backfill_run_failed")
+        finally:
+            if raw_lock_conn is not None:
+                try:
+                    cursor = raw_lock_conn.cursor()
+                    cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
+                    raw_lock_conn.commit()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if hasattr(raw_lock_conn, "invalidate"):
+                            try:
+                                raw_lock_conn.close()
+                            except Exception:
+                                raw_lock_conn.invalidate()
+                        else:
+                            raw_lock_conn.close()
+                    except Exception:
+                        pass
         if once:
             return
-        await asyncio.sleep(60 if not acquired else 10)
+        sleep_time = 60 if not acquired else 10
+        if stop_event is not None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_time)
+                break
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(sleep_time)

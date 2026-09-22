@@ -78,6 +78,7 @@ class PiBackfillJob(Base):
     stage = Column(String(32), nullable=False, default="PENDING")
     checkpoint_start = Column(DateTime(timezone=True), nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
+    consecutive_failures = Column(Integer, nullable=False, default=0, server_default="0")
     last_error_at = Column(DateTime(timezone=True), nullable=True)
     lease_owner = Column(String(128), nullable=True)
     lease_expires_at = Column(DateTime(timezone=True), nullable=True)

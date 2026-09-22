@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal, Form, Button, Table } from "react-bootstrap";
 
-import { classificationTagsApi, equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
-import type { ClassificationTag, Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
+import { equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
+import type { Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
 import { ActiveBadge } from "../components/ActiveBadge";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { EmptyState } from "../components/EmptyState";
@@ -26,6 +26,26 @@ function normalizeTypeLabel(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 }
 
+function isFixedVariableType(vt: VariableType): boolean {
+  const labels = [vt.code, vt.name].map(normalizeTypeLabel);
+  return (
+    ANALYSIS_TAG_TYPE_ALIASES.width.some((alias) => labels.includes(normalizeTypeLabel(alias))) ||
+    ANALYSIS_TAG_TYPE_ALIASES.um.some((alias) => labels.includes(normalizeTypeLabel(alias))) ||
+    ANALYSIS_TAG_TYPE_ALIASES.thickness.some((alias) => labels.includes(normalizeTypeLabel(alias)))
+  );
+}
+
+function getDynamicTagLabel(vt?: VariableType): string {
+  if (!vt) return "Tag de análise";
+  const nameLower = vt.name.trim().toLowerCase();
+  return `Tag de ${nameLower}`;
+}
+
+interface DynamicAnalysisTagState {
+  variable_type_id: number;
+  pi_tag_id: string;
+}
+
 interface FormState {
   equipment_id: string;
   code: string;
@@ -38,17 +58,8 @@ interface FormState {
   width_tag_id: string;
   um_tag_id: string;
   thickness_tag_id: string;
+  analysis_tags: DynamicAnalysisTagState[];
 }
-
-const PROCESS_TYPE_OPTIONS = [
-  { value: "COM_FORNO", label: "Com forno" },
-  { value: "SEM_FORNO", label: "Sem forno" },
-];
-
-const GROUP_CODE_OPTIONS = [
-  { value: "BQ", label: "BQ" },
-  { value: "BF", label: "BF" },
-];
 
 const EMPTY_FORM: FormState = {
   equipment_id: "",
@@ -62,6 +73,7 @@ const EMPTY_FORM: FormState = {
   width_tag_id: "",
   um_tag_id: "",
   thickness_tag_id: "",
+  analysis_tags: [],
 };
 
 export function SectionsPage() {
@@ -80,12 +92,11 @@ export function SectionsPage() {
   const [piTags, setPiTags] = useState<PiTag[]>([]);
   const [loadingPiTags, setLoadingPiTags] = useState(false);
   const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
-  const [classificationTags, setClassificationTags] = useState<ClassificationTag[]>([]);
-  const [tagSearch, setTagSearch] = useState("");
-  const [creatingTag, setCreatingTag] = useState(false);
-  const [newTagName, setNewTagName] = useState("");
+
 
   const [showFormModal, setShowFormModal] = useState(false);
+  const [showAddTagModal, setShowAddTagModal] = useState(false);
+  const [selectedVariableTypeId, setSelectedVariableTypeId] = useState<string>("");
   const [editing, setEditing] = useState<Section | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState<unknown>(null);
@@ -151,30 +162,7 @@ export function SectionsPage() {
     }
   };
 
-  const loadClassificationTags = async (search?: string) => {
-    try {
-      const response = await classificationTagsApi.list(search ? { search } : undefined);
-      setClassificationTags(response ?? []);
-    } catch (err) {
-      setError(err);
-    }
-  };
 
-  const handleCreateTag = async () => {
-    const name = newTagName.trim();
-    if (!name) return;
-    setCreatingTag(true);
-    try {
-      const tag = await classificationTagsApi.create({ name });
-      setClassificationTags((prev) => [...prev, tag].sort((a, b) => a.name.localeCompare(b.name)));
-      setForm((prev) => ({ ...prev, classification_tag_ids: [...prev.classification_tag_ids, tag.id] }));
-      setNewTagName("");
-    } catch (err) {
-      setFormError(err);
-    } finally {
-      setCreatingTag(false);
-    }
-  };
 
   const loadVariableTypes = async () => {
     try {
@@ -189,7 +177,6 @@ export function SectionsPage() {
     void loadEquipments();
     void loadPiTags();
     void loadVariableTypes();
-    void loadClassificationTags();
   }, []);
 
   useEffect(() => {
@@ -206,7 +193,7 @@ export function SectionsPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ ...EMPTY_FORM, equipment_id: equipmentFilter || "" });
+    setForm({ ...EMPTY_FORM, equipment_id: equipmentFilter || "", analysis_tags: [] });
     setFormError(null);
     setShowFormModal(true);
   };
@@ -225,6 +212,10 @@ export function SectionsPage() {
       width_tag_id: item.width_tag_id ? String(item.width_tag_id) : "",
       um_tag_id: item.um_tag_id ? String(item.um_tag_id) : "",
       thickness_tag_id: item.thickness_tag_id ? String(item.thickness_tag_id) : "",
+      analysis_tags: (item.analysis_tags ?? []).map((at) => ({
+        variable_type_id: at.variable_type_id,
+        pi_tag_id: String(at.pi_tag_id),
+      })),
     });
     setFormError(null);
     setShowFormModal(true);
@@ -239,6 +230,17 @@ export function SectionsPage() {
       if (!Number.isFinite(equipmentId) || equipmentId <= 0) {
         throw new Error("Selecione um equipamento valido.");
       }
+      for (const tagItem of form.analysis_tags) {
+        if (!tagItem.pi_tag_id || Number(tagItem.pi_tag_id) <= 0) {
+          const vt = variableTypes.find((v) => v.id === tagItem.variable_type_id);
+          throw new Error(`Selecione uma tag para ${vt?.name ?? "o tipo de variável"}.`);
+        }
+      }
+      const dynamicPayload = form.analysis_tags.map((at) => ({
+        variable_type_id: at.variable_type_id,
+        pi_tag_id: Number(at.pi_tag_id),
+      }));
+
       if (editing) {
         const update: SectionUpdate = {
           equipment_id: equipmentId,
@@ -252,6 +254,7 @@ export function SectionsPage() {
           width_tag_id: form.width_tag_id ? Number(form.width_tag_id) : null,
           um_tag_id: form.um_tag_id ? Number(form.um_tag_id) : null,
           thickness_tag_id: form.thickness_tag_id ? Number(form.thickness_tag_id) : null,
+          analysis_tags: dynamicPayload,
         };
         await sectionsApi.update(editing.id, update);
         setSuccessMessage("Secao atualizada com sucesso.");
@@ -268,6 +271,7 @@ export function SectionsPage() {
           width_tag_id: null,
           um_tag_id: null,
           thickness_tag_id: null,
+          analysis_tags: [],
         };
         await sectionsApi.create(payload);
         setSuccessMessage("Secao criada com sucesso.");
@@ -335,6 +339,55 @@ export function SectionsPage() {
       thickness: tagOptionsFor("thickness"),
     };
   }, [editing?.id, form.equipment_id, form.thickness_tag_id, form.um_tag_id, form.width_tag_id, piTags, variableTypes]);
+
+  const getDynamicTagOptions = (variableTypeId: number, currentSelectedTagId: string) => {
+    const equipmentId = Number(form.equipment_id);
+    const sectionId = editing?.id;
+    return piTags.filter(
+      (tag) =>
+        tag.equipment_id === equipmentId &&
+        (tag.section_id === null || tag.section_id === sectionId || String(tag.id) === currentSelectedTagId) &&
+        tag.variable_type_id === variableTypeId,
+    );
+  };
+
+  const handleEquipmentChange = (newEquipmentId: string) => {
+    setForm((prev) => {
+      const eqNum = Number(newEquipmentId);
+      const validTagIds = new Set(
+        piTags
+          .filter((t) => t.equipment_id === eqNum && (t.section_id === null || t.section_id === editing?.id))
+          .map((t) => String(t.id)),
+      );
+      return {
+        ...prev,
+        equipment_id: newEquipmentId,
+        width_tag_id: validTagIds.has(prev.width_tag_id) ? prev.width_tag_id : "",
+        um_tag_id: validTagIds.has(prev.um_tag_id) ? prev.um_tag_id : "",
+        thickness_tag_id: validTagIds.has(prev.thickness_tag_id) ? prev.thickness_tag_id : "",
+        analysis_tags: prev.analysis_tags.map((at) => ({
+          ...at,
+          pi_tag_id: validTagIds.has(at.pi_tag_id) ? at.pi_tag_id : "",
+        })),
+      };
+    });
+  };
+
+  const removeAnalysisTag = (variableTypeId: number) => {
+    setForm((prev) => ({
+      ...prev,
+      analysis_tags: prev.analysis_tags.filter((at) => at.variable_type_id !== variableTypeId),
+    }));
+  };
+
+  const updateAnalysisTag = (variableTypeId: number, piTagId: string) => {
+    setForm((prev) => ({
+      ...prev,
+      analysis_tags: prev.analysis_tags.map((at) =>
+        at.variable_type_id === variableTypeId ? { ...at, pi_tag_id: piTagId } : at,
+      ),
+    }));
+  };
 
   const tagLabel = (tagId: number | null) => {
     if (!tagId) return "—";
@@ -503,7 +556,7 @@ export function SectionsPage() {
               <Form.Label>Equipamento</Form.Label>
               <Form.Select
                 value={form.equipment_id}
-                onChange={(event) => setForm((prev) => ({ ...prev, equipment_id: event.target.value }))}
+                onChange={(event) => handleEquipmentChange(event.target.value)}
                 required
                 disabled={loadingEquipments}
               >
@@ -544,90 +597,7 @@ export function SectionsPage() {
                 maxLength={500}
               />
             </Form.Group>
-            <Form.Group className="mb-3" controlId="section-process-type">
-              <Form.Label>Processo</Form.Label>
-              <Form.Select
-                value={form.process_type}
-                onChange={(event) => setForm((prev) => ({ ...prev, process_type: event.target.value }))}
-                data-testid="section-process-type"
-              >
-                <option value="">Não informado</option>
-                {PROCESS_TYPE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </Form.Select>
-            </Form.Group>
-            <Form.Group className="mb-3" controlId="section-group-code">
-              <Form.Label>Grupo</Form.Label>
-              <Form.Select
-                value={form.group_code}
-                onChange={(event) => setForm((prev) => ({ ...prev, group_code: event.target.value }))}
-                data-testid="section-group-code"
-              >
-                <option value="">Não informado</option>
-                {GROUP_CODE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </Form.Select>
-            </Form.Group>
-            <Form.Group className="mb-3" controlId="section-classification-tags">
-              <Form.Label>Tags de classificacao</Form.Label>
-              <Form.Control
-                value={tagSearch}
-                onChange={(event) => {
-                  setTagSearch(event.target.value);
-                  void loadClassificationTags(event.target.value || undefined);
-                }}
-                placeholder="Pesquisar tags..."
-                data-testid="section-tag-search"
-                className="mb-2"
-              />
-              <div className="d-flex flex-wrap gap-2 mb-2" data-testid="section-tag-options">
-                {classificationTags.map((tag) => {
-                  const checked = form.classification_tag_ids.includes(tag.id);
-                  return (
-                    <Form.Check
-                      key={tag.id}
-                      type="checkbox"
-                      id={`section-tag-${tag.id}`}
-                      label={tag.name}
-                      checked={checked}
-                      onChange={() =>
-                        setForm((prev) => ({
-                          ...prev,
-                          classification_tag_ids: checked
-                            ? prev.classification_tag_ids.filter((id) => id !== tag.id)
-                            : [...prev.classification_tag_ids, tag.id],
-                        }))
-                      }
-                    />
-                  );
-                })}
-                {classificationTags.length === 0 && (
-                  <Form.Text className="text-muted">Nenhuma tag encontrada.</Form.Text>
-                )}
-              </div>
-              <div className="d-flex gap-2">
-                <Form.Control
-                  value={newTagName}
-                  onChange={(event) => setNewTagName(event.target.value.toUpperCase())}
-                  placeholder="Nova tag..."
-                  maxLength={64}
-                  data-testid="section-new-tag-name"
-                />
-                <Button
-                  variant="outline-secondary"
-                  onClick={handleCreateTag}
-                  disabled={creatingTag || !newTagName.trim()}
-                  data-testid="section-create-tag"
-                >
-                  Criar
-                </Button>
-              </div>
-              <Form.Text className="text-muted">
-                Selecione uma ou mais tags, pesquise pelo nome ou crie uma nova.
-              </Form.Text>
-            </Form.Group>
+
             <div className="border rounded p-3 mb-3 bg-light">
               <h6 className="mb-1">Tags para análise da seção</h6>
               <Form.Text className="d-block text-muted mb-3">
@@ -665,7 +635,7 @@ export function SectionsPage() {
                       ))}
                     </Form.Select>
                   </Form.Group>
-                  <Form.Group controlId="section-thickness-tag">
+                  <Form.Group className="mb-3" controlId="section-thickness-tag">
                     <Form.Label>Tag de espessura</Form.Label>
                     <Form.Select
                       value={form.thickness_tag_id}
@@ -677,6 +647,54 @@ export function SectionsPage() {
                       ))}
                     </Form.Select>
                   </Form.Group>
+
+                  {form.analysis_tags.map((item) => {
+                    const varType = variableTypes.find((vt) => vt.id === item.variable_type_id);
+                    const options = getDynamicTagOptions(item.variable_type_id, item.pi_tag_id);
+                    return (
+                      <Form.Group
+                        key={item.variable_type_id}
+                        className="mb-3"
+                        controlId={`section-analysis-tag-${item.variable_type_id}`}
+                      >
+                        <div className="d-flex justify-content-between align-items-center mb-1">
+                          <Form.Label className="mb-0">{getDynamicTagLabel(varType)}</Form.Label>
+                          <Button
+                            variant="link"
+                            size="sm"
+                            className="text-danger p-0 text-decoration-none"
+                            onClick={() => removeAnalysisTag(item.variable_type_id)}
+                          >
+                            Remover
+                          </Button>
+                        </div>
+                        <Form.Select
+                          value={item.pi_tag_id}
+                          onChange={(event) => updateAnalysisTag(item.variable_type_id, event.target.value)}
+                        >
+                          <option value="">Selecione uma PI Tag</option>
+                          {options.map((tag) => (
+                            <option key={tag.id} value={tag.id}>
+                              {varType ? `${varType.code} — ` : ""}{tag.pi_tag_name}
+                            </option>
+                          ))}
+                        </Form.Select>
+                      </Form.Group>
+                    );
+                  })}
+
+                  <div className="mt-2">
+                    <Button
+                      variant="outline-primary"
+                      size="sm"
+                      onClick={() => {
+                        setSelectedVariableTypeId("");
+                        setShowAddTagModal(true);
+                      }}
+                    >
+                      <i className="bi bi-plus-lg me-1" /> Adicionar tag de análise
+                    </Button>
+                  </div>
                 </>
               )}
             </div>
@@ -697,6 +715,59 @@ export function SectionsPage() {
             </Button>
           </Modal.Footer>
         </Form>
+      </Modal>
+
+      <Modal show={showAddTagModal} onHide={() => setShowAddTagModal(false)} centered backdrop="static">
+        <Modal.Header closeButton>
+          <Modal.Title>Adicionar tag de análise</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form.Group controlId="modal-add-analysis-tag-type">
+            <Form.Label>Tipo de variável</Form.Label>
+            <Form.Select
+              value={selectedVariableTypeId}
+              onChange={(e) => setSelectedVariableTypeId(e.target.value)}
+            >
+              <option value="">Selecionar...</option>
+              {variableTypes
+                .filter((vt) => !isFixedVariableType(vt))
+                .map((vt) => {
+                  const isAdded = form.analysis_tags.some((at) => at.variable_type_id === vt.id);
+                  return (
+                    <option key={vt.id} value={vt.id} disabled={isAdded}>
+                      {vt.name} — {vt.code}{isAdded ? " (já adicionada)" : ""}
+                    </option>
+                  );
+                })}
+            </Form.Select>
+          </Form.Group>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="outline-secondary" onClick={() => setShowAddTagModal(false)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="primary"
+            className="btn-piad-primary"
+            disabled={
+              !selectedVariableTypeId ||
+              form.analysis_tags.some((at) => at.variable_type_id === Number(selectedVariableTypeId))
+            }
+            onClick={() => {
+              const vtId = Number(selectedVariableTypeId);
+              if (vtId && !form.analysis_tags.some((at) => at.variable_type_id === vtId)) {
+                setForm((prev) => ({
+                  ...prev,
+                  analysis_tags: [...prev.analysis_tags, { variable_type_id: vtId, pi_tag_id: "" }],
+                }));
+              }
+              setShowAddTagModal(false);
+              setSelectedVariableTypeId("");
+            }}
+          >
+            Adicionar
+          </Button>
+        </Modal.Footer>
       </Modal>
 
       <ConfirmModal

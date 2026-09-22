@@ -151,6 +151,8 @@ async def get_time_series(
     relative_period: bool = Query(False, description="Período relativo terminado no instante atual."),
     refresh: bool = Query(False, description="Ignorar cache visual e forçar nova consulta."),
     query_id: Optional[str] = Query(None, description="ID da consulta para cancelamento."),
+    section_id: Optional[int] = Query(None, description="ID da seção para filtros dinâmicos."),
+    analysis_filters: Optional[str] = Query(None, description="Filtros dinâmicos de análise em formato JSON."),
     db_service: DatabaseTimeSeriesService = Depends(get_db_time_series_service),
     registry: QueryRegistry = Depends(get_query_registry_dep),
 ) -> TimeSeries:
@@ -166,6 +168,8 @@ async def get_time_series(
         resolution_mode=resolution_mode,
         target_points_per_tag=target_points_per_tag,
         relative_period=relative_period,
+        section_id=section_id,
+        analysis_filters=analysis_filters,
     )
 
     result = await db_service.fetch_time_series(ts_request, refresh=refresh)

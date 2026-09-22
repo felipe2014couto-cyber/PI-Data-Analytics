@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal, Form, Button, Table } from "react-bootstrap";
 
 import { variableTypesApi } from "../api";
-import type { VariableType, VariableTypeCreate, VariableTypeUpdate } from "../types";
+import type { VariableFilterDataType, VariableType, VariableTypeCreate, VariableTypeUpdate } from "../types";
 import { ActiveBadge } from "../components/ActiveBadge";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { EmptyState } from "../components/EmptyState";
@@ -20,6 +20,7 @@ interface FormState {
   name: string;
   description: string;
   default_unit: string;
+  filter_data_type: VariableFilterDataType;
   active: boolean;
 }
 
@@ -28,6 +29,7 @@ const EMPTY_FORM: FormState = {
   name: "",
   description: "",
   default_unit: "",
+  filter_data_type: "REAL",
   active: true,
 };
 
@@ -102,6 +104,7 @@ export function VariableTypesPage() {
       name: item.name,
       description: item.description ?? "",
       default_unit: item.default_unit ?? "",
+      filter_data_type: item.filter_data_type ?? "REAL",
       active: item.active,
     });
     setFormError(null);
@@ -119,6 +122,7 @@ export function VariableTypesPage() {
           name: form.name.trim(),
           description: form.description.trim() || null,
           default_unit: form.default_unit.trim() || null,
+          filter_data_type: form.filter_data_type,
           active: form.active,
         };
         await variableTypesApi.update(editing.id, update);
@@ -129,6 +133,7 @@ export function VariableTypesPage() {
           name: form.name.trim(),
           description: form.description.trim() || null,
           default_unit: form.default_unit.trim() || null,
+          filter_data_type: form.filter_data_type,
           active: form.active,
         };
         await variableTypesApi.create(payload);
@@ -236,6 +241,7 @@ export function VariableTypesPage() {
                   <th>Nome</th>
                   <th>Descricao</th>
                   <th>Unidade padrao</th>
+                  <th>Tipo de dado</th>
                   <th>Status</th>
                   <th>Atualizado em</th>
                   <th className="text-end">Acoes</th>
@@ -248,6 +254,23 @@ export function VariableTypesPage() {
                     <td>{item.name}</td>
                     <td>{item.description || "-"}</td>
                     <td>{item.default_unit || "-"}</td>
+                    <td>
+                      {item.filter_data_type === "REAL" && (
+                        <span className="badge bg-primary-subtle text-primary border border-primary-subtle">
+                          Real
+                        </span>
+                      )}
+                      {item.filter_data_type === "STRING" && (
+                        <span className="badge bg-info-subtle text-info border border-info-subtle">
+                          Texto
+                        </span>
+                      )}
+                      {item.filter_data_type === "DIGITAL" && (
+                        <span className="badge bg-success-subtle text-success border border-success-subtle">
+                          Digital (On/Off)
+                        </span>
+                      )}
+                    </td>
                     <td>
                       <ActiveBadge active={item.active} />
                     </td>
@@ -338,6 +361,26 @@ export function VariableTypesPage() {
                 onChange={(event) => setForm((prev) => ({ ...prev, default_unit: event.target.value }))}
                 maxLength={32}
               />
+            </Form.Group>
+            <Form.Group className="mb-3" controlId="vt-filter-type">
+              <Form.Label>Tipo de dado para filtro</Form.Label>
+              <Form.Select
+                value={form.filter_data_type}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    filter_data_type: event.target.value as VariableFilterDataType,
+                  }))
+                }
+                required
+              >
+                <option value="REAL">Real (Numérico)</option>
+                <option value="STRING">Texto (Código / Unidade Metalúrgica)</option>
+                <option value="DIGITAL">Digital (Estado On/Off)</option>
+              </Form.Select>
+              <Form.Text className="text-muted">
+                Determina como esta variável será filtrada nas análises de séries temporais.
+              </Form.Text>
             </Form.Group>
             <Form.Check
               type="switch"

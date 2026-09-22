@@ -176,17 +176,19 @@ export function PiTagsPage() {
     void loadLookups();
   }, []);
 
+  // Reset page to 1 when filters change, but don't trigger loadList here directly
+  // to avoid double fetching with the main effect below.
   useEffect(() => {
-    void loadList();
-  }, [page]);
-
-  useEffect(() => {
-    setPage(1);
+    if (page !== 1) {
+      setPage(1);
+    }
   }, [search, activeFilter, equipmentFilter, sectionFilter, variableTypeFilter, validationFilter]);
 
+  // Single effect to handle data loading based on all dependencies
   useEffect(() => {
     void loadList();
-  }, [search, activeParam, equipmentParam, sectionParam, variableTypeParam, validationParam]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, search, activeParam, equipmentParam, sectionParam, variableTypeParam, validationParam]);
 
   const activeEquipments = useMemo(
     () => equipments.filter((equipment) => equipment.active || String(equipment.id) === form.equipment_id),

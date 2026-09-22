@@ -4,6 +4,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.variable_type import VariableFilterDataType
+
 
 def _normalize_code(value: str) -> str:
     return (value or "").strip().upper()
@@ -14,6 +16,10 @@ class VariableTypeBase(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     default_unit: Optional[str] = Field(default=None, max_length=32)
+    filter_data_type: VariableFilterDataType = Field(
+        ...,
+        description="Tipo de dado para filtro na analise: REAL, STRING ou DIGITAL.",
+    )
     active: bool = True
 
     @field_validator("code")
@@ -58,6 +64,7 @@ class VariableTypeUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=500)
     default_unit: Optional[str] = Field(default=None, max_length=32)
+    filter_data_type: Optional[VariableFilterDataType] = None
     active: Optional[bool] = None
 
     @field_validator("code")
@@ -105,6 +112,7 @@ class VariableTypeResponse(BaseModel):
     name: str
     description: Optional[str] = None
     default_unit: Optional[str] = None
+    filter_data_type: VariableFilterDataType
     active: bool
     created_at: datetime
     updated_at: datetime

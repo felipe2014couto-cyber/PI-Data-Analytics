@@ -82,7 +82,7 @@ class Settings(BaseSettings):
         description="Quantidade maxima de pontos por tag em uma consulta.",
     )
     pi_query_concurrency: int = Field(
-        default=1,
+        default=2,
         ge=1,
         le=20,
         description="Concorrencia global maxima de chamadas ao PI Web API.",
@@ -343,6 +343,43 @@ class Settings(BaseSettings):
         le=64,
         description="Profundidade maxima de subdivisao do intervalo RecordedValues.",
     )
+    # Worker integration
+    workers_enabled: bool = Field(
+        default=True,
+        description="Ativa workers integrados ao lifespan. False para testes ou manutencao.",
+    )
+    worker_ingestion_enabled: bool = Field(
+        default=True,
+        description="Ativa worker de ingestao integrado ao backend.",
+    )
+    worker_backfill_enabled: bool = Field(
+        default=True,
+        description="Ativa worker de backfill integrado ao backend.",
+    )
+    ingestion_catchup_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=16,
+        description="Minutos processados em paralelo no catch-up pos-desligamento.",
+    )
+    ingestion_catchup_budget_minutes: int = Field(
+        default=30,
+        ge=1,
+        le=1440,
+        description="Maximo de minutos recuperados por ciclo de catch-up.",
+    )
+    ingestion_reconciliation_minutes: int = Field(
+        default=3,
+        ge=0,
+        le=30,
+        description="Quantos minutos recentes re-consultar para capturar eventos atrasados no PI Archive.",
+    )
+    backfill_legacy_stale_seconds: int = Field(
+        default=1800,
+        ge=300,
+        le=86400,
+        description="Tempo em segundos apos o qual um RUNNING sem lease e considerado obsoleto.",
+    )
     backfill_chunk_days: int = Field(
         default=1,
         ge=1,
@@ -350,21 +387,21 @@ class Settings(BaseSettings):
         description="Tamanho em dias de cada bloco processado no backfill historico.",
     )
     backfill_recorded_window_hours: float = Field(
-        default=6.0,
+        default=12.0,
         ge=0.25,
-        le=24.0,
+        le=48.0,
         description="Janela inicial do backfill RECORDED em horas; janelas podem ser divididas adaptativamente.",
     )
     backfill_recorded_max_points: int = Field(
-        default=5000,
+        default=10000,
         ge=100,
         le=1_000_000,
         description="maxCount conservador usado pelo backfill RECORDED.",
     )
     backfill_admin_concurrency: int = Field(
-        default=1,
+        default=2,
         ge=1,
-        le=4,
+        le=8,
         description="Chamadas simultaneas para recargas administrativas.",
     )
     backfill_lease_seconds: int = Field(default=900, ge=60, le=7200)
@@ -376,6 +413,10 @@ class Settings(BaseSettings):
         ge=1,
         le=3650,
         description="Periodo maximo permitido para carga historica (politica de retencao).",
+    )
+    backfill_auto_rounds_enabled: bool = Field(
+        default=False,
+        description="Ativa ciclos automaticos em lote (R1..R4) no worker de backfill. Quando False, apenas recargas manuais/administrativas sao executadas.",
     )
     deletion_batch_days: int = Field(
         default=30,

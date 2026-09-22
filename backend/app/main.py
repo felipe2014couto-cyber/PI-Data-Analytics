@@ -41,9 +41,24 @@ async def lifespan(_: FastAPI):
     await get_cep_query_store().recover_interrupted()
     cleanup_task = asyncio.create_task(_cep_cleanup_loop())
 
+    # Start integrated workers (ingestion + backfill) via supervisor.
+    # Workers are isolated: a crash in one does not affect the API or the other.
+    from app.workers.supervisor import get_supervisor
+    supervisor = get_supervisor()
+    try:
+        await supervisor.start()
+    except Exception:
+        logger.exception("supervisor_start_failed (API continues without workers)")
+
     try:
         yield
     finally:
+        # Shutdown supervisor – signals stop, cancels, and awaits all workers.
+        try:
+            await supervisor.stop()
+        except Exception:
+            logger.exception("supervisor_stop_failed")
+
         # Shutdown cleanup task
         cleanup_task.cancel()
         try:

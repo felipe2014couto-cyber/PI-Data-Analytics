@@ -21,14 +21,18 @@ router = APIRouter(
 
 
 def _job_response(job) -> HistoricalReloadJobResponse:
-    elapsed = 0 if not job.next_start else (job.next_start - job.target_start).total_seconds()
-    duration = max(1, (job.target_end - job.target_start).total_seconds())
+    if job.status == "COMPLETED":
+        progress = 100.0
+    else:
+        elapsed = 0 if not job.next_start else (job.next_start - job.target_start).total_seconds()
+        duration = max(1, (job.target_end - job.target_start).total_seconds())
+        progress = min(100.0, max(0.0, elapsed / duration * 100))
     return HistoricalReloadJobResponse(
         id=job.id, tag_id=job.tag_id,
         mode="interpolated" if job.mode.startswith("INTERPOLATED") else "recorded",
         interval=_interval_label(job.interval_seconds), target_start=job.target_start,
         target_end=job.target_end, next_start=job.next_start, status=job.status,
-        stage=job.stage, progress_percent=min(100, max(0, elapsed / duration * 100)),
+        stage=job.stage, progress_percent=progress,
         attempts=job.attempts or 0, error_message=job.error_message,
         lease_owner=job.lease_owner, lease_expires_at=job.lease_expires_at,
         heartbeat_at=job.heartbeat_at, next_attempt_at=job.next_attempt_at,

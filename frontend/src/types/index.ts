@@ -9,6 +9,8 @@ export interface HistoricalReloadRequest {
   interval?: string;
   tag_id?: number;
   variable_id?: number;
+  equipment_id?: number;
+  section_id?: number;
   all_active?: boolean;
 }
 
@@ -67,6 +69,23 @@ export interface EquipmentUpdate {
   active?: boolean;
 }
 
+export type VariableFilterDataType = "REAL" | "STRING" | "DIGITAL";
+
+export interface SectionAnalysisTag {
+  id: number;
+  variable_type_id: number;
+  variable_type_code: string;
+  variable_type_name: string;
+  filter_data_type: VariableFilterDataType;
+  pi_tag_id: number;
+  pi_tag_name: string;
+}
+
+export interface SectionAnalysisTagInput {
+  variable_type_id: number;
+  pi_tag_id: number;
+}
+
 export interface Section {
   id: number;
   equipment_id: number;
@@ -80,6 +99,7 @@ export interface Section {
   width_tag_id: number | null;
   um_tag_id: number | null;
   thickness_tag_id: number | null;
+  analysis_tags?: SectionAnalysisTag[];
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +116,7 @@ export interface SectionCreate {
   width_tag_id?: number | null;
   um_tag_id?: number | null;
   thickness_tag_id?: number | null;
+  analysis_tags?: SectionAnalysisTagInput[] | null;
 }
 
 export interface SectionUpdate {
@@ -110,6 +131,7 @@ export interface SectionUpdate {
   width_tag_id?: number | null;
   um_tag_id?: number | null;
   thickness_tag_id?: number | null;
+  analysis_tags?: SectionAnalysisTagInput[] | null;
 }
 
 export interface VariableType {
@@ -118,6 +140,7 @@ export interface VariableType {
   name: string;
   description: string | null;
   default_unit: string | null;
+  filter_data_type: VariableFilterDataType;
   active: boolean;
   created_at: string;
   updated_at: string;
@@ -128,6 +151,7 @@ export interface VariableTypeCreate {
   name: string;
   description?: string | null;
   default_unit?: string | null;
+  filter_data_type: VariableFilterDataType;
   active?: boolean;
 }
 
@@ -136,7 +160,16 @@ export interface VariableTypeUpdate {
   name?: string;
   description?: string | null;
   default_unit?: string | null;
+  filter_data_type?: VariableFilterDataType;
   active?: boolean;
+}
+
+export interface DynamicAnalysisFilter {
+  variable_type_id: number;
+  min?: number | null;
+  max?: number | null;
+  expression?: string;
+  value?: "ALL" | "ON" | "OFF";
 }
 
 export type PiTagLifecycleStatus = "ACTIVE" | "INACTIVE" | "DELETION_PENDING";

@@ -13,7 +13,7 @@ def _setup_dependencies(client: TestClient) -> dict:
     ).json()
     variable_type = client.post(
         "/api/variable-types",
-        json={"code": "TEMPERATURE", "name": "Temperatura", "default_unit": "C"},
+        json={"code": "TEMPERATURE", "name": "Temperatura", "default_unit": "C", "filter_data_type": "REAL"},
     ).json()
     return {"equipment": equipment, "section": section, "variable_type": variable_type}
 
@@ -103,7 +103,7 @@ def test_section_must_belong_to_equipment(client: TestClient) -> None:
     ).json()
     variable_type = client.post(
         "/api/variable-types",
-        json={"code": "TEMPERATURE", "name": "Temperatura"},
+        json={"code": "TEMPERATURE", "name": "Temperatura", "filter_data_type": "REAL"},
     ).json()
 
     response = client.post(
@@ -130,7 +130,7 @@ def test_pi_tag_filters(client: TestClient) -> None:
     ).json()
     speed = client.post(
         "/api/variable-types",
-        json={"code": "SPEED", "name": "Velocidade"},
+        json={"code": "SPEED", "name": "Velocidade", "filter_data_type": "REAL"},
     ).json()
     base_payload = {
         "equipment_id": deps["equipment"]["id"],

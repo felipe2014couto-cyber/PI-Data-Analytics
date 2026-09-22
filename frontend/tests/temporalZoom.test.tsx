@@ -27,7 +27,7 @@ const DURATION = END_TS - START_TS;
 const GRID_TOP = 70;
 const GRID_BOTTOM = 324;
 
-function mockChartSeries(id: string, values: Array<[number, number]>, yAxisIndex = 0, unit = "m/min"): ChartSeries {
+function mockChartSeries(id: string, values: Array<[number, number]>, yAxisIndex: 0 | 1 = 0, unit = "m/min"): ChartSeries {
   return {
     tagId: Number(id) || 7,
     displayName: `Zona ${id}`,
@@ -53,7 +53,7 @@ function mockChartSeries(id: string, values: Array<[number, number]>, yAxisIndex
 }
 
 function mockChart(
-  series: Array<{ id: string; points: Array<[number, number]>; yAxisIndex?: number; unit?: string }>,
+  series: Array<{ id: string; points: Array<[number, number]>; yAxisIndex?: 0 | 1; unit?: string }>,
   yAxisLabels: string[] = ["m/min"],
 ): ChartBuildResult {
   return {
@@ -380,7 +380,7 @@ describe("Zoom temporal exclusivo — testes obrigatórios", () => {
   it("reset durante consulta pendente invalida a resposta atrasada", async () => {
     let resolverPending: (outcome: "applied") => void = () => {};
     onVisibleWindowChange = vi.fn(
-      (_s: Date, _e: Date, reason: string) =>
+      (_s: Date, _e: Date, _reason: string) =>
         new Promise<"applied">((resolve) => {
           resolverPending = resolve;
         }),

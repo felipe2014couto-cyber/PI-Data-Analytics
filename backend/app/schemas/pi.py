@@ -188,6 +188,14 @@ class QueryExecutionMetadata(BaseModel):
     is_stale: Optional[bool] = None
 
 
+class AnalysisFilterRequest(BaseModel):
+    variable_type_id: int
+    min: Optional[float] = None
+    max: Optional[float] = None
+    expression: Optional[str] = None
+    value: Optional[Literal["ALL", "ON", "OFF"]] = None
+
+
 class TimeSeriesRequest(BaseModel):
     tag_ids: List[int] = Field(..., min_length=1, max_length=100)
     start_time: datetime
@@ -198,6 +206,18 @@ class TimeSeriesRequest(BaseModel):
     resolution_mode: Optional[str] = Field(default=None, pattern="^(automatic|manual)$")
     target_points_per_tag: Optional[int] = Field(default=None, ge=100, le=5000)
     relative_period: bool = False
+    section_id: Optional[int] = None
+    analysis_filters: Optional[List[AnalysisFilterRequest]] = None
+
+    @field_validator("analysis_filters", mode="before")
+    @classmethod
+    def _parse_analysis_filters(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            if not value.strip():
+                return None
+            import json
+            return json.loads(value)
+        return value
 
     @field_validator("start_time", "end_time")
     @classmethod

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.cep_variable import CepVariable
+from app.models.equipment import Equipment
+from app.models.section import Section
 from app.models.pi_tag import PiTag
 from app.models.postgres import PiBackfillJob, PiIngestionCoverage
 from app.models.cep_variable_tag_dependency import CepVariableTagDependency
@@ -46,6 +48,11 @@ class HistoricalReloadService:
             raise ValidationError("As datas devem possuir timezone explícito.")
         if start >= end:
             raise ValidationError("O início deve ser anterior ao fim.")
+        now = datetime.now(timezone.utc)
+        if start > now + timedelta(minutes=1):
+            raise ValidationError("A data inicial não pode ser no futuro.")
+        if end > now + timedelta(minutes=1):
+            raise ValidationError("A data final não pode ser no futuro.")
         if end > _one_year_later(start):
             raise ValidationError(
                 "A recarga não pode exceder um ano civil.",
@@ -58,6 +65,26 @@ class HistoricalReloadService:
             if tag is None or not tag.active:
                 raise NotFoundError("Tag ativa não encontrada.", details={"tag_id": payload.tag_id})
             return [tag]
+        if payload.section_id:
+            section = self.db.get(Section, payload.section_id)
+            if section is None or not section.active:
+                raise NotFoundError("Zona/Seção ativa não encontrada.", details={"section_id": payload.section_id})
+            tags = list(self.db.scalars(
+                select(PiTag).where(PiTag.section_id == payload.section_id, PiTag.active.is_(True)).order_by(PiTag.id)
+            ).all())
+            if not tags:
+                raise NotFoundError("Nenhuma tag ativa encontrada para esta zona/seção.", details={"section_id": payload.section_id})
+            return tags
+        if payload.equipment_id:
+            equipment = self.db.get(Equipment, payload.equipment_id)
+            if equipment is None or not equipment.active:
+                raise NotFoundError("Equipamento ativo não encontrado.", details={"equipment_id": payload.equipment_id})
+            tags = list(self.db.scalars(
+                select(PiTag).where(PiTag.equipment_id == payload.equipment_id, PiTag.active.is_(True)).order_by(PiTag.id)
+            ).all())
+            if not tags:
+                raise NotFoundError("Nenhuma tag ativa encontrada para este equipamento.", details={"equipment_id": payload.equipment_id})
+            return tags
         if payload.variable_id:
             variable = self.db.get(CepVariable, payload.variable_id)
             if variable is None or not variable.active:
@@ -94,28 +121,46 @@ class HistoricalReloadService:
                 # enqueue the same missing interval concurrently.
                 self.db.execute(text("SELECT pg_advisory_xact_lock(2147483001, :tag_id)"), {"tag_id": tag.id})
             missing = CoverageService.get_missing_intervals(self.db, tag.id, payload.start_time, payload.end_time, mode, seconds)
-            for start, end in missing:
-                duplicate = self.db.scalar(select(PiBackfillJob).where(
-                    PiBackfillJob.tag_id == tag.id,
-                    PiBackfillJob.mode == mode,
-                    PiBackfillJob.interval_seconds == seconds,
-                    PiBackfillJob.target_start == start,
-                    PiBackfillJob.target_end == end,
-                    PiBackfillJob.status.in_(("PENDING", "RUNNING")),
-                ))
-                if duplicate:
-                    jobs.append(duplicate)
-                    continue
-                job = PiBackfillJob(tag_id=tag.id, mode=mode, interval_seconds=seconds, target_start=start, target_end=end, next_start=start, checkpoint_start=start, stage="PENDING", status="PENDING")
-                self.db.add(job)
-                jobs.append(job)
+            if not missing:
+                # Already covered, but admin requested an explicit reload: reload requested range
+                start, end = payload.start_time, payload.end_time
+            elif len(missing) == 1:
+                start, end = missing[0]
+            else:
+                # Multiple fragmented micro-gaps exist: unify them into a single continuous range
+                # to avoid creating dozens of 1-minute micro-jobs. The idempotent upsert and
+                # coverage merge will cleanly fill all gaps in standard chunks.
+                start = min(m[0] for m in missing)
+                end = max(m[1] for m in missing)
+
+            duplicate = self.db.scalar(select(PiBackfillJob).where(
+                PiBackfillJob.tag_id == tag.id,
+                PiBackfillJob.mode == mode,
+                PiBackfillJob.interval_seconds == seconds,
+                PiBackfillJob.target_start == start,
+                PiBackfillJob.target_end == end,
+                PiBackfillJob.status.in_(("PENDING", "RUNNING")),
+            ))
+            if duplicate:
+                jobs.append(duplicate)
+                continue
+            job = PiBackfillJob(tag_id=tag.id, mode=mode, interval_seconds=seconds, target_start=start, target_end=end, next_start=start, checkpoint_start=start, stage="PENDING", status="PENDING")
+            self.db.add(job)
+            jobs.append(job)
         self.db.commit()
         for job in jobs:
             self.db.refresh(job)
         return jobs
 
     def list(self, limit: int = 100) -> list[PiBackfillJob]:
-        return list(self.db.scalars(select(PiBackfillJob).order_by(PiBackfillJob.created_at.desc()).limit(limit)).all())
+        return list(
+            self.db.scalars(
+                select(PiBackfillJob)
+                .where(PiBackfillJob.round_name.is_(None))
+                .order_by(PiBackfillJob.id.desc())
+                .limit(limit)
+            ).all()
+        )
 
     def get(self, job_id: int) -> PiBackfillJob:
         job = self.db.get(PiBackfillJob, job_id)

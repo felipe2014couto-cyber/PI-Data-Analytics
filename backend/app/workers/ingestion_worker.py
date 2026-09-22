@@ -10,6 +10,12 @@ Each minute interval is processed in three phases:
   A) short session: read tag, WebId, watermark, state; close session;
   B) no DB session: fetch + paginate RecordedValues over HTTP;
   C) short transaction: upsert events, coverage, watermark; commit.
+
+Two responsibilities after downtime:
+  - **Recent-first**: the last completed minute is always ingested first so
+    current data appears immediately.
+  - **Catch-up**: pending minutes between the watermark and the present are
+    recovered in order, with a limited budget, without blocking recent data.
 """
 from __future__ import annotations
 
@@ -376,8 +382,13 @@ async def _ingest_tag(
                 watermark_ts, last_source_ts = _state_timestamps(
                     points, end, tx_state.last_source_ts,
                 )
-                tx_state.watermark_ts = watermark_ts
-                if tx_state.last_source_ts is None or last_source_ts is not None:
+                current_wm = _as_utc(tx_state.watermark_ts) if tx_state.watermark_ts is not None else None
+                new_wm = _as_utc(watermark_ts) if watermark_ts is not None else None
+                if current_wm is None or (new_wm is not None and new_wm > current_wm):
+                    tx_state.watermark_ts = watermark_ts
+                cur_last = _as_utc(tx_state.last_source_ts) if tx_state.last_source_ts is not None else None
+                new_last = _as_utc(last_source_ts) if last_source_ts is not None else None
+                if cur_last is None or (new_last is not None and new_last > cur_last):
                     tx_state.last_source_ts = last_source_ts
                 tx_state.last_success_at = now
                 tx_state.consecutive_failures = 0
@@ -399,7 +410,201 @@ async def _ingest_tag(
     return total_points, requests
 
 
-async def run_ingestion_loop(interval_seconds: float = 10.0, *, once: bool = False) -> None:
+async def _ingest_recent_minute(
+    tag_ids: set[int],
+    now: datetime,
+    *,
+    provider: Any = None,
+) -> int:
+    """Ingest only the most recent completed minute for all tags.
+
+    This ensures current data appears immediately after a restart, before
+    the catch-up backlog is processed.
+    """
+    limit = _minute_floor(now)
+    recent_start = limit - MINUTE
+    semaphore = asyncio.Semaphore(settings.ingestion_tag_concurrency)
+    total = 0
+
+    async def _one(tag_id: int) -> int:
+        async with semaphore:
+            # Check if this minute already has coverage or tag is in backoff.
+            with SessionLocal() as db:
+                tag = db.get(PiTag, tag_id)
+                if tag is None or not tag.active or not tag.pi_web_id:
+                    return 0
+                state = db.get(PiIngestionState, (tag_id, "RECORDED"))
+                if state and state.next_attempt_at and _as_utc(state.next_attempt_at) > now:
+                    return 0  # Tag in backoff; do not query PI
+                wm = _as_utc(state.watermark_ts) if state and state.watermark_ts else None
+                if wm is not None and wm >= limit:
+                    return 0  # Already covered.
+            try:
+                p = provider or get_pi_data_provider()
+                if p is None:
+                    return 0
+                with SessionLocal() as db:
+                    tag = db.get(PiTag, tag_id)
+                    if tag is None or not tag.pi_web_id:
+                        return 0
+                    web_id = tag.pi_web_id
+
+                stats = FetchStats()
+                task = asyncio.create_task(
+                    _fetch_complete_interval(
+                        p, web_id, recent_start, limit,
+                        max_count=settings.ingestion_recorded_max_points,
+                        stats=stats,
+                        page_budget=settings.ingestion_tag_request_budget,
+                    )
+                )
+                try:
+                    points = await asyncio.wait_for(
+                        task,
+                        timeout=settings.ingestion_tag_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    with SessionLocal() as fdb:
+                        _record_failure(fdb, tag_id, "RECORDED", now, "TAG_TIMEOUT",
+                                        "Turno de minuto recente excedeu o timeout de ingestao")
+                    logger.warning("recent_minute_timeout tag_id=%s timeout=%.1fs", tag_id, settings.ingestion_tag_timeout_seconds)
+                    return 0
+                # Persist with coverage but do NOT advance contiguous watermark
+                # over gaps. Instead we record the coverage separately and let
+                # the catch-up merge it.
+                with SessionLocal() as tx:
+                    _persist_points(tx, tag_id, points, "RECORDED")
+                    CoverageService.record_coverage(
+                        tx, tag_id, recent_start, limit, "RECORDED", None,
+                        pi_web_id=web_id,
+                    )
+                    # Only advance watermark if it's contiguous.
+                    tx_state = tx.get(PiIngestionState, (tag_id, "RECORDED"))
+                    if tx_state is None:
+                        tx_state = PiIngestionState(tag_id=tag_id, source_mode="RECORDED")
+                        tx.add(tx_state)
+                    existing_wm = _as_utc(tx_state.watermark_ts)
+                    if existing_wm is not None and existing_wm >= recent_start:
+                        if limit > existing_wm:
+                            tx_state.watermark_ts = limit
+                    elif existing_wm is None:
+                        tx_state.watermark_ts = limit
+                    tx_state.last_success_at = now
+                    tx_state.consecutive_failures = 0
+                    tx_state.last_error_code = None
+                    tx_state.last_error_message = None
+                    tx_state.next_attempt_at = None
+                    tx.commit()
+                return len(points)
+            except (BudgetExhaustedError, IntervalIncompleteError):
+                return 0
+            except Exception:
+                logger.debug("recent_minute_failed tag_id=%s", tag_id, exc_info=True)
+                return 0
+
+    results = await asyncio.gather(*(_one(tid) for tid in sorted(tag_ids)), return_exceptions=True)
+    for r in results:
+        if isinstance(r, int):
+            total += r
+    return total
+
+
+async def _reconcile_recent(
+    tag_ids: set[int],
+    now: datetime,
+    *,
+    provider: Any = None,
+) -> int:
+    """Re-ingest the last N completed minutes to capture late-arriving events.
+
+    The UPSERT makes this idempotent; events already persisted are updated
+    in place rather than duplicated.
+    """
+    recon_minutes = settings.ingestion_reconciliation_minutes
+    if recon_minutes <= 0:
+        return 0
+    limit = _minute_floor(now)
+    semaphore = asyncio.Semaphore(settings.ingestion_tag_concurrency)
+    total = 0
+
+    async def _one(tag_id: int) -> int:
+        async with semaphore:
+            with SessionLocal() as db:
+                tag = db.get(PiTag, tag_id)
+                if tag is None or not tag.active or not tag.pi_web_id:
+                    return 0
+                state = db.get(PiIngestionState, (tag_id, "RECORDED"))
+                if state and state.next_attempt_at and _as_utc(state.next_attempt_at) > now:
+                    return 0  # Tag in backoff; do not reconcile
+                web_id = tag.pi_web_id
+            p = provider or get_pi_data_provider()
+            if p is None:
+                return 0
+            subtotal = 0
+            for offset in range(recon_minutes, 0, -1):
+                interval_start = limit - MINUTE * offset
+                interval_end = interval_start + MINUTE
+                try:
+                    stats = FetchStats()
+                    task = asyncio.create_task(
+                        _fetch_complete_interval(
+                            p, web_id, interval_start, interval_end,
+                            max_count=settings.ingestion_recorded_max_points,
+                            stats=stats,
+                            page_budget=settings.ingestion_tag_request_budget,
+                        )
+                    )
+                    points = await asyncio.wait_for(
+                        task,
+                        timeout=settings.ingestion_tag_timeout_seconds,
+                    )
+                    if points:
+                        with SessionLocal() as tx:
+                            _persist_points(tx, tag_id, points, "RECORDED")
+                            CoverageService.record_coverage(
+                                tx, tag_id, interval_start, interval_end,
+                                "RECORDED", None, pi_web_id=web_id,
+                            )
+                            tx.commit()
+                        subtotal += len(points)
+                except asyncio.TimeoutError:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    with SessionLocal() as fdb:
+                        _record_failure(fdb, tag_id, "RECORDED", now, "TAG_TIMEOUT",
+                                        "Turno de reconciliacao excedeu o timeout de ingestao")
+                    logger.warning("reconcile_minute_timeout tag_id=%s timeout=%.1fs", tag_id, settings.ingestion_tag_timeout_seconds)
+                    break
+                except Exception:
+                    logger.debug(
+                        "reconcile_minute_failed tag_id=%s minute=%s",
+                        tag_id, interval_start.isoformat(), exc_info=True,
+                    )
+            return subtotal
+
+    results = await asyncio.gather(*(_one(tid) for tid in sorted(tag_ids)), return_exceptions=True)
+    for r in results:
+        if isinstance(r, int):
+            total += r
+    if total:
+        logger.info("reconciliation_completed events=%d tags=%d minutes=%d", total, len(tag_ids), recon_minutes)
+    return total
+
+
+async def run_ingestion_loop(
+    interval_seconds: float = 10.0,
+    *,
+    once: bool = False,
+    stop_event: asyncio.Event | None = None,
+) -> None:
     """Run cycles with bounded tag concurrency and per-tag isolation.
 
     Tags run as independent asyncio tasks capped by
@@ -410,81 +615,147 @@ async def run_ingestion_loop(interval_seconds: float = 10.0, *, once: bool = Fal
     The Recorded cadence advances after each minute-cycle regardless of
     individual tag failures: per-tag retries are governed by
     ``next_attempt_at``, not by the global cadence.
+
+    After downtime, the cycle:
+      1. Ingests the most recent completed minute first (recent-first).
+      2. Reconciles configurable recent minutes for late-arriving events.
+      3. Processes catch-up from the watermark forward (bounded budget).
     """
     interval_seconds = interval_seconds or settings.ingestion_cycle_seconds
     last_recorded_cycle: datetime | None = None
     while True:
+        if stop_event is not None and stop_event.is_set():
+            break
         cycle_started = datetime.now(timezone.utc); acquired = False
         recorded_due = (
             last_recorded_cycle is None
             or (cycle_started - last_recorded_cycle).total_seconds()
-            >= settings.ingestion_recorded_cycle_seconds
         )
+        raw_lock_conn = None
+        acquired = False
         try:
-            with SessionLocal() as db:
-                if db.bind is not None and db.bind.dialect.name == "postgresql":
-                    acquired = bool(db.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": LOCK_KEY}).scalar())
-                else: acquired = True
-                if acquired:
+            from app.database.session import engine
+            if getattr(engine, "dialect", None) is not None and engine.dialect.name == "postgresql":
+                try:
+                    raw_lock_conn = engine.raw_connection()
+                    cursor = raw_lock_conn.cursor()
+                    cursor.execute("SELECT pg_try_advisory_lock(%s)", (LOCK_KEY,))
+                    row = cursor.fetchone()
+                    acquired = bool(row and row[0])
+                    raw_lock_conn.commit()
+                    if not acquired:
+                        raw_lock_conn.close()
+                        raw_lock_conn = None
+                except Exception:
+                    if raw_lock_conn is not None:
+                        try:
+                            raw_lock_conn.close()
+                        except Exception:
+                            pass
+                        raw_lock_conn = None
+                    acquired = False
+            else:
+                acquired = True
+
+            if acquired:
+                with SessionLocal() as db:
                     tags = db.execute(select(PiTag).where(PiTag.active.is_(True))).scalars().all()
                     tag_ids = {tag.id for tag in tags}
-                    for tag in tags: tag_ids.update(filter(None, (tag.lower_limit_tag_id, tag.upper_limit_tag_id)))
-                    db.commit()
-                    selected_mode = None if recorded_due else "__INTERPOLATED_ONLY__"
-                    semaphore = asyncio.Semaphore(settings.ingestion_tag_concurrency)
-                    total_points = 0
-                    tag_timeouts = 0
+                    for tag in tags:
+                        tag_ids.update(filter(None, (tag.lower_limit_tag_id, tag.upper_limit_tag_id)))
+                # Session is closed: all HTTP calls happen with NO open DB session.
 
-                    async def run_one(tag_id: int) -> None:
-                        nonlocal total_points, tag_timeouts
-                        async with semaphore:
-                            task = asyncio.create_task(
-                                _ingest_tag(tag_id, cycle_started, source_mode=selected_mode)
+                if recorded_due and tag_ids:
+                    # Step 1: Recent-first — ingest the last completed
+                    # minute so current data appears immediately.
+                    recent_points = await _ingest_recent_minute(
+                        tag_ids, cycle_started,
+                    )
+                    if recent_points:
+                        logger.info(
+                            "recent_first_completed events=%d tags=%d",
+                            recent_points, len(tag_ids),
+                        )
+
+                    # Step 2: Reconciliation — re-query last N minutes
+                    # for late-arriving events (idempotent via UPSERT).
+                    if settings.ingestion_reconciliation_minutes > 0:
+                        await _reconcile_recent(tag_ids, cycle_started)
+
+                # Step 3: Catch-up / normal ingestion from watermark.
+                selected_mode = None if recorded_due else "__INTERPOLATED_ONLY__"
+                semaphore = asyncio.Semaphore(settings.ingestion_tag_concurrency)
+                total_points = 0
+                tag_timeouts = 0
+
+                async def run_one(tag_id: int) -> None:
+                    nonlocal total_points, tag_timeouts
+                    async with semaphore:
+                        task = asyncio.create_task(
+                            _ingest_tag(tag_id, cycle_started, source_mode=selected_mode)
+                        )
+                        try:
+                            points, _ = await asyncio.wait_for(
+                                task, timeout=settings.ingestion_tag_timeout_seconds,
                             )
+                            total_points += points
+                        except asyncio.TimeoutError:
+                            tag_timeouts += 1
+                            task.cancel()
                             try:
-                                points, _ = await asyncio.wait_for(
-                                    task, timeout=settings.ingestion_tag_timeout_seconds,
-                                )
-                                total_points += points
-                            except asyncio.TimeoutError:
-                                tag_timeouts += 1
-                                task.cancel()
-                                try:
-                                    await task  # let cancellation settle; CancelledError is not success
-                                except (asyncio.CancelledError, Exception):
-                                    pass
-                                # Dedicated short session: TAG_TIMEOUT failure
-                                # with backoff; watermark is not touched here.
-                                with SessionLocal() as fdb:
-                                    _record_failure(fdb, tag_id, "RECORDED", cycle_started, "TAG_TIMEOUT",
-                                                    "Turno excedeu o timeout total de ingestao")
-                                logger.error("ingestion_tag_timeout tag_id=%s timeout_seconds=%.0f",
-                                             tag_id, settings.ingestion_tag_timeout_seconds)
-                            except asyncio.CancelledError:
-                                raise
-                            except BudgetExhaustedError:
-                                # Fairness reschedule, not a failure.
-                                logger.info("ingestion_tag_rescheduled tag_id=%s", tag_id)
-                            except Exception as exc:
-                                # Per-tag failure already persisted inside
-                                # _ingest_tag; other tags keep running.
-                                logger.exception("ingestion_tag_failed tag_id=%s error=%s", tag_id, _safe_error(exc))
+                                await task  # let cancellation settle; CancelledError is not success
+                            except (asyncio.CancelledError, Exception):
+                                pass
+                            # Dedicated short session: TAG_TIMEOUT failure
+                            # with backoff; watermark is not touched here.
+                            with SessionLocal() as fdb:
+                                _record_failure(fdb, tag_id, "RECORDED", cycle_started, "TAG_TIMEOUT",
+                                                "Turno excedeu o timeout total de ingestao")
+                            logger.error("ingestion_tag_timeout tag_id=%s timeout_seconds=%.0f",
+                                         tag_id, settings.ingestion_tag_timeout_seconds)
+                        except asyncio.CancelledError:
+                            raise
+                        except BudgetExhaustedError:
+                            # Fairness reschedule, not a failure.
+                            logger.info("ingestion_tag_rescheduled tag_id=%s", tag_id)
+                        except Exception as exc:
+                            # Per-tag failure already persisted inside
+                            # _ingest_tag; other tags keep running.
+                            logger.exception("ingestion_tag_failed tag_id=%s error=%s", tag_id, _safe_error(exc))
 
-                    if tag_ids:
-                        await asyncio.gather(*(run_one(tag_id) for tag_id in sorted(tag_ids)))
-                    logger.info("ingestion_cycle_completed duration_ms=%d points_written=%d tag_count=%d tag_timeouts=%d",
-                                int((datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000),
-                                total_points, len(tag_ids), tag_timeouts)
-                    # The one-minute Recorded cadence advances on every
-                    # executed cycle; individual tag retries are governed by
-                    # each tag's next_attempt_at and pending watermark.
-                    if recorded_due:
-                        last_recorded_cycle = cycle_started
-                if acquired and db.bind is not None and db.bind.dialect.name == "postgresql":
-                    db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": LOCK_KEY})
+                if tag_ids:
+                    await asyncio.gather(*(run_one(tag_id) for tag_id in sorted(tag_ids)))
+                logger.info("ingestion_cycle_completed duration_ms=%d points_written=%d tag_count=%d tag_timeouts=%d",
+                            int((datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000),
+                            total_points, len(tag_ids), tag_timeouts)
+                # The one-minute Recorded cadence advances on every
+                # executed cycle; individual tag retries are governed by
+                # each tag's next_attempt_at and pending watermark.
+                if recorded_due:
+                    last_recorded_cycle = cycle_started
         except Exception:
             if once: raise
             logger.exception("ingestion_cycle_failed")
+        finally:
+            if raw_lock_conn is not None:
+                try:
+                    cursor = raw_lock_conn.cursor()
+                    cursor.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
+                    raw_lock_conn.commit()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        raw_lock_conn.close()
+                    except Exception:
+                        pass
         if once: return
         elapsed = (datetime.now(timezone.utc) - cycle_started).total_seconds()
-        await asyncio.sleep(max(0.0, interval_seconds - elapsed))
+        if stop_event is not None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=max(0.0, interval_seconds - elapsed))
+                break
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(max(0.0, interval_seconds - elapsed))

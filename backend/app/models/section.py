@@ -53,6 +53,13 @@ class Section(Base, TimestampMixin):
         cascade="save-update, merge",
         passive_deletes=True,
     )
+    analysis_tags: Mapped[List["SectionAnalysisTag"]] = relationship(  # noqa: F821
+        "SectionAnalysisTag",
+        back_populates="section",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="selectin",
+    )
 
     __table_args__ = (
         UniqueConstraint("equipment_id", "code", name="uq_sections_equipment_code"),

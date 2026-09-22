@@ -1,6 +1,7 @@
 """Section business rules."""
 from typing import List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import (
@@ -11,11 +12,12 @@ from app.core.exceptions import (
     NotFoundError,
 )
 from app.models.section import Section
+from app.models.section_analysis_tag import SectionAnalysisTag
 from app.models.pi_tag import PiTag, PiTagDataType
 from app.models.variable_type import VariableType
 from app.repositories.equipment_repository import EquipmentRepository
 from app.repositories.section_repository import SectionRepository
-from app.schemas.section import SectionCreate, SectionUpdate
+from app.schemas.section import SectionAnalysisTagItem, SectionCreate, SectionUpdate
 
 
 class SectionService:
@@ -63,6 +65,21 @@ class SectionService:
                 details={"equipment_id": equipment_id},
             )
 
+    def _validate_tag_scope(
+        self,
+        tag: PiTag,
+        equipment_id: int,
+        section_id: Optional[int],
+        context_details: dict,
+    ) -> None:
+        if tag.equipment_id != equipment_id or (
+            section_id is not None and tag.section_id not in (None, section_id)
+        ):
+            raise InvalidSectionError(
+                "A tag selecionada deve pertencer ao equipamento e a secao, ou ser global do equipamento.",
+                details={"tag_id": tag.id, "section_id": section_id, **context_details},
+            )
+
     def _validate_analysis_tags(
         self,
         equipment_id: int,
@@ -91,13 +108,12 @@ class SectionService:
                     "A tag informada nao existe.",
                     details={"field": field, "tag_id": tag_id},
                 )
-            if tag.equipment_id != equipment_id or (
-                section_id is not None and tag.section_id not in (None, section_id)
-            ):
-                raise InvalidSectionError(
-                    "A tag selecionada deve pertencer ao equipamento e a secao, ou ser global do equipamento.",
-                    details={"field": field, "tag_id": tag_id, "section_id": section_id},
-                )
+            self._validate_tag_scope(
+                tag=tag,
+                equipment_id=equipment_id,
+                section_id=section_id,
+                context_details={"field": field},
+            )
             if field in {"width_tag_id", "thickness_tag_id"} and tag.data_type != PiTagDataType.NUMERIC:
                 raise InvalidSectionError(
                     "As tags de largura e espessura devem ser numericas.",
@@ -118,6 +134,74 @@ class SectionService:
                     "A tag selecionada nao corresponde ao tipo de variavel esperado.",
                     details={"field": field, "tag_id": tag_id, "expected": sorted(expected_types[field])},
                 )
+
+    def _sync_dynamic_analysis_tags(
+        self,
+        section: Section,
+        items: Optional[List[SectionAnalysisTagItem]],
+        target_equipment_id: int,
+    ) -> None:
+        if items is None:
+            return
+
+        var_type_ids = [item.variable_type_id for item in items]
+        if len(var_type_ids) != len(set(var_type_ids)):
+            raise InvalidSectionError(
+                "Cada tipo de variavel so pode ser associado uma vez por secao.",
+                details={"variable_type_ids": var_type_ids},
+            )
+
+        for item in items:
+            var_type = self.db.get(VariableType, item.variable_type_id)
+            if var_type is None:
+                raise InvalidSectionError(
+                    "O tipo de variavel informado nao existe.",
+                    details={"variable_type_id": item.variable_type_id},
+                )
+
+            tag = self.db.get(PiTag, item.pi_tag_id)
+            if tag is None:
+                raise InvalidSectionError(
+                    "A tag informada nao existe.",
+                    details={"pi_tag_id": item.pi_tag_id},
+                )
+
+            self._validate_tag_scope(
+                tag=tag,
+                equipment_id=target_equipment_id,
+                section_id=section.id,
+                context_details={"variable_type_id": item.variable_type_id},
+            )
+
+            if tag.variable_type_id != item.variable_type_id:
+                raise InvalidSectionError(
+                    "A tag selecionada nao pertence ao tipo de variavel escolhido.",
+                    details={
+                        "pi_tag_id": tag.id,
+                        "tag_variable_type_id": tag.variable_type_id,
+                        "expected_variable_type_id": item.variable_type_id,
+                    },
+                )
+
+        current_by_var_type = {record.variable_type_id: record for record in section.analysis_tags}
+        payload_by_var_type = {item.variable_type_id: item.pi_tag_id for item in items}
+
+        for var_type_id, record in list(current_by_var_type.items()):
+            if var_type_id not in payload_by_var_type:
+                self.db.delete(record)
+
+        for var_type_id, pi_tag_id in payload_by_var_type.items():
+            if var_type_id in current_by_var_type:
+                record = current_by_var_type[var_type_id]
+                if record.pi_tag_id != pi_tag_id:
+                    record.pi_tag_id = pi_tag_id
+            else:
+                new_assoc = SectionAnalysisTag(
+                    section_id=section.id,
+                    variable_type_id=var_type_id,
+                    pi_tag_id=pi_tag_id,
+                )
+                self.db.add(new_assoc)
 
     def create(self, payload: SectionCreate) -> Section:
         self._ensure_equipment(payload.equipment_id)
@@ -148,8 +232,17 @@ class SectionService:
             um_tag_id=section.um_tag_id,
             thickness_tag_id=section.thickness_tag_id,
         )
-        self.db.commit()
-        self.db.expire(section, ["classification_tags"])
+        if payload.analysis_tags is not None:
+            self._sync_dynamic_analysis_tags(section, payload.analysis_tags, section.equipment_id)
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise InvalidSectionError(
+                "Violacao de integridade nas tags de analise da secao.",
+                details={"error": str(exc.orig) if hasattr(exc, "orig") else str(exc)},
+            )
+        self.db.expire(section, ["classification_tags", "analysis_tags"])
         self.db.refresh(section)
         return section
 
@@ -199,8 +292,25 @@ class SectionService:
             section.um_tag_id = payload.um_tag_id
         if "thickness_tag_id" in payload.model_fields_set:
             section.thickness_tag_id = payload.thickness_tag_id
-        self.db.commit()
-        self.db.expire(section, ["classification_tags"])
+        if "analysis_tags" in payload.model_fields_set and payload.analysis_tags is not None:
+            self._sync_dynamic_analysis_tags(section, payload.analysis_tags, target_equipment_id)
+        elif payload.equipment_id is not None and payload.equipment_id != section.equipment_id:
+            for item in section.analysis_tags:
+                self._validate_tag_scope(
+                    tag=item.pi_tag,
+                    equipment_id=target_equipment_id,
+                    section_id=section.id,
+                    context_details={"variable_type_id": item.variable_type_id},
+                )
+        try:
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise InvalidSectionError(
+                "Violacao de integridade nas tags de analise da secao.",
+                details={"error": str(exc.orig) if hasattr(exc, "orig") else str(exc)},
+            )
+        self.db.expire(section, ["classification_tags", "analysis_tags"])
         self.db.refresh(section)
         return section
 

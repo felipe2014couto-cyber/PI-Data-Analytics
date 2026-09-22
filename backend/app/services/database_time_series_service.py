@@ -16,10 +16,13 @@ from app.core.config import settings
 from app.core.exceptions import HistoricalDataNotLoadedError, QueryLimitExceededError, TimeRangeInvalidError, ValidationError
 from app.models.pi_tag import PiTag
 from app.models.postgres import PiIngestionState, PiSample
+from app.models.section_analysis_tag import SectionAnalysisTag
+from app.models.variable_type import VariableFilterDataType
 from app.repositories.pi_tag_repository import PiTagRepository
-from app.schemas.pi import TimeSeries, TimeSeriesPoint, TimeSeriesRequest, TimeSeriesSeries
+from app.schemas.pi import AnalysisFilterRequest, TimeSeries, TimeSeriesPoint, TimeSeriesRequest, TimeSeriesSeries
 from app.services.cache import LruCache
 from app.services.coverage_service import CoverageService, normalize_mode
+from app.services.string_filter_parser import ExactMatch, RangeMatch, WildcardMatch, parse_string_filter
 
 logger = logging.getLogger("pi_analytics_data.service.timescaledb")
 
@@ -168,9 +171,11 @@ class DatabaseTimeSeriesService:
             tag._meta_unit = tag.engineering_unit or (tag.variable_type.default_unit if tag.variable_type else None)
             tags.append(tag)
 
+        active_filters = [f for f in (request.analysis_filters or []) if self._is_filter_active(f)]
+
         postgres = self.db.bind is not None and self.db.bind.dialect.name == "postgresql"
         available_plot_aggregates = self._available_plot_aggregates() if postgres else ()
-        plot_aggregate = _plot_aggregate_for(request, postgres=postgres)
+        plot_aggregate = _plot_aggregate_for(request, postgres=postgres) if not active_filters else None
         if plot_aggregate and plot_aggregate[0] not in {entry[1] for entry in available_plot_aggregates}:
             desired_seconds = _interval_seconds(plot_aggregate[1]) or 1
             replacement = min(
@@ -179,7 +184,7 @@ class DatabaseTimeSeriesService:
                 default=None,
             )
             plot_aggregate = (replacement[1], replacement[2]) if replacement else None
-        dynamic_requested = postgres and request.target_points_per_tag is not None
+        dynamic_requested = postgres and request.target_points_per_tag is not None and not active_filters
 
         # Plot aggregates are the only visual read path. RECORDED remains the
         # internal source populated by the ingestion worker.
@@ -239,6 +244,13 @@ class DatabaseTimeSeriesService:
                 interval_seconds,
                 allow_stale=plot_aggregate is not None,
                 check_coverage=plot_aggregate is None,
+            )
+
+        filter_sql = ""
+        filter_params: dict[str, Any] = {}
+        if active_filters:
+            filter_sql, filter_params = self._build_dynamic_filters(
+                request.section_id, active_filters, mode=requested_mode
             )
 
         effective_target_points: Optional[int] = None
@@ -352,7 +364,13 @@ class DatabaseTimeSeriesService:
                         ],
                     })
                     continue
-                points = self._get_from_db(tag.id, covered, requested_mode)
+                points = self._get_from_db(
+                    tag.id,
+                    covered,
+                    requested_mode,
+                    filter_sql=filter_sql,
+                    filter_params=filter_params,
+                )
             if not dynamic_requested and request.max_count and len(points) > request.max_count:
                 # Manual (non-dynamic) mode keeps its documented max_count
                 # contract; the dynamic path never reaches this truncation.
@@ -541,21 +559,165 @@ class DatabaseTimeSeriesService:
                 unique[point.timestamp] = point
         return [unique[ts] for ts in sorted(unique)]
 
-    def _get_from_db(self, tag_id: int, intervals: list[tuple[datetime, datetime]], mode: str) -> list[TimeSeriesPoint]:
+    @staticmethod
+    def _is_filter_active(f: AnalysisFilterRequest) -> bool:
+        if f.min is not None or f.max is not None:
+            return True
+        if f.expression is not None and f.expression.strip():
+            return True
+        if f.value in ("ON", "OFF"):
+            return True
+        return False
+
+    def _build_dynamic_filters(
+        self,
+        section_id: Optional[int],
+        active_filters: list[AnalysisFilterRequest],
+        mode: str,
+    ) -> tuple[str, dict[str, Any]]:
+        if not section_id:
+            raise ValidationError("section_id é obrigatório para filtros dinâmicos de análise.")
+
+        filter_clauses: list[str] = []
+        filter_params: dict[str, Any] = {}
+
+        for idx, f in enumerate(active_filters):
+            analysis_tag = (
+                self.db.query(SectionAnalysisTag)
+                .filter(
+                    SectionAnalysisTag.section_id == section_id,
+                    SectionAnalysisTag.variable_type_id == f.variable_type_id,
+                )
+                .first()
+            )
+            if not analysis_tag:
+                raise ValidationError(
+                    f"Tipo de variável (ID {f.variable_type_id}) não está vinculado à seção {section_id}.",
+                    details={"variable_type_id": f.variable_type_id, "section_id": section_id},
+                )
+
+            filter_tag_id = analysis_tag.pi_tag_id
+            vtype = analysis_tag.variable_type
+            data_type = vtype.filter_data_type if vtype else VariableFilterDataType.REAL
+
+            tag_param = f"f_tag_{idx}"
+            filter_params[tag_param] = filter_tag_id
+
+            if data_type == VariableFilterDataType.REAL:
+                if f.min is not None and f.max is not None and f.min > f.max:
+                    raise ValidationError("Valor mínimo não pode ser maior que o valor máximo.")
+                real_clauses = ["value_double IS NOT NULL"]
+                if f.min is not None:
+                    pname = f"f_min_{idx}"
+                    filter_params[pname] = f.min
+                    real_clauses.append(f"value_double >= :{pname}")
+                if f.max is not None:
+                    pname = f"f_max_{idx}"
+                    filter_params[pname] = f.max
+                    real_clauses.append(f"value_double <= :{pname}")
+                cond_sql = " AND ".join(real_clauses)
+
+            elif data_type == VariableFilterDataType.DIGITAL:
+                if f.value == "ON":
+                    cond_sql = "value_boolean IS TRUE"
+                elif f.value == "OFF":
+                    cond_sql = "value_boolean IS FALSE"
+                else:
+                    continue
+
+            elif data_type == VariableFilterDataType.STRING:
+                expr = (f.expression or "").strip()
+                if not expr:
+                    continue
+                try:
+                    ast_tokens = parse_string_filter(expr)
+                except ValueError as exc:
+                    raise ValidationError(str(exc)) from exc
+
+                str_clauses: list[str] = []
+                for j, token in enumerate(ast_tokens):
+                    if isinstance(token, ExactMatch):
+                        pname = f"f_str_{idx}_{j}"
+                        filter_params[pname] = token.value
+                        str_clauses.append(f"LOWER(value_text) = LOWER(:{pname})")
+                    elif isinstance(token, WildcardMatch):
+                        pname = f"f_like_{idx}_{j}"
+                        filter_params[pname] = token.pattern
+                        str_clauses.append(f"LOWER(value_text) LIKE LOWER(:{pname}) ESCAPE '\\'")
+                    elif isinstance(token, RangeMatch):
+                        if token.values is not None:
+                            val_pnames = []
+                            for k, v in enumerate(token.values):
+                                vpname = f"f_rng_{idx}_{j}_{k}"
+                                filter_params[vpname] = v.lower()
+                                val_pnames.append(f":{vpname}")
+                            str_clauses.append(f"LOWER(value_text) IN ({', '.join(val_pnames)})")
+                        else:
+                            range_parts = []
+                            if token.prefix:
+                                pname = f"f_rpref_{idx}_{j}"
+                                escaped = token.prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                                filter_params[pname] = escaped
+                                range_parts.append(f"LOWER(value_text) LIKE LOWER(:{pname}) ESCAPE '\\'")
+                            if token.padding > 0:
+                                plen_name = f"f_rlen_{idx}_{j}"
+                                filter_params[plen_name] = len(token.prefix) + token.padding
+                                range_parts.append(f"LENGTH(value_text) = :{plen_name}")
+                            pos_name = f"f_rpos_{idx}_{j}"
+                            filter_params[pos_name] = len(token.prefix) + 1
+                            s_name = f"f_rstart_{idx}_{j}"
+                            filter_params[s_name] = token.start
+                            e_name = f"f_rend_{idx}_{j}"
+                            filter_params[e_name] = token.end
+                            range_parts.append(f"CAST(SUBSTR(value_text, :{pos_name}) AS INTEGER) BETWEEN :{s_name} AND :{e_name}")
+                            str_clauses.append(f"({' AND '.join(range_parts)})")
+
+                if str_clauses:
+                    cond_sql = f"value_text IS NOT NULL AND ({' OR '.join(str_clauses)})"
+                else:
+                    continue
+            else:
+                continue
+
+            subquery = f"""
+                AND ts IN (
+                    SELECT ts FROM pi_samples_timescale
+                    WHERE tag_id = :{tag_param}
+                      AND source_mode = :mode
+                      AND ts >= :start AND ts < :end
+                      AND ({cond_sql})
+                )
+            """
+            filter_clauses.append(subquery)
+
+        return "\n".join(filter_clauses), filter_params
+
+    def _get_from_db(
+        self,
+        tag_id: int,
+        intervals: list[tuple[datetime, datetime]],
+        mode: str,
+        filter_sql: str = "",
+        filter_params: Optional[dict[str, Any]] = None,
+    ) -> list[TimeSeriesPoint]:
         if not intervals:
             return []
         points: list[TimeSeriesPoint] = []
         for start, end in intervals:
+            params = {"tag_id": tag_id, "mode": mode, "start": start, "end": end}
+            if filter_params:
+                params.update(filter_params)
             rows = self.db.execute(text(
-                """
+                f"""
                 SELECT ts, value_double, value_boolean, value_text, value_type,
                        good, questionable, substituted
                 FROM pi_samples_timescale
                 WHERE tag_id = :tag_id AND source_mode = :mode
                   AND ts >= :start AND ts < :end
+                  {filter_sql}
                 ORDER BY ts ASC
                 """
-            ), {"tag_id": tag_id, "mode": mode, "start": start, "end": end}).fetchall()
+            ), params).fetchall()
             for row in rows:
                 points.append(TimeSeriesPoint(
                     timestamp=row[0],
