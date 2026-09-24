@@ -255,7 +255,7 @@ function syncQualityConfig(
 
 export function DataVisualizationPage() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
-  const [chartWidth, setChartWidth] = useState<number>(1500);
+  const [chartWidth, setChartWidth] = useState<number>(1120);
 
   useEffect(() => {
     const el = chartContainerRef.current;
@@ -281,8 +281,11 @@ export function DataVisualizationPage() {
   }, []);
 
   const dynamicPointsPerTag = useMemo(() => {
-    // 1 ponto por pixel da largura do componente de gráfico (limitado tecnicamente entre 500 e 2500)
-    return Math.max(500, Math.min(2500, chartWidth || 1500));
+    const cardWidth = chartWidth || 1120;
+    // Largura real da área plotável temporal: desconta margens de eixos Y e padding do card (~120px)
+    const plotWidth = Math.max(100, cardWidth - 120);
+    // Política equivalente ao PI Vision (1.5 intervalos por pixel de largura útil, min 100, max 2000)
+    return Math.max(100, Math.min(2000, Math.round(plotWidth * 1.5)));
   }, [chartWidth]);
 
   const navigate = useNavigate();

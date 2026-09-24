@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -62,14 +63,14 @@ def test_dynamic_planner_uses_aggregate_above_raw_boundary() -> None:
     plan = _dynamic_plot_plan(timedelta(days=1), 1500, raw_point_count=5001, raw_point_limit=5000)
     assert plan.use_raw is False
     assert plan.view_name == "pi_recorded_plot_10s"
-    assert plan.display_bucket_seconds == 60
+    assert plan.display_bucket_seconds == 58
 
 
 def test_dynamic_planner_selects_closest_source_not_coarser_than_ideal() -> None:
     plan = _dynamic_plot_plan(timedelta(days=7), 1500, raw_point_count=5001, raw_point_limit=5000)
     assert plan.view_name == "pi_recorded_plot_5m"
     assert plan.source_bucket_seconds == 300
-    assert plan.display_bucket_seconds == 600
+    assert plan.display_bucket_seconds == 404
 
 
 @pytest.mark.parametrize("duration,target", [
@@ -77,10 +78,11 @@ def test_dynamic_planner_selects_closest_source_not_coarser_than_ideal() -> None
     (timedelta(days=7), 1500),
     (timedelta(days=30), 1000),
 ])
-def test_rebucketing_never_splits_a_materialized_source_bucket(duration, target) -> None:
+def test_dynamic_planner_reproduces_target_resolution_without_overquantization(duration, target) -> None:
     plan = _dynamic_plot_plan(duration, target, raw_point_count=5001, raw_point_limit=5000)
-    assert plan.display_bucket_seconds % plan.source_bucket_seconds == 0
-    assert plan.display_bucket_seconds >= duration.total_seconds() / target
+    ideal = int(math.ceil(duration.total_seconds() / target))
+    assert plan.display_bucket_seconds == max(plan.source_bucket_seconds, ideal)
+    assert plan.source_bucket_seconds <= plan.display_bucket_seconds
 
 
 def test_dynamic_planner_uses_closest_installed_level_when_one_minute_is_absent() -> None:

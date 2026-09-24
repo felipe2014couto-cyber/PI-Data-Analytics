@@ -191,6 +191,11 @@ class QueryExecutionMetadata(BaseModel):
     data_available_until: Optional[datetime] = None
     freshness_lag_seconds: Optional[float] = None
     is_stale: Optional[bool] = None
+    raw_point_count_by_tag: Optional[Dict[str, int]] = None
+    source_aggregate_by_tag: Optional[Dict[str, Optional[str]]] = None
+    source_bucket_seconds_by_tag: Optional[Dict[str, Optional[int]]] = None
+    display_bucket_seconds_by_tag: Optional[Dict[str, Optional[int]]] = None
+    returned_points_by_tag: Optional[Dict[str, int]] = None
 
 
 class AnalysisFilterRequest(BaseModel):
