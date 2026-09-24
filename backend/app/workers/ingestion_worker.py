@@ -374,6 +374,7 @@ async def _ingest_tag(
                 _persist_points(tx, tag_id, points, mode)
                 CoverageService.record_coverage(
                     tx, tag_id, start, end, mode, interval_seconds,
+                    status="COMPLETE" if points else "EMPTY_CONFIRMED",
                     pi_web_id=web_id,
                 )
                 tx_state = tx.get(PiIngestionState, (tag_id, mode))

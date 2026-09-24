@@ -76,6 +76,8 @@ class HistoricalReloadJobResponse(BaseModel):
     next_attempt_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    materialization_status: str = "NOT_REQUESTED"
+    materialization_error: str | None = None
 
 
 class HistoricalReloadCoverageResponse(BaseModel):

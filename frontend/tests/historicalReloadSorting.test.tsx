@@ -54,6 +54,7 @@ describe("HistoricalReloadPage Sorting", () => {
           width_tag_id: null,
           um_tag_id: null,
           thickness_tag_id: null,
+          steel_type_tag_id: null,
           created_at: "",
           updated_at: "",
         },

@@ -3,6 +3,7 @@ import { Alert, Badge, Button, ButtonGroup, Card, Form, ProgressBar, Table } fro
 import { useSearchParams } from "react-router-dom";
 
 import { equipmentsApi, historicalReloadApi, piTagsApi, sectionsApi } from "../api";
+import { SipReloadPanel } from "./SipReloadPanel";
 import type { HistoricalReloadJob, HistoricalReloadRequest, HistoricalReloadSummary, PiTag, Section } from "../types";
 
 type SortField = "id" | "equipment" | "tag" | "progress" | "mode" | "period" | "status";
@@ -90,6 +91,7 @@ function inputFromIso(value: string | null): string {
 export function HistoricalReloadPage() {
   const [searchParams] = useSearchParams();
   const [reloadScope, setReloadScope] = useState<ReloadScope>("tag");
+  const [server, setServer] = useState<"PIMS" | "SIP">("PIMS");
   const [equipmentId, setEquipmentId] = useState("");
   const [sectionId, setSectionId] = useState("");
   const [tagId, setTagId] = useState("");
@@ -386,6 +388,8 @@ export function HistoricalReloadPage() {
   };
 
   return <>
+    <div className="mb-3"><Form.Label className="me-2">Servidor</Form.Label><ButtonGroup size="sm"><Button variant={server === "PIMS" ? "primary" : "outline-primary"} onClick={() => setServer("PIMS")}>PIMS</Button><Button variant={server === "SIP" ? "primary" : "outline-primary"} onClick={() => setServer("SIP")}>SIP</Button></ButtonGroup></div>
+    {server === "SIP" ? <SipReloadPanel /> : <>
     <Card className="piad-card mb-3"><Card.Header>Recarga histórica TimescaleDB</Card.Header><Card.Body>
       <Alert variant="info">As datas são convertidas para UTC. O período máximo é de um ano civil; a recarga não altera o banco original.</Alert>
       {error ? <Alert variant="danger">{error}</Alert> : null}{message ? <Alert variant="success">{message}</Alert> : null}
@@ -707,5 +711,6 @@ export function HistoricalReloadPage() {
         </tbody>
       </Table>
     </Card.Body></Card>
+    </>}
   </>;
 }

@@ -1,5 +1,5 @@
 """PiTag business rules."""
-from typing import Optional
+from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from app.core.exceptions import (
     NotFoundError,
     SectionNotBelongsToEquipmentError,
 )
-from app.models.pi_tag import PiTag, PiTagValidationStatus
+from app.models.pi_tag import PiTag, PiTagDataType, PiTagValidationStatus
 from app.models.section import Section
 from app.repositories.equipment_repository import EquipmentRepository
 from app.repositories.pi_tag_repository import PiTagRepository
@@ -241,6 +241,7 @@ class PiTagService:
             (Section.width_tag_id == item.id)
             | (Section.um_tag_id == item.id)
             | (Section.thickness_tag_id == item.id)
+            | (Section.steel_type_tag_id == item.id)
         ).all():
             if section.width_tag_id == item.id:
                 section.width_tag_id = None
@@ -248,5 +249,60 @@ class PiTagService:
                 section.um_tag_id = None
             if section.thickness_tag_id == item.id:
                 section.thickness_tag_id = None
+            if section.steel_type_tag_id == item.id:
+                section.steel_type_tag_id = None
         self.repo.delete(item)
         self.db.commit()
+
+    def get_distinct_values(self, pi_tag_id: int, limit: int = 200) -> List[str]:
+        tag = self.get(pi_tag_id)
+        import math
+        from app.models.postgres import PiSample
+        from sqlalchemy import case, cast, String
+
+        if tag.data_type == PiTagDataType.NUMERIC:
+            rows = (
+                self.db.query(PiSample.value_double)
+                .filter(
+                    PiSample.tag_id == tag.id,
+                    PiSample.good.is_(True),
+                    PiSample.value_double.isnot(None),
+                )
+                .distinct()
+                .order_by(PiSample.value_double.asc())
+                .limit(limit)
+                .all()
+            )
+            result = []
+            for (val,) in rows:
+                if val is not None:
+                    fval = float(val)
+                    if math.isfinite(fval):
+                        result.append(str(int(fval)) if fval.is_integer() else str(fval))
+            return result
+
+        rows = (
+            self.db.query(
+                case(
+                    (PiSample.value_text.isnot(None), PiSample.value_text),
+                    (PiSample.value_boolean.isnot(None), case((PiSample.value_boolean.is_(True), "true"), else_="false")),
+                    (PiSample.value_double.isnot(None), cast(PiSample.value_double, String)),
+                    else_=None,
+                ).label("val")
+            )
+            .filter(
+                PiSample.tag_id == tag.id,
+                PiSample.good.is_(True),
+            )
+            .filter(
+                (PiSample.value_text.isnot(None))
+                | (PiSample.value_boolean.isnot(None))
+                | (PiSample.value_double.isnot(None))
+            )
+            .distinct()
+            .order_by("val")
+            .limit(limit)
+            .all()
+        )
+        return [row[0] for row in rows if row[0] is not None]
+

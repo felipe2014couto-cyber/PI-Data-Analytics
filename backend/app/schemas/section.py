@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.section_analysis_tag import SectionAnalysisFilterType
 from app.models.variable_type import VariableFilterDataType
 
 
@@ -14,6 +15,7 @@ def _normalize_code(value: str) -> str:
 class SectionAnalysisTagItem(BaseModel):
     variable_type_id: int = Field(gt=0)
     pi_tag_id: int = Field(gt=0)
+    filter_type: SectionAnalysisFilterType = SectionAnalysisFilterType.SELECTION
 
 
 class SectionAnalysisTagResponse(BaseModel):
@@ -26,20 +28,30 @@ class SectionAnalysisTagResponse(BaseModel):
     filter_data_type: VariableFilterDataType
     pi_tag_id: int
     pi_tag_name: str
+    filter_type: SectionAnalysisFilterType
 
     @classmethod
     def _from_orm(cls, data: object) -> dict:
         var_type = getattr(data, "variable_type", None)
         pi_tag = getattr(data, "pi_tag", None)
-        filter_type = getattr(data, "filter_data_type", None) or (var_type.filter_data_type if var_type else VariableFilterDataType.REAL)
+        filter_data_type = getattr(data, "filter_data_type", None) or (var_type.filter_data_type if var_type else VariableFilterDataType.REAL)
+        raw_filter_type = getattr(data, "filter_type", None)
+        if isinstance(raw_filter_type, SectionAnalysisFilterType):
+            resolved_filter_type = raw_filter_type
+        elif isinstance(raw_filter_type, str) and raw_filter_type in SectionAnalysisFilterType.__members__:
+            resolved_filter_type = SectionAnalysisFilterType(raw_filter_type)
+        else:
+            resolved_filter_type = SectionAnalysisFilterType.SELECTION
+
         return {
             "id": getattr(data, "id", 0),
             "variable_type_id": getattr(data, "variable_type_id", 0),
             "variable_type_code": getattr(data, "variable_type_code", None) or (var_type.code if var_type else ""),
             "variable_type_name": getattr(data, "variable_type_name", None) or (var_type.name if var_type else ""),
-            "filter_data_type": filter_type,
+            "filter_data_type": filter_data_type,
             "pi_tag_id": getattr(data, "pi_tag_id", 0),
             "pi_tag_name": getattr(data, "pi_tag_name", None) or (pi_tag.pi_tag_name if pi_tag else ""),
+            "filter_type": resolved_filter_type,
         }
 
     from pydantic import model_validator
@@ -64,6 +76,7 @@ class SectionBase(BaseModel):
     width_tag_id: Optional[int] = Field(default=None, gt=0)
     um_tag_id: Optional[int] = Field(default=None, gt=0)
     thickness_tag_id: Optional[int] = Field(default=None, gt=0)
+    steel_type_tag_id: Optional[int] = Field(default=None, gt=0)
     analysis_tags: Optional[List[SectionAnalysisTagItem]] = None
 
     @field_validator("code")
@@ -107,6 +120,7 @@ class SectionUpdate(BaseModel):
     width_tag_id: Optional[int] = Field(default=None, gt=0)
     um_tag_id: Optional[int] = Field(default=None, gt=0)
     thickness_tag_id: Optional[int] = Field(default=None, gt=0)
+    steel_type_tag_id: Optional[int] = Field(default=None, gt=0)
     analysis_tags: Optional[List[SectionAnalysisTagItem]] = None
 
     @field_validator("code")
@@ -153,6 +167,7 @@ class SectionResponse(BaseModel):
     width_tag_id: Optional[int] = None
     um_tag_id: Optional[int] = None
     thickness_tag_id: Optional[int] = None
+    steel_type_tag_id: Optional[int] = None
     analysis_tags: List[SectionAnalysisTagResponse] = Field(default_factory=list)
     created_at: datetime
 

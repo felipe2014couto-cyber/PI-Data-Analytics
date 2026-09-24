@@ -24,7 +24,7 @@ def test_historical_compression_preserves_every_timestamp_and_value(encoding, co
         return {"series": [{"tag_id": 20, "points": points}]}
 
     app.include_router(router)
-    with TestClient(app) as client:
+    with TestClient(app, backend_options={"use_uvloop": True}) as client:
         with client.stream("GET", "/time-series", headers={"Accept-Encoding": encoding}) as response:
             wire = b"".join(response.iter_raw())
             assert response.status_code == 200
@@ -47,7 +47,7 @@ def test_compression_does_not_apply_to_other_routes():
         return "x" * 4000
 
     app.include_router(router)
-    with TestClient(app) as client:
+    with TestClient(app, backend_options={"use_uvloop": True}) as client:
         response = client.get("/export", headers={"Accept-Encoding": "gzip"})
     assert "content-encoding" not in response.headers
     assert "server-timing" not in response.headers

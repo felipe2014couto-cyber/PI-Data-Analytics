@@ -8,3 +8,5 @@ python-dotenv==1.0.1
 argon2-cffi==25.1.0
 PyJWT==2.13.0
 psycopg[binary]>=3.1.18
+oracledb>=3.4,<4
+sqlglot>=29,<30

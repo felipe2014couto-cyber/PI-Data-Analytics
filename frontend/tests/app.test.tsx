@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import {
@@ -46,10 +46,11 @@ describe("App layout", () => {
     const appNameElements = await screen.findAllByText("PI Analytics Data");
     expect(appNameElements.length).toBeGreaterThan(0);
     expect(screen.getAllByText("Equipamentos").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Secoes").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Tipos de Variavel").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Tags PI").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Visualizacao de Dados").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Seções").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Tipos de Variável").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Tags Temporais").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Tags de Banco").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Visualização de Dados").length).toBeGreaterThan(0);
   });
 
   it("renders the data visualization page with empty chart state", async () => {
@@ -191,6 +192,57 @@ describe("PiTags page", () => {
     apiMock.listEquipments.mockResolvedValue(paginated([equipmentFixture]));
     apiMock.listSections.mockResolvedValue(paginated([sectionFixture]));
     apiMock.listVariableTypes.mockResolvedValue(paginated([variableTypeFixture]));
+  });
+
+  it("filters PIMS and SIP sources by server", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([piTagFixture]));
+    apiMock.listSipSources.mockResolvedValue([{
+      id: 7, equipment_id: 1, section_id: 1, variable_type_id: 1,
+      name: "Consulta SIP teste", sql_text: "SELECT TS, VALUE FROM DUAL",
+      timestamp_column: "TS", value_column: "VALUE", active: true,
+      created_at: "2026-01-01T00:00:00", updated_at: "2026-01-01T00:00:00",
+    }]);
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    renderAt("/cadastros/tags-pi");
+    const serverFilter = (await screen.findByLabelText("Servidor")) as HTMLSelectElement;
+    expect(Array.from(serverFilter.options).map((option) => option.textContent)).toEqual(["Todos", "PIMS", "SIP"]);
+    expect(within(await screen.findByTestId("pi-tag-row-1")).getByText("PIMS")).toBeInTheDocument();
+    expect(within(await screen.findByTestId("sip-source-row-7")).getByText("SIP")).toBeInTheDocument();
+    fireEvent.change(serverFilter, { target: { value: "SIP" } });
+    expect(screen.queryByTestId("pi-tag-row-1")).toBeNull();
+    expect(screen.getByTestId("sip-source-row-7")).toBeInTheDocument();
+    fireEvent.change(serverFilter, { target: { value: "PIMS" } });
+    expect(screen.getByTestId("pi-tag-row-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("sip-source-row-7")).toBeNull();
+    fireEvent.change(serverFilter, { target: { value: "all" } });
+    expect(screen.getByTestId("pi-tag-row-1")).toBeInTheDocument();
+    expect(screen.getByTestId("sip-source-row-7")).toBeInTheDocument();
+  });
+
+  it("creates a SIP source from SQL and selected Timestamp and Value columns", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([]));
+    apiMock.listSipSources.mockResolvedValue([]);
+    apiMock.piHealth.mockResolvedValue(notConfiguredHealthFixture);
+    apiMock.inspectSipColumns.mockResolvedValue({ columns: ["TS", "PV"] });
+    apiMock.createSipSource.mockResolvedValue({ id: 9 });
+    renderAt("/cadastros/tags-pi");
+    fireEvent.click(await screen.findByRole("button", { name: /Nova consulta SIP/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(dialog.querySelector("#tag-equipment-form")!, { target: { value: "1" } });
+    fireEvent.change(dialog.querySelector("#tag-vt-form")!, { target: { value: "1" } });
+    fireEvent.change(dialog.querySelector("#sip-sql")!, { target: { value: "SELECT DATA_HORA AS TS, VALOR AS PV FROM MEDICOES" } });
+    fireEvent.click(screen.getByRole("button", { name: /Ler colunas do SQL/i }));
+    await waitFor(() => expect(apiMock.inspectSipColumns).toHaveBeenCalled());
+    fireEvent.change(dialog.querySelector("#sip-timestamp-column")!, { target: { value: "TS" } });
+    fireEvent.change(dialog.querySelector("#sip-value-column")!, { target: { value: "PV" } });
+    fireEvent.change(dialog.querySelector("#tag-display")!, { target: { value: "Temperatura SIP" } });
+    fireEvent.submit(dialog.querySelector("form")!);
+    await waitFor(() => expect(apiMock.createSipSource).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Temperatura SIP",
+      timestamp_column: "TS",
+      value_column: "PV",
+      equipment_id: 1,
+    })));
   });
 
   it("creates a new tag with PENDING status by default", async () => {

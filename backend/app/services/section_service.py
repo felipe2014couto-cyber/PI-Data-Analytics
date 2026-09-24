@@ -1,5 +1,6 @@
 """Section business rules."""
 from typing import List, Optional
+from unicodedata import combining, normalize
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -12,9 +13,9 @@ from app.core.exceptions import (
     NotFoundError,
 )
 from app.models.section import Section
-from app.models.section_analysis_tag import SectionAnalysisTag
+from app.models.section_analysis_tag import SectionAnalysisFilterType, SectionAnalysisTag
 from app.models.pi_tag import PiTag, PiTagDataType
-from app.models.variable_type import VariableType
+from app.models.variable_type import VariableFilterDataType, VariableType
 from app.repositories.equipment_repository import EquipmentRepository
 from app.repositories.section_repository import SectionRepository
 from app.schemas.section import SectionAnalysisTagItem, SectionCreate, SectionUpdate
@@ -87,16 +88,25 @@ class SectionService:
         width_tag_id: int | None,
         um_tag_id: int | None,
         thickness_tag_id: int | None,
+        steel_type_tag_id: int | None,
     ) -> None:
         selected = {
             "width_tag_id": width_tag_id,
             "um_tag_id": um_tag_id,
             "thickness_tag_id": thickness_tag_id,
+            "steel_type_tag_id": steel_type_tag_id,
         }
+        existing_fixed_ids = [width_tag_id, um_tag_id, thickness_tag_id]
+        legacy_ids = [tag_id for tag_id in existing_fixed_ids if tag_id is not None]
         tag_ids = [tag_id for tag_id in selected.values() if tag_id is not None]
-        if len(tag_ids) != len(set(tag_ids)):
+        if len(legacy_ids) != len(set(legacy_ids)):
             raise InvalidSectionError(
                 "As tags de largura, UM e espessura devem ser diferentes.",
+                details={"tag_ids": legacy_ids},
+            )
+        if steel_type_tag_id is not None and steel_type_tag_id in legacy_ids:
+            raise InvalidSectionError(
+                "A tag de tipo de aço deve ser diferente das demais tags fixas.",
                 details={"tag_ids": tag_ids},
             )
         for field, tag_id in selected.items():
@@ -124,10 +134,17 @@ class SectionService:
                 (variable_type.code if variable_type else "").strip().upper(),
                 (variable_type.name if variable_type else "").strip().upper(),
             }
+            if field == "steel_type_tag_id":
+                type_labels = {
+                    "".join(char for char in normalize("NFD", label) if not combining(char))
+                    .replace("_", " ").replace("-", " ")
+                    for label in type_labels
+                }
             expected_types = {
                 "width_tag_id": {"LARGURA", "WIDTH"},
                 "um_tag_id": {"UM", "CODIGO UM", "UNIDADE MATERIAL"},
                 "thickness_tag_id": {"ESPESSURA", "THICKNESS"},
+                "steel_type_tag_id": {"ACO", "TIPO DE ACO", "TIPO ACO", "TIPO_ACO", "STEEL TYPE", "STEEL_TYPE", "STEEL MODEL", "STEEL_MODEL", "MODELO DO ACO", "MODELO_DO_ACO", "MODELO ACO", "MODELO_ACO"},
             }
             if not type_labels.intersection(expected_types[field]):
                 raise InvalidSectionError(
@@ -183,23 +200,38 @@ class SectionService:
                     },
                 )
 
+            if item.filter_type == SectionAnalysisFilterType.MIN_MAX:
+                if tag.data_type != PiTagDataType.NUMERIC or var_type.filter_data_type != VariableFilterDataType.REAL:
+                    raise InvalidSectionError(
+                        "O filtro de valor mínimo / máximo (MIN_MAX) só é permitido para variáveis e tags numéricas.",
+                        details={
+                            "variable_type_id": item.variable_type_id,
+                            "pi_tag_id": item.pi_tag_id,
+                            "tag_data_type": tag.data_type,
+                            "variable_filter_data_type": var_type.filter_data_type,
+                        },
+                    )
+
         current_by_var_type = {record.variable_type_id: record for record in section.analysis_tags}
-        payload_by_var_type = {item.variable_type_id: item.pi_tag_id for item in items}
+        payload_by_var_type = {item.variable_type_id: item for item in items}
 
         for var_type_id, record in list(current_by_var_type.items()):
             if var_type_id not in payload_by_var_type:
                 self.db.delete(record)
 
-        for var_type_id, pi_tag_id in payload_by_var_type.items():
+        for var_type_id, item in payload_by_var_type.items():
             if var_type_id in current_by_var_type:
                 record = current_by_var_type[var_type_id]
-                if record.pi_tag_id != pi_tag_id:
-                    record.pi_tag_id = pi_tag_id
+                if record.pi_tag_id != item.pi_tag_id:
+                    record.pi_tag_id = item.pi_tag_id
+                if record.filter_type != item.filter_type:
+                    record.filter_type = item.filter_type
             else:
                 new_assoc = SectionAnalysisTag(
                     section_id=section.id,
                     variable_type_id=var_type_id,
-                    pi_tag_id=pi_tag_id,
+                    pi_tag_id=item.pi_tag_id,
+                    filter_type=item.filter_type,
                 )
                 self.db.add(new_assoc)
 
@@ -222,6 +254,7 @@ class SectionService:
             width_tag_id=payload.width_tag_id,
             um_tag_id=payload.um_tag_id,
             thickness_tag_id=payload.thickness_tag_id,
+            steel_type_tag_id=payload.steel_type_tag_id,
         )
         self.repo.add(section)
         self._set_classification_tags(section.id, payload.classification_tag_ids)
@@ -231,6 +264,7 @@ class SectionService:
             width_tag_id=section.width_tag_id,
             um_tag_id=section.um_tag_id,
             thickness_tag_id=section.thickness_tag_id,
+            steel_type_tag_id=section.steel_type_tag_id,
         )
         if payload.analysis_tags is not None:
             self._sync_dynamic_analysis_tags(section, payload.analysis_tags, section.equipment_id)
@@ -285,6 +319,7 @@ class SectionService:
             width_tag_id=payload.width_tag_id if "width_tag_id" in payload.model_fields_set else section.width_tag_id,
             um_tag_id=payload.um_tag_id if "um_tag_id" in payload.model_fields_set else section.um_tag_id,
             thickness_tag_id=payload.thickness_tag_id if "thickness_tag_id" in payload.model_fields_set else section.thickness_tag_id,
+            steel_type_tag_id=payload.steel_type_tag_id if "steel_type_tag_id" in payload.model_fields_set else section.steel_type_tag_id,
         )
         if "width_tag_id" in payload.model_fields_set:
             section.width_tag_id = payload.width_tag_id
@@ -292,6 +327,8 @@ class SectionService:
             section.um_tag_id = payload.um_tag_id
         if "thickness_tag_id" in payload.model_fields_set:
             section.thickness_tag_id = payload.thickness_tag_id
+        if "steel_type_tag_id" in payload.model_fields_set:
+            section.steel_type_tag_id = payload.steel_type_tag_id
         if "analysis_tags" in payload.model_fields_set and payload.analysis_tags is not None:
             self._sync_dynamic_analysis_tags(section, payload.analysis_tags, target_equipment_id)
         elif payload.equipment_id is not None and payload.equipment_id != section.equipment_id:

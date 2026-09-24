@@ -29,6 +29,7 @@ OWNER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
 # Advisory lock keys – must not collide with per-function locks in the workers.
 _LEADER_LOCK_INGESTION = 2147483601
 _LEADER_LOCK_BACKFILL = 2147483602
+_LEADER_LOCK_COLUMNSTORE_MAINTENANCE = 2147483603
 
 
 class _WorkerStatus:
@@ -162,11 +163,16 @@ class _AdvisoryLock:
                 (self._lock_key,),
             )
             row = cursor.fetchone()
+            self._conn.commit()
             if not row or row[0] < 1:
                 logger.warning("advisory_lock_not_held lock=%s name=%s", self._lock_key, self._name)
                 return False
             return True
         except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
             logger.warning("advisory_lock_connection_lost lock=%s name=%s", self._lock_key, self._name)
             return False
 
@@ -220,9 +226,15 @@ async def _acquire_leader(
 ) -> bool:
     """Block until the advisory lock is acquired or stop is signaled."""
     while not stop_event.is_set():
-        acquired = await asyncio.get_event_loop().run_in_executor(
-            None, lock.try_acquire,
-        )
+        # SQLite's lock path is an immediate in-process no-op.  Keeping it out
+        # of the default executor avoids leaving an uncancellable executor job
+        # behind during shutdown (notably under ``asyncio.run`` in tests).
+        from app.database.session import engine
+
+        if engine.dialect.name == "postgresql":
+            acquired = await asyncio.get_running_loop().run_in_executor(None, lock.try_acquire)
+        else:
+            acquired = lock.try_acquire()
         if acquired:
             return True
         try:
@@ -374,7 +386,12 @@ async def _run_supervised(
                         await monitor_task
                 if lock is not None:
                     try:
-                        await asyncio.get_event_loop().run_in_executor(None, lock.release)
+                        from app.database.session import engine
+
+                        if engine.dialect.name == "postgresql":
+                            await asyncio.get_running_loop().run_in_executor(None, lock.release)
+                        else:
+                            lock.release()
                     except Exception:
                         logger.debug("leader_release_failed worker=%s", name, exc_info=True)
                 status.leader = False
@@ -449,6 +466,33 @@ class WorkerSupervisor:
             self._tasks.append(t)
             logger.info("supervisor_backfill_scheduled")
 
+        from app.workers.sip_reload_worker import run_sip_reload_loop
+        sip_lock = _AdvisoryLock(2147483604, "sip_reload")
+        self._locks.append(sip_lock)
+        self._tasks.append(asyncio.create_task(_run_supervised(
+            "sip_reload", lambda: run_sip_reload_loop(self._stop), self._stop,
+            _WorkerStatus("sip_reload"), lock=sip_lock,
+        )))
+
+        if getattr(settings, "columnstore_maintenance_enabled", False):
+            from app.services.columnstore_maintenance_service import (
+                LEADER_LOCK_COLUMNSTORE_MAINTENANCE,
+                run_columnstore_maintenance_loop,
+            )
+            lock = _AdvisoryLock(LEADER_LOCK_COLUMNSTORE_MAINTENANCE, "columnstore_maintenance")
+            self._locks.append(lock)
+            t = asyncio.create_task(
+                _run_supervised(
+                    "columnstore_maintenance",
+                    lambda: run_columnstore_maintenance_loop(stop_event=self._stop),
+                    self._stop,
+                    _WorkerStatus("columnstore_maintenance"),
+                    lock=lock,
+                ),
+            )
+            self._tasks.append(t)
+            logger.info("supervisor_columnstore_maintenance_scheduled")
+
     async def stop(self) -> None:
         """Signal all workers to stop and await their completion."""
         if self._stop is not None:
@@ -470,6 +514,11 @@ class WorkerSupervisor:
         ingestion_status.leader = False
         backfill_status.alive = False
         backfill_status.leader = False
+        try:
+            from app.services.columnstore_maintenance_service import maintenance_status
+            maintenance_status.leader = False
+        except Exception:
+            pass
         logger.info("supervisor_all_stopped")
 
 

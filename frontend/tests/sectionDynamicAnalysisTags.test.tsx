@@ -26,6 +26,9 @@ const mockVariableTypes: VariableType[] = [
   { id: 4, code: "CURRENT", name: "Corrente", description: null, default_unit: "A", filter_data_type: "REAL", active: true, created_at: "", updated_at: "" },
   { id: 5, code: "PRESSURE", name: "Pressão", description: null, default_unit: "bar", filter_data_type: "REAL", active: true, created_at: "", updated_at: "" },
   { id: 6, code: "TEMPERATURE", name: "Temperatura", description: null, default_unit: "C", filter_data_type: "REAL", active: true, created_at: "", updated_at: "" },
+  { id: 7, code: "STATUS", name: "Status Operacional", description: null, default_unit: null, filter_data_type: "STRING", active: true, created_at: "", updated_at: "" },
+  { id: 8, code: "TIPO DE ACO", name: "Tipo de Aço", description: null, default_unit: null, filter_data_type: "STRING", active: true, created_at: "", updated_at: "" },
+  { id: 9, code: "AÇO", name: "AÇO", description: "AÇO", default_unit: null, filter_data_type: "STRING", active: true, created_at: "", updated_at: "" },
 ];
 
 const mockPiTags: PiTag[] = [
@@ -81,6 +84,63 @@ const mockPiTags: PiTag[] = [
     data_type: "NUMERIC",
     active: true,
     validation_status: "VALID",
+    validation_message: null,
+    validated_at: null,
+    created_at: "",
+    updated_at: "",
+  },
+  {
+    id: 13,
+    equipment_id: 1,
+    section_id: 1,
+    variable_type_id: 8,
+    pi_server: "PIMS",
+    pi_tag_name: "LFI_RB1_TIPO_ACO",
+    pi_web_id: null,
+    display_name: "Tipo de Aço",
+    description: null,
+    engineering_unit: null,
+    data_type: "NON_NUMERIC",
+    active: true,
+    validation_status: "VALID",
+    validation_message: null,
+    validated_at: null,
+    created_at: "",
+    updated_at: "",
+  },
+  {
+    id: 14,
+    equipment_id: 1,
+    section_id: 1,
+    variable_type_id: 8,
+    pi_server: "PIMS",
+    pi_tag_name: "LFI_RB1_TIPO_ACO_ALT",
+    pi_web_id: null,
+    display_name: "Tipo de Aço alternativo",
+    description: null,
+    engineering_unit: null,
+    data_type: "NON_NUMERIC",
+    active: true,
+    validation_status: "VALID",
+    validation_message: null,
+    validated_at: null,
+    created_at: "",
+    updated_at: "",
+  },
+  {
+    id: 80,
+    equipment_id: 1,
+    section_id: null,
+    variable_type_id: 9,
+    pi_server: "PIMS",
+    pi_tag_name: "LFI_RB1_TIPO_ACO",
+    pi_web_id: null,
+    display_name: "AÇO",
+    description: "AÇO",
+    engineering_unit: null,
+    data_type: "NON_NUMERIC",
+    active: true,
+    validation_status: "PENDING",
     validation_message: null,
     validated_at: null,
     created_at: "",
@@ -177,6 +237,7 @@ const mockSectionWithTags: Section = {
   width_tag_id: 10,
   um_tag_id: 11,
   thickness_tag_id: 12,
+  steel_type_tag_id: 13,
   analysis_tags: [
     {
       id: 101,
@@ -184,6 +245,7 @@ const mockSectionWithTags: Section = {
       variable_type_code: "CURRENT",
       variable_type_name: "Corrente",
       filter_data_type: "REAL",
+      filter_type: "MIN_MAX",
       pi_tag_id: 20,
       pi_tag_name: "LFI_RB1_CORRENTE_MOTOR",
     },
@@ -202,7 +264,7 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
     apiMock.updateSection.mockResolvedValue(mockSectionWithTags);
   });
 
-  it("renders existing dynamic analysis tag and preserves fixed tags", async () => {
+  it("renders existing dynamic analysis tag with badge and preserves fixed tags", async () => {
     render(
       <MemoryRouter>
         <SectionsPage />
@@ -217,9 +279,11 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
     expect(screen.getByLabelText("Tag de largura")).toHaveValue("10");
     expect(screen.getByLabelText("Tag de UM")).toHaveValue("11");
     expect(screen.getByLabelText("Tag de espessura")).toHaveValue("12");
+    expect(screen.getByLabelText("Tag de tipo de aço")).toHaveValue("13");
 
-    // Dynamic tag for CURRENT is rendered with dynamic label
+    // Dynamic tag for CURRENT is rendered with dynamic label and filter type badge
     expect(screen.getByText("Tag de corrente")).toBeInTheDocument();
+    expect(screen.getByTestId("filter-type-badge-4")).toHaveTextContent("Valor mínimo / máximo");
     const currentSelect = screen.getByDisplayValue(/LFI_RB1_CORRENTE_MOTOR/);
     expect(currentSelect).toBeInTheDocument();
   });
@@ -242,8 +306,8 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
     const typeSelect = screen.getByLabelText("Tipo de variável") as HTMLSelectElement;
 
     const optionTexts = Array.from(typeSelect.options).map((o) => o.textContent);
-    // Fixed types (LARGURA, UM, ESPESSURA) must NOT appear
-    expect(optionTexts).not.toEqual(expect.arrayContaining(["Largura — LARGURA", "UM — UM", "Espessura — ESPESSURA"]));
+    // All four fixed types must stay out of the dynamic-tag picker.
+    expect(optionTexts).not.toEqual(expect.arrayContaining(["Largura — LARGURA", "UM — UM", "Espessura — ESPESSURA", "Tipo de Aço — TIPO DE ACO"]));
 
     // CURRENT must be disabled because it's already added
     const currentOpt = Array.from(typeSelect.options).find((o) => o.textContent?.includes("CURRENT"));
@@ -255,6 +319,35 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
     const pressureOpt = Array.from(typeSelect.options).find((o) => o.textContent?.includes("PRESSURE"));
     expect(pressureOpt).toBeDefined();
     expect(pressureOpt?.disabled).toBe(false);
+  });
+
+  it("disables MIN_MAX filter type for non-numeric variable types in modal", async () => {
+    render(
+      <MemoryRouter>
+        <SectionsPage />
+      </MemoryRouter>,
+    );
+    const editButtons = await waitFor(() => screen.getAllByTitle("Editar"));
+    fireEvent.click(editButtons[0]);
+    await screen.findByText("Editar secao");
+
+    fireEvent.click(screen.getByRole("button", { name: /adicionar tag de análise/i }));
+    const typeSelect = screen.getByLabelText("Tipo de variável");
+    const filterTypeSelect = screen.getByLabelText("Tipo de filtro") as HTMLSelectElement;
+
+    // Select STATUS (id 7, STRING)
+    fireEvent.change(typeSelect, { target: { value: "7" } });
+
+    // MIN_MAX option should be disabled
+    const minMaxOption = Array.from(filterTypeSelect.options).find((o) => o.value === "MIN_MAX");
+    expect(minMaxOption?.disabled).toBe(true);
+
+    // Helper text explaining why MIN_MAX is disabled should be visible
+    expect(screen.getByText(/Valor mínimo \/ máximo só está disponível para variáveis numéricas/i)).toBeInTheDocument();
+
+    // Now select PRESSURE (id 5, REAL)
+    fireEvent.change(typeSelect, { target: { value: "5" } });
+    expect(minMaxOption?.disabled).toBe(false);
   });
 
   it("adds a new dynamic tag locally, filters PI tags by equipment and variable type, and prevents duplicate types", async () => {
@@ -270,13 +363,16 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
     // Open add modal
     fireEvent.click(screen.getByRole("button", { name: /adicionar tag de análise/i }));
     const typeSelect = screen.getByLabelText("Tipo de variável");
+    const filterTypeSelect = screen.getByLabelText("Tipo de filtro");
 
-    // Select PRESSURE (id 5)
+    // Select PRESSURE (id 5) and MIN_MAX
     fireEvent.change(typeSelect, { target: { value: "5" } });
+    fireEvent.change(filterTypeSelect, { target: { value: "MIN_MAX" } });
     fireEvent.click(screen.getAllByRole("button", { name: /adicionar/i }).find((b) => b.textContent === "Adicionar")!);
 
     // Form now displays "Tag de pressão"
     await screen.findByText("Tag de pressão");
+    expect(screen.getByTestId("filter-type-badge-5")).toHaveTextContent("Valor mínimo / máximo");
 
     // Find the select for Pressure
     const pressureSelect = screen.getAllByRole("combobox").find((el) => {
@@ -304,9 +400,10 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
     fireEvent.click(editButtons[0]);
     await screen.findByText("Editar secao");
 
-    // Add PRESSURE
+    // Add PRESSURE with MIN_MAX
     fireEvent.click(screen.getByRole("button", { name: /adicionar tag de análise/i }));
     fireEvent.change(screen.getByLabelText("Tipo de variável"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Tipo de filtro"), { target: { value: "MIN_MAX" } });
     fireEvent.click(screen.getAllByRole("button", { name: /adicionar/i }).find((b) => b.textContent === "Adicionar")!);
     await screen.findByText("Tag de pressão");
 
@@ -334,9 +431,10 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
 
     expect(screen.queryByText("Tag de corrente")).not.toBeInTheDocument();
 
-    // Add PRESSURE
+    // Add PRESSURE with SELECTION
     fireEvent.click(screen.getByRole("button", { name: /adicionar tag de análise/i }));
     fireEvent.change(screen.getByLabelText("Tipo de variável"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Tipo de filtro"), { target: { value: "SELECTION" } });
     fireEvent.click(screen.getAllByRole("button", { name: /adicionar/i }).find((b) => b.textContent === "Adicionar")!);
     await screen.findByText("Tag de pressão");
 
@@ -352,9 +450,60 @@ describe("SectionsPage Dynamic Analysis Tags", () => {
 
     await waitFor(() => expect(apiMock.updateSection).toHaveBeenCalled());
     const payload = apiMock.updateSection.mock.calls[0][1];
-    expect(payload.analysis_tags).toEqual([{ variable_type_id: 5, pi_tag_id: 30 }]);
+    expect(payload.analysis_tags).toEqual([{ variable_type_id: 5, filter_type: "SELECTION", pi_tag_id: 30 }]);
     expect(payload.width_tag_id).toBe(10);
     expect(payload.um_tag_id).toBe(11);
     expect(payload.thickness_tag_id).toBe(12);
+    expect(payload.steel_type_tag_id).toBe(13);
+  });
+
+  it("offers an AÇO variable type tag in the fixed steel selector and saves its ID", async () => {
+    render(<MemoryRouter><SectionsPage /></MemoryRouter>);
+    fireEvent.click((await waitFor(() => screen.getAllByTitle("Editar")))[0]);
+    await screen.findByText("Editar secao");
+
+    const steelSelect = screen.getByLabelText("Tag de tipo de aço") as HTMLSelectElement;
+    expect(Array.from(steelSelect.options).map((option) => option.value)).toContain("80");
+    fireEvent.change(steelSelect, { target: { value: "80" } });
+    fireEvent.click(screen.getByRole("button", { name: /salvar/i }));
+
+    await waitFor(() => expect(apiMock.updateSection).toHaveBeenCalled());
+    expect(apiMock.updateSection.mock.calls[0][1].steel_type_tag_id).toBe(80);
+    expect(apiMock.updateSection.mock.calls[0][1].um_tag_id).toBe(11);
+  });
+
+  it("edits and clears the fixed steel type tag, preserving the UM selection", async () => {
+    let persistedSection: Section = { ...mockSectionWithTags };
+    apiMock.updateSection.mockImplementation(async (_id, payload) => {
+      persistedSection = { ...persistedSection, steel_type_tag_id: payload.steel_type_tag_id ?? null };
+      return persistedSection;
+    });
+    apiMock.listSections.mockImplementation(async () => paginated([persistedSection], 1, 200, 1));
+    render(<MemoryRouter><SectionsPage /></MemoryRouter>);
+    fireEvent.click((await waitFor(() => screen.getAllByTitle("Editar")))[0]);
+    await screen.findByText("Editar secao");
+    expect(screen.getByLabelText("Tag de tipo de aço")).toHaveValue("13");
+
+    fireEvent.change(screen.getByLabelText("Tag de tipo de aço"), { target: { value: "14" } });
+    fireEvent.click(screen.getByRole("button", { name: /salvar/i }));
+    await waitFor(() => expect(apiMock.updateSection).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateSection.mock.calls[0][1].steel_type_tag_id).toBe(14);
+
+    await waitFor(() => expect(screen.queryByText("Editar secao")).not.toBeInTheDocument());
+    fireEvent.click((await waitFor(() => screen.getAllByTitle("Editar")))[0]);
+    await screen.findByText("Editar secao");
+    expect(screen.getByLabelText("Tag de tipo de aço")).toHaveValue("14");
+    expect(screen.getByLabelText("Tag de UM")).toHaveValue("11");
+
+    fireEvent.change(screen.getByLabelText("Tag de tipo de aço"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /salvar/i }));
+    await waitFor(() => expect(apiMock.updateSection).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSection.mock.calls[1][1].steel_type_tag_id).toBeNull();
+
+    await waitFor(() => expect(screen.queryByText("Editar secao")).not.toBeInTheDocument());
+    fireEvent.click((await waitFor(() => screen.getAllByTitle("Editar")))[0]);
+    await screen.findByText("Editar secao");
+    expect(screen.getByLabelText("Tag de tipo de aço")).toHaveValue("");
+    expect(screen.getByLabelText("Tag de UM")).toHaveValue("11");
   });
 });

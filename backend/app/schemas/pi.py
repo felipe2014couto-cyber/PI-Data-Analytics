@@ -134,7 +134,7 @@ class TimeSeriesSeries(BaseModel):
 
 
 class QueryExecutionMetadata(BaseModel):
-    source: Optional[Literal["timescaledb", "pi_web_api", "hybrid"]] = None
+    source: Optional[Literal["timescaledb", "pi_web_api", "hybrid", "sip"]] = None
     effective_source_mode: Optional[str] = None
     strategy: Optional[str] = None
     resolution_mode: str = "automatic"
@@ -171,6 +171,11 @@ class QueryExecutionMetadata(BaseModel):
     points_returned: Optional[int] = None
     rate_limit_count: Optional[int] = None
     complete: Optional[bool] = None
+    status: Optional[Literal["COMPLETE", "PARTIAL"]] = None
+    real_points: Optional[int] = None
+    null_points: Optional[int] = None
+    uncovered_intervals: List[Dict[str, Any]] = Field(default_factory=list)
+    source_segments: List[Dict[str, Any]] = Field(default_factory=list)
     truncated: Optional[bool] = None
     queue_wait_ms: Optional[float] = None
     resolve_ms: Optional[float] = None
@@ -193,7 +198,7 @@ class AnalysisFilterRequest(BaseModel):
     min: Optional[float] = None
     max: Optional[float] = None
     expression: Optional[str] = None
-    value: Optional[Literal["ALL", "ON", "OFF"]] = None
+    value: Optional[str] = None
 
 
 class TimeSeriesRequest(BaseModel):

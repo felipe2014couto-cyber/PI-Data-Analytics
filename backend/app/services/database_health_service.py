@@ -28,7 +28,12 @@ _cached_response: Optional[DatabaseHealthResponse] = None
 _cached_at: float = 0.0
 
 # Known worker leader lock keys (advisory locks held by design)
-_WORKER_LEADER_LOCK_KEYS = (2147483601, 2147483602, 2147483003)
+_WORKER_LEADER_LOCK_KEYS = (
+    2147483601,
+    2147483602,
+    2147483603,
+    2147483604,
+)
 
 
 def format_bytes(b: Optional[int]) -> str:
@@ -207,6 +212,7 @@ class DatabaseHealthCollector:
 
         db_bytes = 0
         total_tables = 0
+        total_tables_heap = 0
         total_indexes = 0
         total_toast = 0
 
@@ -222,6 +228,7 @@ class DatabaseHealthCollector:
         q_sizes = """
         SELECT
             COALESCE(SUM(pg_table_size(c.oid)), 0) AS total_table_bytes,
+            COALESCE(SUM(pg_relation_size(c.oid)), 0) AS total_table_heap_bytes,
             COALESCE(SUM(pg_indexes_size(c.oid)), 0) AS total_index_bytes,
             COALESCE(SUM(pg_total_relation_size(c.reltoastrelid)), 0) AS total_toast_bytes
         FROM pg_class c
@@ -233,11 +240,79 @@ class DatabaseHealthCollector:
             row = self.db.execute(text(q_sizes)).mappings().first()
             if row:
                 total_tables = int(row["total_table_bytes"] or 0)
+                total_tables_heap = int(row["total_table_heap_bytes"] or 0)
                 total_indexes = int(row["total_index_bytes"] or 0)
                 total_toast = int(row["total_toast_bytes"] or 0)
         except Exception as exc:
             logger.debug("db_health_storage_sizes_failed err=%s", exc)
             self.unavailable_metrics.append("table_index_toast_breakdown")
+
+        recent_rowstore_bytes = None
+        historical_delta_rowstore_bytes = None
+        columnstore_bytes = None
+        rowstore_indexes_bytes = None
+        continuous_aggregates_bytes = None
+        compression_before_bytes = None
+        compression_after_bytes = None
+        compression_ratio_pct = None
+
+        if self.dialect != "sqlite":
+            try:
+                # 1. Chunks breakdown
+                q_chk = """
+                SELECT
+                    COALESCE(SUM(CASE WHEN c.is_compressed = false THEN pg_total_relation_size(format('%I.%I', c.chunk_schema, c.chunk_name)::regclass) ELSE 0 END), 0) AS recent_bytes,
+                    COALESCE(SUM(CASE WHEN c.is_compressed = true THEN pg_relation_size(format('%I.%I', c.chunk_schema, c.chunk_name)::regclass) ELSE 0 END), 0) AS hist_delta_heap,
+                    COALESCE(SUM(CASE WHEN c.is_compressed = true THEN pg_indexes_size(format('%I.%I', c.chunk_schema, c.chunk_name)::regclass) ELSE 0 END), 0) AS hist_delta_indexes,
+                    COALESCE(SUM(pg_indexes_size(format('%I.%I', c.chunk_schema, c.chunk_name)::regclass)), 0) AS total_rowstore_indexes
+                FROM timescaledb_information.chunks c
+                WHERE c.hypertable_name = 'pi_samples_timescale';
+                """
+                r_chk = self.db.execute(text(q_chk)).mappings().first()
+                if r_chk:
+                    recent_rowstore_bytes = int(r_chk["recent_bytes"] or 0)
+                    historical_delta_rowstore_bytes = int(r_chk["hist_delta_heap"] or 0) + int(r_chk["hist_delta_indexes"] or 0)
+                    rowstore_indexes_bytes = int(r_chk["total_rowstore_indexes"] or 0)
+            except Exception as exc:
+                logger.debug("db_health_chunks_breakdown_failed err=%s", exc)
+
+            try:
+                # 2. Columnstore physical relations
+                q_col = """
+                SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = '_timescaledb_internal'
+                  AND c.relname LIKE '%compress%';
+                """
+                columnstore_bytes = int(self.db.execute(text(q_col)).scalar() or 0)
+            except Exception as exc:
+                logger.debug("db_health_col_breakdown_failed err=%s", exc)
+
+            try:
+                # 3. Continuous aggregates total size
+                q_cag = """
+                SELECT COALESCE(SUM(hypertable_size(format('%I.%I', h.hypertable_schema, h.hypertable_name)::regclass)), 0)
+                FROM timescaledb_information.continuous_aggregates cag
+                JOIN timescaledb_information.hypertables h
+                  ON h.hypertable_schema = cag.materialization_hypertable_schema
+                 AND h.hypertable_name = cag.materialization_hypertable_name;
+                """
+                continuous_aggregates_bytes = int(self.db.execute(text(q_cag)).scalar() or 0)
+            except Exception as exc:
+                logger.debug("db_health_cag_breakdown_failed err=%s", exc)
+
+            try:
+                # 4. Compression stats
+                q_cs = "SELECT * FROM hypertable_compression_stats('public.pi_samples_timescale');"
+                cs = self.db.execute(text(q_cs)).mappings().first()
+                if cs:
+                    compression_before_bytes = int(cs["before_compression_total_bytes"] or 0)
+                    compression_after_bytes = int(cs["after_compression_total_bytes"] or 0)
+                    if compression_before_bytes > 0:
+                        compression_ratio_pct = round((1.0 - (compression_after_bytes / compression_before_bytes)) * 100.0, 2)
+            except Exception as exc:
+                logger.debug("db_health_comp_stats_failed err=%s", exc)
 
         # Specific relation sizes
         pi_samples_bytes = None
@@ -319,12 +394,29 @@ class DatabaseHealthCollector:
             database_human=format_bytes(db_bytes),
             tables_bytes=total_tables,
             tables_human=format_bytes(total_tables),
+            tables_heap_bytes=total_tables_heap,
+            tables_heap_human=format_bytes(total_tables_heap),
             indexes_bytes=total_indexes,
             indexes_human=format_bytes(total_indexes),
             toast_bytes=total_toast,
             toast_human=format_bytes(total_toast),
             pi_samples_bytes=pi_samples_bytes,
             pi_samples_human=format_bytes(pi_samples_bytes) if pi_samples_bytes is not None else None,
+            recent_rowstore_bytes=recent_rowstore_bytes,
+            recent_rowstore_human=format_bytes(recent_rowstore_bytes) if recent_rowstore_bytes is not None else None,
+            historical_delta_rowstore_bytes=historical_delta_rowstore_bytes,
+            historical_delta_rowstore_human=format_bytes(historical_delta_rowstore_bytes) if historical_delta_rowstore_bytes is not None else None,
+            columnstore_bytes=columnstore_bytes,
+            columnstore_human=format_bytes(columnstore_bytes) if columnstore_bytes is not None else None,
+            rowstore_indexes_bytes=rowstore_indexes_bytes,
+            rowstore_indexes_human=format_bytes(rowstore_indexes_bytes) if rowstore_indexes_bytes is not None else None,
+            continuous_aggregates_bytes=continuous_aggregates_bytes,
+            continuous_aggregates_human=format_bytes(continuous_aggregates_bytes) if continuous_aggregates_bytes is not None else None,
+            compression_before_bytes=compression_before_bytes,
+            compression_before_human=format_bytes(compression_before_bytes) if compression_before_bytes is not None else None,
+            compression_after_bytes=compression_after_bytes,
+            compression_after_human=format_bytes(compression_after_bytes) if compression_after_bytes is not None else None,
+            compression_ratio_pct=compression_ratio_pct,
             pi_backfill_bytes=pi_backfill_bytes,
             pi_backfill_human=format_bytes(pi_backfill_bytes) if pi_backfill_bytes is not None else None,
             pi_ingestion_bytes=pi_ingestion_bytes,
@@ -561,6 +653,8 @@ class DatabaseHealthCollector:
         cags = 0
         total_jobs = 0
         failed_jobs = 0
+        operational_failed_jobs = 0
+        telemetry_failed = False
         last_status = None
         last_success = None
         compression_enabled = None
@@ -594,14 +688,27 @@ class DatabaseHealthCollector:
             q_jobs = """
             SELECT
                 count(*) as total_jobs,
-                count(*) FILTER (WHERE total_failures > 0 OR last_run_status = 'Failed') as failed_jobs,
-                MAX(last_successful_finish) as last_success
-            FROM timescaledb_information.job_stats;
+                count(*) FILTER (WHERE js.total_failures > 0 OR js.last_run_status = 'Failed') as failed_jobs,
+                count(*) FILTER (
+                    WHERE
+                        (js.total_failures > 0 OR js.last_run_status = 'Failed')
+                        AND (j.proc_name IS NULL OR j.proc_name != 'policy_telemetry')
+                        AND (j.application_name IS NULL OR j.application_name NOT ILIKE '%telemetry%')
+                ) as operational_failed_jobs,
+                bool_or(
+                    (js.total_failures > 0 OR js.last_run_status = 'Failed')
+                    AND (j.proc_name = 'policy_telemetry' OR j.application_name ILIKE '%telemetry%')
+                ) as telemetry_failed,
+                MAX(js.last_successful_finish) as last_success
+            FROM timescaledb_information.job_stats js
+            LEFT JOIN timescaledb_information.jobs j ON j.job_id = js.job_id;
             """
             r = self.db.execute(text(q_jobs)).mappings().first()
             if r:
                 total_jobs = int(r["total_jobs"] or 0)
                 failed_jobs = int(r["failed_jobs"] or 0)
+                operational_failed_jobs = int(r["operational_failed_jobs"] or 0)
+                telemetry_failed = bool(r["telemetry_failed"] or False)
                 last_success = r["last_success"]
         except Exception:
             self.unavailable_metrics.append("timescaledb_information.job_stats")
@@ -617,6 +724,13 @@ class DatabaseHealthCollector:
         except Exception:
             pass
 
+        col_maint_data = None
+        try:
+            from app.services.columnstore_maintenance_service import maintenance_status
+            col_maint_data = maintenance_status.to_dict()
+        except Exception:
+            pass
+
         return TimescaleInfo(
             available=True,
             version=str(ext_version),
@@ -625,10 +739,13 @@ class DatabaseHealthCollector:
             continuous_aggregates=cags,
             total_jobs=total_jobs,
             failed_jobs=failed_jobs,
+            operational_failed_jobs=operational_failed_jobs,
+            telemetry_failed=telemetry_failed,
             last_run_status=last_status,
             last_successful_finish=last_success,
             compression_enabled=compression_enabled,
             retention_configured=retention_configured,
+            columnstore_maintenance=col_maint_data,
         )
 
     def _collect_freshness(self, now_utc: datetime) -> FreshnessInfo:
@@ -870,12 +987,16 @@ class DatabaseHealthCollector:
 
         # TimescaleDB jobs
         if timescale_info.available:
-            if timescale_info.failed_jobs > 0:
+            effective_failed = timescale_info.operational_failed_jobs
+            if effective_failed == 0 and timescale_info.failed_jobs > 0 and not timescale_info.telemetry_failed:
+                effective_failed = timescale_info.failed_jobs
+
+            if effective_failed > 0:
                 self.checks.append(
                     HealthCheckItem(
                         name="timescaledb_jobs",
                         status=DatabaseHealthStatus.WARNING,
-                        message=f"{timescale_info.failed_jobs} job(s) interno(s) do TimescaleDB com falha recente.",
+                        message=f"{effective_failed} job(s) operacional(is) do TimescaleDB com falha recente.",
                     )
                 )
             else:
@@ -884,6 +1005,14 @@ class DatabaseHealthCollector:
                         name="timescaledb",
                         status=DatabaseHealthStatus.HEALTHY,
                         message=f"TimescaleDB v{timescale_info.version} operacional ({timescale_info.chunks} chunks).",
+                    )
+                )
+            if timescale_info.telemetry_failed:
+                self.checks.append(
+                    HealthCheckItem(
+                        name="telemetria",
+                        status=DatabaseHealthStatus.HEALTHY,
+                        message="Informativo: telemetria externa indisponível.",
                     )
                 )
 
@@ -987,7 +1116,7 @@ async def get_database_health(session_factory=None, force_refresh: bool = False)
         except asyncio.TimeoutError:
             logger.error("db_health_collection_timeout timeout=%.1fs", timeout)
             now_utc = datetime.now(timezone.utc)
-            return DatabaseHealthResponse(
+            result = DatabaseHealthResponse(
                 status=DatabaseHealthStatus.UNAVAILABLE,
                 checked_at=now_utc,
                 duration_ms=timeout * 1000,

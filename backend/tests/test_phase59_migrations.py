@@ -58,6 +58,13 @@ class TestMigrations:
             "cep_query_operations",
         }
         assert expected_tables.issubset(tables), f"Missing tables: {expected_tables - tables}"
+        section_columns = {column["name"]: column for column in inspector.get_columns("sections")}
+        assert "steel_type_tag_id" in section_columns
+        assert section_columns["steel_type_tag_id"]["nullable"] is True
+        section_fks = inspector.get_foreign_keys("sections")
+        assert all(fk["referred_table"] != "pi_tags" for fk in section_fks)
+        section_indexes = {index["name"] for index in inspector.get_indexes("sections")}
+        assert "ix_sections_steel_type_tag_id" in section_indexes
 
     def test_downgrade_removes_visual_configuration_tables(self, alembic_cfg, temp_db):
         """Downgrade from head to 0003 should remove visual config tables."""

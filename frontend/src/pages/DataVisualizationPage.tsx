@@ -3,7 +3,7 @@ import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
-import { equipmentsApi, piApi, piTagsApi, sectionsApi, timeSeriesApi, variableTypesApi } from "../api";
+import { equipmentsApi, piApi, piTagsApi, sectionsApi, sipApi, timeSeriesApi, variableTypesApi } from "../api";
 import { ApiError } from "../api/http";
 import type {
   DataFilterConfiguration,
@@ -13,6 +13,8 @@ import type {
   PiHealth,
   PiTag,
   Section,
+  SectionAnalysisTag,
+  ConflictedVariable,
   TimePeriod,
   TimeSeries,
   TimeSeriesMode,
@@ -42,7 +44,7 @@ import { MetricResults } from "../components/MetricResults";
 import { VisualRulesPanel, type VisualSeriesOption } from "../components/VisualRulesPanel";
 import { VisualConfigurationsPanel } from "../components/VisualConfigurationsPanel";
 import { PageHeader } from "../components/PageHeader";
-import { AdvancedFiltersPanel, stripRetiredNamedFilterRules } from "../components/AdvancedFiltersPanel";
+import { AdvancedFiltersPanel, isFixedAnalysisTag, stripRetiredNamedFilterRules } from "../components/AdvancedFiltersPanel";
 import { applyLineAssignments, buildChartDataGroups, resolveVisualization } from "../utils/chartData";
 import { downloadTimeSeriesCsv, buildCsvFilename, buildTimeSeriesCsv, downloadBlob } from "../utils/csv";
 import { applyDataFilters } from "../utils/dataFilters";
@@ -357,7 +359,28 @@ export function DataVisualizationPage() {
         if ((resp.items ?? []).length === 0 || page >= (resp.pages ?? 0)) break;
         page += 1;
       }
-      setTags(tagList.filter((tag) => tag.active));
+      const sipSources = await sipApi.list();
+      if (signal?.aborted) return;
+      const sipTags: PiTag[] = sipSources.filter((source) => source.active).map((source) => ({
+        id: -source.id,
+        equipment_id: source.equipment_id,
+        section_id: source.section_id,
+        variable_type_id: source.variable_type_id,
+        pi_server: "SIP",
+        pi_tag_name: `SIP SQL: ${source.name}`,
+        pi_web_id: null,
+        display_name: source.name,
+        description: "Consulta Oracle SIP somente leitura",
+        engineering_unit: vt.items.find((item) => item.id === source.variable_type_id)?.default_unit ?? null,
+        data_type: vt.items.find((item) => item.id === source.variable_type_id)?.filter_data_type === "REAL" ? "NUMERIC" : "NON_NUMERIC",
+        active: source.active,
+        validation_status: "VALID",
+        validation_message: null,
+        validated_at: null,
+        created_at: source.created_at,
+        updated_at: source.updated_at,
+      }));
+      setTags([...tagList.filter((tag) => tag.active), ...sipTags]);
       setLookupsLoaded(true);
     } catch (err) {
       if (!signal?.aborted) {
@@ -416,19 +439,132 @@ export function DataVisualizationPage() {
       width: resolveUniqueTagId(candidateSections.map((section) => section.width_tag_id)),
       um: resolveUniqueTagId(candidateSections.map((section) => section.um_tag_id)),
       thickness: resolveUniqueTagId(candidateSections.map((section) => section.thickness_tag_id)),
+      steelType: resolveUniqueTagId(candidateSections.map((section) => section.steel_type_tag_id ?? null)),
     };
   }, [filters.equipmentId, filters.sectionId, sections, tags]);
 
+  const piTagById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
+
+  const { extraAnalysisTags, conflictedVariables } = useMemo(() => {
+    // Helper to exclude fixed tags by code, name, or if matching section's fixed tag IDs
+    const isExtra = (t: SectionAnalysisTag, sec?: Section): boolean => {
+      if (isFixedAnalysisTag(t)) return false;
+      if (sec) {
+        if (
+          t.pi_tag_id &&
+          (t.pi_tag_id === sec.width_tag_id ||
+            t.pi_tag_id === sec.um_tag_id ||
+            t.pi_tag_id === sec.thickness_tag_id ||
+            t.pi_tag_id === sec.steel_type_tag_id)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    // 1. Specific section selected:
+    if (filters.sectionId) {
+      const section = sectionMap.get(filters.sectionId);
+      if (!section) return { extraAnalysisTags: [], conflictedVariables: [] };
+      const rawTags = section.analysis_tags ?? [];
+      const extraTags: SectionAnalysisTag[] = rawTags
+        .filter((t) => isExtra(t, section))
+        .map((t) => ({
+          ...t,
+          section_tag_map: t.pi_tag_id ? { [filters.sectionId!]: t.pi_tag_id } : {},
+          pi_tag_ids: t.pi_tag_id ? [t.pi_tag_id] : [],
+        }));
+      return { extraAnalysisTags: extraTags, conflictedVariables: [] };
+    }
+
+    // 2. "Todas as seções" with equipment selected:
+    if (filters.equipmentId) {
+      const equipSections = sections.filter((s) => s.equipment_id === filters.equipmentId);
+      interface TagEntry {
+        tag: SectionAnalysisTag;
+        sectionId: number;
+        sectionName: string;
+      }
+      const byVar = new Map<number, TagEntry[]>();
+
+      for (const sec of equipSections) {
+        for (const t of sec.analysis_tags ?? []) {
+          if (!isExtra(t, sec)) continue;
+          const varId = t.variable_type_id;
+          if (!byVar.has(varId)) {
+            byVar.set(varId, []);
+          }
+          byVar.get(varId)!.push({ tag: t, sectionId: sec.id, sectionName: sec.name });
+        }
+      }
+
+      const consolidated: SectionAnalysisTag[] = [];
+      const conflicts: ConflictedVariable[] = [];
+
+      for (const [varId, entries] of byVar.entries()) {
+        const types = new Set(entries.map((e) => e.tag.filter_type).filter(Boolean));
+        if (types.size > 1) {
+          // Filter type conflict across sections
+          const first = entries[0].tag;
+          conflicts.push({
+            variableTypeId: varId,
+            variableTypeCode: first.variable_type_code,
+            variableTypeName: first.variable_type_name || `Variável #${varId}`,
+            details: entries.map((e) => ({
+              sectionId: e.sectionId,
+              sectionName: e.sectionName,
+              filterType: e.tag.filter_type,
+            })),
+          });
+          continue;
+        }
+
+        const first = entries[0].tag;
+        const section_tag_map: Record<number, number> = {};
+        const piTagIdsSet = new Set<number>();
+
+        for (const e of entries) {
+          if (e.sectionId && e.tag.pi_tag_id) {
+            section_tag_map[e.sectionId] = e.tag.pi_tag_id;
+            piTagIdsSet.add(e.tag.pi_tag_id);
+          }
+        }
+
+        consolidated.push({
+          ...first,
+          section_tag_map,
+          pi_tag_ids: Array.from(piTagIdsSet),
+        });
+      }
+
+      return { extraAnalysisTags: consolidated, conflictedVariables: conflicts };
+    }
+
+    // 3. No equipment selected
+    return { extraAnalysisTags: [], conflictedVariables: [] };
+  }, [filters.equipmentId, filters.sectionId, sectionMap, sections]);
+
   // IDs das tags internas que devem permanecer ocultas no gráfico
-  // (somente largura e espessura). A UM é exibida em eixo próprio.
+  // (largura, espessura, tipo de aço e tags dinâmicas). A UM é exibida em eixo próprio.
   const analysisContextTagIds = useMemo(
     () => {
       const ids = new Set<number>();
       if (analysisTagIds.width !== null) ids.add(analysisTagIds.width);
       if (analysisTagIds.thickness !== null) ids.add(analysisTagIds.thickness);
+      if (analysisTagIds.steelType !== null) ids.add(analysisTagIds.steelType);
+      for (const t of extraAnalysisTags) {
+        if (t.pi_tag_ids && t.pi_tag_ids.length > 0) {
+          for (const id of t.pi_tag_ids) {
+            ids.add(id);
+          }
+        } else if (t.pi_tag_id) {
+          ids.add(t.pi_tag_id);
+        }
+      }
       return ids;
     },
-    [analysisTagIds],
+    [analysisTagIds, extraAnalysisTags],
   );
   const analysisHiddenTagIds = useMemo(
     () => new Set(
@@ -438,7 +574,7 @@ export function DataVisualizationPage() {
   );
   const queryTagIds = useMemo(
     () => {
-      // Tags selecionadas pelo usuário + tags de contexto de largura/espessura (para mascaramento interno)
+      // Tags selecionadas pelo usuário + tags fixas auxiliares e tags de análise da seção
       // A UM NÃO entra automaticamente: só entra se o usuário selecioná-la explicitamente em selectedTagIds.
       const set = new Set<number>([...selectedTagIds, ...analysisContextTagIds]);
       return Array.from(set);
@@ -475,29 +611,32 @@ export function DataVisualizationPage() {
     });
   }, [tagOptions, filters, equipmentMap, sectionMap, variableTypeMap]);
 
-  // Reset dynamic filters when section changes
+  // Reset dynamic filters and clean section-filter rules when equipment or section changes
   useEffect(() => {
     setDynamicFilters({});
-  }, [filters.sectionId]);
+    setFilters((prev) => {
+      const hasSectionRules = prev.filterConfiguration.rules.some((r) => r.id.startsWith("section-filter:"));
+      if (!hasSectionRules) return prev;
+      return {
+        ...prev,
+        filterConfiguration: {
+          ...prev.filterConfiguration,
+          rules: prev.filterConfiguration.rules.filter((r) => !r.id.startsWith("section-filter:")),
+        },
+      };
+    });
+  }, [filters.equipmentId, filters.sectionId]);
 
   const activeDynamicFilters = useMemo<DynamicAnalysisFilter[]>(() => {
     if (!filters.filtersEnabled || !filters.sectionId) return [];
     return Object.values(dynamicFilters).filter((f) => {
       if (f.min !== null && f.min !== undefined) return true;
       if (f.max !== null && f.max !== undefined) return true;
-      if (f.expression && f.expression.trim()) return true;
-      if (f.value === "ON" || f.value === "OFF") return true;
+      if (f.expression && f.expression.trim() && f.expression.trim() !== "ALL") return true;
+      if (f.value && f.value !== "ALL" && f.value !== "") return true;
       return false;
     });
   }, [filters.filtersEnabled, filters.sectionId, dynamicFilters]);
-
-  const currentSection = useMemo(() => {
-    return filters.sectionId ? sectionMap.get(filters.sectionId) : undefined;
-  }, [filters.sectionId, sectionMap]);
-
-  const currentSectionAnalysisTags = useMemo(() => {
-    return currentSection?.analysis_tags ?? [];
-  }, [currentSection]);
 
   // Whenever equipment or section changes, prune selectedTagIds that no longer match.
   useEffect(() => {
@@ -577,11 +716,20 @@ export function DataVisualizationPage() {
         .filter((rule) => rule.enabled && "tagId" in rule && analysisContextTagIds.has(rule.tagId))
         .map((rule) => rule.id),
     );
+    const seriesSectionMap = new Map<string, number>();
+    for (const s of orderedTimeSeries.series) {
+      const piTag = piTagById.get(s.tag_id);
+      if (piTag?.section_id !== null && piTag?.section_id !== undefined) {
+        const key = s.series_instance_id ?? `tag:${s.tag_id}`;
+        seriesSectionMap.set(key, piTag.section_id);
+      }
+    }
     return applyDataFilters(orderedTimeSeries, filters.filterConfiguration, {
       summarySeriesKeys: visibleSeriesKeys,
       crossSeriesRuleIds,
+      seriesSectionMap,
     });
-  }, [analysisContextTagIds, analysisHiddenTagIds, filters.filtersEnabled, orderedTimeSeries, query.timeSeries, filters.filterConfiguration]);
+  }, [analysisContextTagIds, analysisHiddenTagIds, filters.filtersEnabled, orderedTimeSeries, query.timeSeries, filters.filterConfiguration, piTagById]);
 
   const filteredTimeSeries: TimeSeries | null = useMemo(() => {
     const source = filterResult?.filteredTimeSeries ?? orderedTimeSeries;
@@ -774,8 +922,6 @@ export function DataVisualizationPage() {
     }));
   }, [analysisHiddenTagIds, query.timeSeries, selectedTagIds, tags]);
 
-  const piTagById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
-
   const seriesToPiTag = useMemo(() => {
     const map = new Map<string, PiTag>();
     if (query.timeSeries) {
@@ -809,7 +955,7 @@ export function DataVisualizationPage() {
         dataType: piTag?.data_type ?? "NUMERIC",
       };
     });
-    const linkedOptions = (Object.entries(analysisTagIds) as Array<["width" | "um" | "thickness", number | null]>)
+    const linkedOptions = (Object.entries(analysisTagIds) as Array<["width" | "um" | "thickness" | "steelType", number | null]>)
       .filter((entry): entry is ["width" | "um" | "thickness", number] => entry[1] !== null)
       .map(([analysisRole, tagId]) => {
         const piTag = tags.find((tag) => tag.id === tagId);
@@ -1013,6 +1159,9 @@ export function DataVisualizationPage() {
     if ((comparison.type === "equipments" || comparison.type === "categories") && !comparison.contextBTagIds.length) {
       return "Selecione ao menos uma tag no Contexto B.";
     }
+    if (selectedTagIds.some((id) => id < 0) && filters.mode !== "recorded") {
+      return "Consultas SIP aceitam somente o modo Recorded.";
+    }
     if (filters.mode === "interpolated" && !filters.interval) {
       return "Selecione um intervalo para valores interpolados.";
     }
@@ -1044,7 +1193,7 @@ export function DataVisualizationPage() {
           relative_period: zoomBasePeriod ? false : filters.timePeriod.kind !== "absolute",
           query_id: qid,
           section_id: filters.sectionId ?? undefined,
-          analysis_filters: activeDynamicFilters.length > 0 ? activeDynamicFilters : undefined,
+          analysis_filters: filters.sectionId && activeDynamicFilters.length > 0 ? activeDynamicFilters : undefined,
         },
         signal,
       );
@@ -1134,7 +1283,7 @@ export function DataVisualizationPage() {
       }));
       return;
     }
-    if (piHealth && piHealth.status !== "connected" && piHealth.status !== "unavailable") {
+    if (queryTagIds.some((id) => id > 0) && piHealth && piHealth.status !== "connected" && piHealth.status !== "unavailable") {
       setQuery((prev) => ({
         ...prev,
         errorMessage: "PI Web API nao esta disponivel. Verifique a conexao.",
@@ -1181,7 +1330,7 @@ export function DataVisualizationPage() {
         loading: false,
         errorMessage: null,
         errorDetails: null,
-        partial: result.errors.length > 0 || result.query_execution?.partial === true,
+        partial: result.errors.length > 0 || result.query_execution?.partial === true || result.query_execution?.complete === false,
         errorPerSeries: result.errors,
         startedAt,
         finishedAt,
@@ -1408,7 +1557,7 @@ export function DataVisualizationPage() {
     ? equipmentMap.get(filters.equipmentId) ?? null
     : null;
 
-  const piConfigured = piHealth?.status !== "not_configured";
+  const piConfigured = (selectedTagIds.length > 0 && queryTagIds.every((id) => id < 0)) || piHealth?.status !== "not_configured";
 
   const durationMs =
     query.finishedAt && query.startedAt ? query.finishedAt - query.startedAt : null;
@@ -2004,7 +2153,8 @@ export function DataVisualizationPage() {
                     ruleResults={filterResult?.ruleResults ?? []}
                     hasData={query.timeSeries !== null}
                     onChange={handleFilterConfigurationChange}
-                    analysisTags={currentSectionAnalysisTags}
+                    analysisTags={extraAnalysisTags}
+                    conflictedVariables={conflictedVariables}
                     dynamicFilters={dynamicFilters}
                     onDynamicFilterChange={setDynamicFilters}
                   />

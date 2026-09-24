@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal, Form, Button, Table } from "react-bootstrap";
 
-import { equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
+import { equipmentsApi, piTagsApi, sectionsApi, sipApi, variableTypesApi } from "../api";
 import { DEFAULT_PI_SERVER } from "../constants/pi";
 import type {
   Equipment,
@@ -12,6 +12,8 @@ import type {
   PiTagUpdate,
   PiTagValidationResult,
   Section,
+  SipSource,
+  SipSourceCreate,
   VariableType,
 } from "../types";
 import { ActiveBadge } from "../components/ActiveBadge";
@@ -33,6 +35,10 @@ import { formatDateTime } from "../utils/format";
 const PAGE_SIZE = 10;
 
 interface FormState {
+  source_kind: "PI" | "SIP";
+  sql_text: string;
+  timestamp_column: string;
+  value_column: string;
   equipment_id: string;
   section_id: string;
   variable_type_id: string;
@@ -48,6 +54,10 @@ interface FormState {
 }
 
 const EMPTY_FORM: FormState = {
+  source_kind: "PI",
+  sql_text: "",
+  timestamp_column: "",
+  value_column: "",
   equipment_id: "",
   section_id: "",
   variable_type_id: "",
@@ -69,9 +79,11 @@ const DATA_TYPE_OPTIONS: { value: PiTagDataType; label: string }[] = [
 
 export function PiTagsPage() {
   const [items, setItems] = useState<PiTag[]>([]);
+  const [sipSources, setSipSources] = useState<SipSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [search, setSearch] = useState("");
+  const [serverFilter, setServerFilter] = useState<"all" | "PIMS" | "SIP">("all");
   const [activeFilter, setActiveFilter] = useState<"all" | "true" | "false">("all");
   const [equipmentFilter, setEquipmentFilter] = useState<string>("");
   const [sectionFilter, setSectionFilter] = useState<string>("");
@@ -87,6 +99,10 @@ export function PiTagsPage() {
 
   const [showFormModal, setShowFormModal] = useState(false);
   const [editing, setEditing] = useState<PiTag | null>(null);
+  const [editingSip, setEditingSip] = useState<SipSource | null>(null);
+  const [sipColumns, setSipColumns] = useState<string[]>([]);
+  const [inspectingSip, setInspectingSip] = useState(false);
+  const [confirmDeleteSip, setConfirmDeleteSip] = useState<SipSource | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formSections, setFormSections] = useState<Section[]>([]);
   const [formError, setFormError] = useState<unknown>(null);
@@ -148,6 +164,14 @@ export function PiTagsPage() {
     }
   };
 
+  const loadSipSources = async () => {
+    try {
+      setSipSources(await sipApi.list());
+    } catch (err) {
+      setError(err);
+    }
+  };
+
   const loadList = async () => {
     setLoading(true);
     setError(null);
@@ -174,6 +198,7 @@ export function PiTagsPage() {
 
   useEffect(() => {
     void loadLookups();
+    void loadSipSources();
   }, []);
 
   // Reset page to 1 when filters change, but don't trigger loadList here directly
@@ -227,17 +252,21 @@ export function PiTagsPage() {
     setFormSections(filterSectionsByEquipment(form.equipment_id));
   }, [form.equipment_id, sections]);
 
-  const openCreate = () => {
+  const openCreate = (sourceKind: "PI" | "SIP" = "PI") => {
     setEditing(null);
-    setForm({ ...EMPTY_FORM });
+    setEditingSip(null);
+    setSipColumns([]);
+    setForm({ ...EMPTY_FORM, source_kind: sourceKind });
     setFormSections([]);
     setFormError(null);
     setShowFormModal(true);
   };
 
   const openEdit = (item: PiTag) => {
+    setEditingSip(null);
     setEditing(item);
     setForm({
+      ...EMPTY_FORM,
       equipment_id: String(item.equipment_id),
       section_id: item.section_id === null ? "" : String(item.section_id),
       variable_type_id: String(item.variable_type_id),
@@ -253,6 +282,44 @@ export function PiTagsPage() {
     });
     setFormError(null);
     setShowFormModal(true);
+  };
+
+  const openEditSip = (item: SipSource) => {
+    setEditing(null);
+    setEditingSip(item);
+    setSipColumns([item.timestamp_column, item.value_column]);
+    setForm({
+      ...EMPTY_FORM,
+      source_kind: "SIP",
+      equipment_id: String(item.equipment_id),
+      section_id: item.section_id === null ? "" : String(item.section_id),
+      variable_type_id: String(item.variable_type_id),
+      display_name: item.name,
+      sql_text: item.sql_text,
+      timestamp_column: item.timestamp_column,
+      value_column: item.value_column,
+      active: item.active,
+    });
+    setFormError(null);
+    setShowFormModal(true);
+  };
+
+  const inspectSipColumns = async () => {
+    setInspectingSip(true);
+    setFormError(null);
+    try {
+      const response = await sipApi.inspectColumns(form.sql_text);
+      setSipColumns(response.columns);
+      setForm((prev) => ({
+        ...prev,
+        timestamp_column: response.columns.includes(prev.timestamp_column) ? prev.timestamp_column : "",
+        value_column: response.columns.includes(prev.value_column) ? prev.value_column : "",
+      }));
+    } catch (err) {
+      setFormError(err);
+    } finally {
+      setInspectingSip(false);
+    }
   };
 
   const handleEquipmentChange = (value: string) => {
@@ -281,7 +348,28 @@ export function PiTagsPage() {
       if (!Number.isFinite(variableTypeId) || variableTypeId <= 0) {
         throw new Error("Selecione um tipo de variavel valido.");
       }
-      if (editing) {
+      if (form.source_kind === "SIP") {
+        if (!form.timestamp_column || !form.value_column || form.timestamp_column === form.value_column) {
+          throw new Error("Selecione colunas distintas de Timestamp e Value.");
+        }
+        const payload: SipSourceCreate = {
+          equipment_id: equipmentId,
+          section_id: sectionId,
+          variable_type_id: variableTypeId,
+          name: form.display_name.trim(),
+          sql_text: form.sql_text.trim(),
+          timestamp_column: form.timestamp_column,
+          value_column: form.value_column,
+          active: form.active,
+        };
+        if (editingSip) {
+          await sipApi.update(editingSip.id, payload);
+        } else {
+          await sipApi.create(payload);
+        }
+        setSuccessMessage(editingSip ? "Consulta SIP atualizada." : "Consulta SIP criada.");
+        await loadSipSources();
+      } else if (editing) {
         const update: PiTagUpdate = {
           equipment_id: equipmentId,
           section_id: sectionId,
@@ -336,6 +424,21 @@ export function PiTagsPage() {
       );
       setConfirmDelete(null);
       await loadList();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteSip = async () => {
+    if (!confirmDeleteSip) return;
+    setDeleting(true);
+    try {
+      await sipApi.remove(confirmDeleteSip.id);
+      setConfirmDeleteSip(null);
+      setSuccessMessage("Consulta SIP excluída.");
+      await loadSipSources();
     } catch (err) {
       setError(err);
     } finally {
@@ -423,14 +526,25 @@ export function PiTagsPage() {
     return map;
   }, [variableTypes]);
 
+  const visibleSipSources = useMemo(() => sipSources.filter((source) => {
+    if (search && !source.name.toLocaleLowerCase().includes(search.toLocaleLowerCase())
+      && !"sip".includes(search.toLocaleLowerCase())) return false;
+    if (equipmentParam !== undefined && source.equipment_id !== equipmentParam) return false;
+    if (sectionParam !== undefined && source.section_id !== null && source.section_id !== sectionParam) return false;
+    if (variableTypeParam !== undefined && source.variable_type_id !== variableTypeParam) return false;
+    if (activeParam !== undefined && source.active !== activeParam) return false;
+    if (validationFilter) return false;
+    return true;
+  }), [sipSources, search, equipmentParam, sectionParam, variableTypeParam, activeParam, validationFilter]);
+
   const batchSelectionCount = batchSelection.size;
   const canValidate = piStatus === "connected" || piStatus === "unavailable";
 
   return (
     <div data-testid="pi-tags-page">
       <PageHeader
-        title="Tags PI"
-        subtitle="Cadastro administrativo de tags do PI Web API"
+        title="Tags Temporais"
+        subtitle="Cadastro administrativo de fontes PIMS e SIP"
         actions={
           <>
             <Button
@@ -453,7 +567,10 @@ export function PiTagsPage() {
                 ? `Validar ${batchSelectionCount} tag(s)`
                 : "Validar todas ativas"}
             </Button>
-            <Button variant="primary" className="btn-piad-primary" onClick={openCreate}>
+            <Button variant="outline-primary" onClick={() => openCreate("SIP")}>
+              <i className="bi bi-database me-1" /> Nova consulta SIP
+            </Button>
+            <Button variant="primary" className="btn-piad-primary" onClick={() => openCreate("PI")}>
               <i className="bi bi-plus-lg me-1" /> Nova tag PI
             </Button>
           </>
@@ -479,6 +596,19 @@ export function PiTagsPage() {
       <FeedbackAlert variant="success" message={successMessage} />
 
       <div className="piad-filter-bar">
+        <div style={{ minWidth: 150 }}>
+          <label className="form-label" htmlFor="tag-server-filter">Servidor</label>
+          <select id="tag-server-filter" className="form-select" value={serverFilter}
+            onChange={(event) => {
+              const next = event.target.value as "all" | "PIMS" | "SIP";
+              setServerFilter(next);
+              if (next === "SIP") setValidationFilter("");
+            }}>
+            <option value="all">Todos</option>
+            <option value="PIMS">PIMS</option>
+            <option value="SIP">SIP</option>
+          </select>
+        </div>
         <div className="flex-grow-1">
           <label className="form-label" htmlFor="tag-search">
             Buscar
@@ -549,7 +679,7 @@ export function PiTagsPage() {
             ))}
           </select>
         </div>
-        <div style={{ minWidth: 160 }}>
+        {serverFilter !== "SIP" && <div style={{ minWidth: 160 }}>
           <label className="form-label" htmlFor="tag-validation">
             Validacao
           </label>
@@ -565,7 +695,7 @@ export function PiTagsPage() {
             <option value="INVALID">Invalida</option>
             <option value="ERROR">Erro</option>
           </select>
-        </div>
+        </div>}
         <div style={{ minWidth: 140 }}>
           <label className="form-label" htmlFor="tag-active">
             Status
@@ -594,7 +724,7 @@ export function PiTagsPage() {
         </div>
       )}
 
-      <div className="card piad-card piad-table-card">
+      {serverFilter !== "SIP" && <div className="card piad-card piad-table-card">
         <div className="card-body">
           {loading ? (
             <LoadingState />
@@ -603,7 +733,7 @@ export function PiTagsPage() {
               title="Nenhuma tag PI encontrada"
               description="Cadastre uma tag para representar uma variavel do processo."
               action={
-                <Button variant="primary" className="btn-piad-primary" onClick={openCreate}>
+                <Button variant="primary" className="btn-piad-primary" onClick={() => openCreate("PI")}>
                   <i className="bi bi-plus-lg me-1" /> Nova tag PI
                 </Button>
               }
@@ -629,14 +759,9 @@ export function PiTagsPage() {
                   <th>Equipamento</th>
                   <th>Secao</th>
                   <th>Tipo de variavel</th>
-                  <th>PI Server</th>
                   <th>Tag PI</th>
                   <th>Nome amigavel</th>
-                  <th>WebId</th>
-                  <th>Validacao</th>
-                  <th>Mensagem</th>
-                  <th>Validado em</th>
-                  <th>Status</th>
+                  <th>Servidor</th>
                   <th className="text-end">Acoes</th>
                 </tr>
               </thead>
@@ -654,20 +779,9 @@ export function PiTagsPage() {
                     <td>{equipmentMap.get(item.equipment_id)?.code ?? item.equipment_id}</td>
                     <td>{item.section_id === null ? "Equipamento inteiro" : sectionMap.get(item.section_id)?.code ?? item.section_id}</td>
                     <td>{variableTypeMap.get(item.variable_type_id)?.code ?? item.variable_type_id}</td>
-                    <td>{item.pi_server}</td>
                     <td className="fw-semibold">{item.pi_tag_name}</td>
                     <td>{item.display_name}</td>
-                    <td>
-                      <WebIdDisplay webId={item.pi_web_id} />
-                    </td>
-                    <td>
-                      <StatusBadge status={item.validation_status} />
-                    </td>
-                    <td className="small text-muted">{item.validation_message || "-"}</td>
-                    <td className="small text-muted">{formatDateTime(item.validated_at)}</td>
-                    <td>
-                      <ActiveBadge active={item.active} lifecycleStatus={item.lifecycle_status} />
-                    </td>
+                    <td>PIMS</td>
                     <td>
                       <div className="piad-table-actions">
                         <Button
@@ -715,19 +829,47 @@ export function PiTagsPage() {
             </Table>
           )}
         </div>
-      </div>
+      </div>}
 
-      <div className="piad-pagination">
+      {serverFilter !== "SIP" && <div className="piad-pagination">
         <div className="piad-pagination__info">
           {total === 0 ? "Nenhum registro" : `Exibindo ${items.length} de ${total} registro(s)`}
         </div>
         <Pagination page={page} pages={pages} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} />
-      </div>
+      </div>}
+
+      {serverFilter !== "PIMS" && <div className="card piad-card piad-table-card mt-4">
+        <div className="card-header fw-semibold">Consultas SIP Oracle</div>
+        <div className="card-body">
+          {visibleSipSources.length === 0 ? (
+            <p className="text-muted mb-0">Nenhuma consulta SIP encontrada.</p>
+          ) : (
+            <Table responsive hover className="mb-0">
+              <thead><tr><th>Nome</th><th>Servidor</th><th>Equipamento</th><th>Seção</th><th>Timestamp</th><th>Value</th><th>Status</th><th className="text-end">Ações</th></tr></thead>
+              <tbody>{visibleSipSources.map((source) => (
+                <tr key={source.id} data-testid={`sip-source-row-${source.id}`}>
+                  <td>{source.name}</td>
+                  <td>SIP</td>
+                  <td>{equipmentMap.get(source.equipment_id)?.code ?? source.equipment_id}</td>
+                  <td>{source.section_id === null ? "Equipamento inteiro" : sectionMap.get(source.section_id)?.code ?? source.section_id}</td>
+                  <td>{source.timestamp_column}</td>
+                  <td>{source.value_column}</td>
+                  <td><ActiveBadge active={source.active} /></td>
+                  <td className="text-end">
+                    <Button variant="outline-primary" size="sm" className="me-2" onClick={() => openEditSip(source)}>Editar</Button>
+                    <Button variant="outline-danger" size="sm" onClick={() => setConfirmDeleteSip(source)}>Excluir</Button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </Table>
+          )}
+        </div>
+      </div>}
 
       <Modal show={showFormModal} onHide={() => setShowFormModal(false)} centered backdrop="static" size="lg">
         <Form onSubmit={handleSubmit}>
           <Modal.Header closeButton>
-            <Modal.Title>{editing ? "Editar tag PI" : "Nova tag PI"}</Modal.Title>
+            <Modal.Title>{form.source_kind === "SIP" ? (editingSip ? "Editar consulta SIP" : "Nova consulta SIP") : (editing ? "Editar tag PI" : "Nova tag PI")}</Modal.Title>
           </Modal.Header>
           <Modal.Body>
             <ErrorAlert error={formError} onClose={() => setFormError(null)} />
@@ -790,6 +932,44 @@ export function PiTagsPage() {
               </div>
             </div>
             <hr />
+            {form.source_kind === "SIP" ? (
+              <div className="row g-3">
+                <div className="col-12">
+                  <Form.Group controlId="sip-sql">
+                    <Form.Label>SQL de leitura (SELECT)</Form.Label>
+                    <Form.Control as="textarea" rows={6} value={form.sql_text} required maxLength={20000}
+                      placeholder="SELECT DATA_HORA AS TIMESTAMP, MEDICAO AS VALUE FROM ..."
+                      onChange={(event) => {
+                        setSipColumns([]);
+                        setForm((prev) => ({ ...prev, sql_text: event.target.value, timestamp_column: "", value_column: "" }));
+                      }} />
+                    <Form.Text>Somente SELECT. O período selecionado no gráfico será aplicado pela aplicação.</Form.Text>
+                  </Form.Group>
+                  <Button variant="outline-primary" className="mt-2" type="button" disabled={inspectingSip || !form.sql_text.trim()}
+                    onClick={() => void inspectSipColumns()}>
+                    {inspectingSip ? "Lendo colunas..." : "Ler colunas do SQL"}
+                  </Button>
+                </div>
+                <div className="col-md-6">
+                  <Form.Group controlId="sip-timestamp-column">
+                    <Form.Label>Coluna Timestamp</Form.Label>
+                    <Form.Select value={form.timestamp_column} required onChange={(event) => setForm((prev) => ({ ...prev, timestamp_column: event.target.value }))}>
+                      <option value="">Selecione...</option>
+                      {sipColumns.map((column) => <option key={column} value={column}>{column}</option>)}
+                    </Form.Select>
+                  </Form.Group>
+                </div>
+                <div className="col-md-6">
+                  <Form.Group controlId="sip-value-column">
+                    <Form.Label>Coluna Value</Form.Label>
+                    <Form.Select value={form.value_column} required onChange={(event) => setForm((prev) => ({ ...prev, value_column: event.target.value }))}>
+                      <option value="">Selecione...</option>
+                      {sipColumns.map((column) => <option key={column} value={column}>{column}</option>)}
+                    </Form.Select>
+                  </Form.Group>
+                </div>
+              </div>
+            ) : (<>
             <div className="row g-3">
               <div className="col-md-12">
                 <Form.Group controlId="tag-pi-name">
@@ -828,6 +1008,7 @@ export function PiTagsPage() {
                 </Form.Group>
               </div>
             </div>
+            </>)}
             <div className="row g-3 mt-1">
               <div className="col-md-6">
                 <Form.Group controlId="tag-display">
@@ -840,7 +1021,7 @@ export function PiTagsPage() {
                   />
                 </Form.Group>
               </div>
-              <div className="col-md-3">
+              {form.source_kind === "PI" && <div className="col-md-3">
                 <Form.Group controlId="tag-unit">
                   <Form.Label>Unidade de engenharia</Form.Label>
                   <Form.Control
@@ -851,8 +1032,8 @@ export function PiTagsPage() {
                     maxLength={32}
                   />
                 </Form.Group>
-              </div>
-              <div className="col-md-3">
+              </div>}
+              {form.source_kind === "PI" && <div className="col-md-3">
                 <Form.Group controlId="tag-data-type">
                   <Form.Label>Tipo de dado</Form.Label>
                   <Form.Select
@@ -868,9 +1049,9 @@ export function PiTagsPage() {
                     ))}
                   </Form.Select>
                 </Form.Group>
-              </div>
+              </div>}
             </div>
-            <Form.Group className="mt-3" controlId="tag-description">
+            {form.source_kind === "PI" && <Form.Group className="mt-3" controlId="tag-description">
               <Form.Label>Descricao</Form.Label>
               <Form.Control
                 as="textarea"
@@ -879,7 +1060,7 @@ export function PiTagsPage() {
                 onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
                 maxLength={500}
               />
-            </Form.Group>
+            </Form.Group>}
             <div className="d-flex justify-content-between align-items-center mt-3">
               <Form.Check
                 type="switch"
@@ -888,11 +1069,11 @@ export function PiTagsPage() {
                 checked={form.active}
                 onChange={(event) => setForm((prev) => ({ ...prev, active: event.target.checked }))}
               />
-              <div className="piad-disabled-note">
+              {form.source_kind === "PI" && <div className="piad-disabled-note">
                 Validacao automatica no PI Web API disponivel na Fase 2.
-              </div>
+              </div>}
             </div>
-            {!editing ? (
+            {form.source_kind === "PI" && !editing ? (
               <div className="mt-3">
                 <span className="text-muted small">Status de validacao inicial:</span>{" "}
                 <StatusBadge status="PENDING" />
@@ -950,6 +1131,15 @@ export function PiTagsPage() {
           </Button>
         </Modal.Footer>
       </Modal>
+
+      <ConfirmModal
+        show={Boolean(confirmDeleteSip)}
+        title="Excluir consulta SIP"
+        message={<span>Excluir a consulta <strong>{confirmDeleteSip?.name}</strong>?</span>}
+        busy={deleting}
+        onConfirm={handleDeleteSip}
+        onCancel={() => setConfirmDeleteSip(null)}
+      />
 
       <ConfirmModal
         show={Boolean(confirmDelete)}

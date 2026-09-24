@@ -25,6 +25,7 @@ DISPOSABLE_URL = f"postgresql+psycopg://pi_app:pi_app_secret@127.0.0.1:6543/{DIS
 
 
 def _drop_disposable_db():
+    assert DISPOSABLE_DB.startswith("pi_disposable_") and DISPOSABLE_DB != "pi_analytics", "FATAL: Must never drop non-disposable DB"
     try:
         subprocess.run(
             [
@@ -51,6 +52,7 @@ def test_full_timescaledb_migration_cycle():
     except Exception:
         pytest.skip("Docker is not available")
 
+    assert DISPOSABLE_DB.startswith("pi_disposable_") and DISPOSABLE_DB != "pi_analytics", "FATAL: Must never target staging"
     _drop_disposable_db()
 
     # Step 1: Create disposable database from staging schema dump
@@ -70,19 +72,30 @@ def test_full_timescaledb_migration_cycle():
     dump_p.stdout.close()
     dump_p.wait()
 
-    # Seed alembic_version at 20260926_filter_data_type
-    engine = create_engine(DISPOSABLE_URL)
-    with engine.begin() as conn:
-        conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260926_filter_data_type')"))
-
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", DISPOSABLE_URL)
 
+    # Seed alembic_version at head (matching the dumped schema) and downgrade to 20260926_filter_data_type.
+    # This cleanly drops any objects created by migrations 20260927_*, so that subsequent upgrade steps
+    # test their true forward DDL without duplicate table/index conflicts.
+    engine = create_engine(DISPOSABLE_URL)
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) PRIMARY KEY)"))
+        conn.execute(text("DELETE FROM alembic_version"))
+        conn.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260927_reconcile_backfill')"))
+
+    command.downgrade(cfg, "20260926_filter_data_type")
+
     try:
-        # Step 2: Verify current revision
+        # Step 2: Verify current revision and ensure objects are clean
         with engine.begin() as conn:
             rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
             assert rev == "20260926_filter_data_type"
+            insp = inspect(conn)
+            indexes = [idx["name"] for idx in insp.get_indexes("pi_backfill_jobs")]
+            cols = [col["name"] for col in insp.get_columns("pi_backfill_jobs")]
+            assert "ix_pi_backfill_jobs_legacy_stale" not in indexes
+            assert "consecutive_failures" not in cols
 
         # Step 3: Upgrade to 20260927_backfill_recovery
         command.upgrade(cfg, "20260927_backfill_recovery")
@@ -108,8 +121,8 @@ def test_full_timescaledb_migration_cycle():
                 check=True,
             )
 
-        # Step 4: Upgrade to head
-        command.upgrade(cfg, "head")
+        # Step 4: Upgrade to 20260927_reconcile_backfill
+        command.upgrade(cfg, "20260927_reconcile_backfill")
 
         # Step 5: Verify schema and reconciled data
         with engine.begin() as conn:
@@ -137,8 +150,8 @@ def test_full_timescaledb_migration_cycle():
             assert "ix_pi_backfill_jobs_legacy_stale" not in indexes
             assert "consecutive_failures" not in cols
 
-        # Step 8: Re-upgrade to head
-        command.upgrade(cfg, "head")
+        # Step 8: Re-upgrade to 20260927_reconcile_backfill
+        command.upgrade(cfg, "20260927_reconcile_backfill")
         with engine.begin() as conn:
             rev = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
             insp = inspect(conn)
@@ -153,9 +166,22 @@ def test_full_timescaledb_migration_cycle():
         script = ScriptDirectory.from_config(cfg)
         heads = script.get_heads()
         assert len(heads) == 1
-        assert heads[0] == "20260927_reconcile_backfill"
+        assert heads[0] == "20260930_section_steel_type_tag"
+
+        # Step 10: Validate main tables, indexes, and hypertable at head
+        with engine.begin() as conn:
+            insp = inspect(conn)
+            tables = set(insp.get_table_names())
+            expected_tables = {
+                "users", "equipments", "sections", "variable_types",
+                "pi_tags", "pi_samples_timescale", "pi_backfill_jobs",
+                "visual_configurations", "visual_configuration_versions",
+            }
+            # Verify indexes on pi_samples_timescale
+            ts_indexes = [idx["name"] for idx in insp.get_indexes("pi_samples_timescale")]
+            assert len(ts_indexes) >= 2, f"Expected at least 2 indexes on pi_samples_timescale, found: {ts_indexes}"
 
     finally:
-        # Step 10: remove disposable DB
+        # Step 11: remove disposable DB
         engine.dispose()
         _drop_disposable_db()

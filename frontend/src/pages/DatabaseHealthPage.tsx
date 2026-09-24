@@ -54,6 +54,18 @@ function formatDuration(seconds: number | null | undefined): string {
   return `${hours}h ${mins}m`;
 }
 
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let val = bytes;
+  let idx = 0;
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024;
+    idx++;
+  }
+  return `${val.toFixed(2)} ${units[idx]}`;
+}
+
 function getStatusBadgeVariant(status: DatabaseHealthStatus): string {
   switch (status) {
     case "healthy":
@@ -450,74 +462,189 @@ export function DatabaseHealthPage() {
           </Row>
 
           {/* Detailed Tabbed Sections */}
-          <Card className="piad-card shadow-sm border-0 mb-4">
-            <Card.Header className="bg-white border-bottom pt-3 pb-0">
-              <Nav variant="tabs" activeKey={activeTab} onSelect={(k) => setActiveTab(k || "storage")}>
-                <Nav.Item>
-                  <Nav.Link eventKey="storage" className="d-flex align-items-center gap-1">
-                    <i className="bi bi-hdd-stack" />
-                    <span>Armazenamento & Tabelas</span>
-                  </Nav.Link>
-                </Nav.Item>
-                <Nav.Item>
-                  <Nav.Link eventKey="connections" className="d-flex align-items-center gap-1">
-                    <i className="bi bi-activity" />
-                    <span>Conexões & Atividade</span>
-                  </Nav.Link>
-                </Nav.Item>
-                <Nav.Item>
-                  <Nav.Link eventKey="locks" className="d-flex align-items-center gap-1">
-                    <i className="bi bi-shield-lock" />
-                    <span>Locks & Concorrência</span>
-                  </Nav.Link>
-                </Nav.Item>
-                <Nav.Item>
-                  <Nav.Link eventKey="timescale" className="d-flex align-items-center gap-1">
-                    <i className="bi bi-layers-half" />
-                    <span>TimescaleDB</span>
-                  </Nav.Link>
-                </Nav.Item>
-                <Nav.Item>
-                  <Nav.Link eventKey="freshness" className="d-flex align-items-center gap-1">
-                    <i className="bi bi-arrow-repeat" />
-                    <span>Frescor dos Dados</span>
-                  </Nav.Link>
-                </Nav.Item>
-                <Nav.Item>
-                  <Nav.Link eventKey="checks" className="d-flex align-items-center gap-1">
-                    <i className="bi bi-check2-circle" />
-                    <span>Diagnósticos ({data.checks.length})</span>
-                  </Nav.Link>
-                </Nav.Item>
-              </Nav>
-            </Card.Header>
+          <Tab.Container activeKey={activeTab} onSelect={(k) => setActiveTab(k || "storage")}>
+            <Card className="piad-card shadow-sm border-0 mb-4">
+              <Card.Header className="bg-white border-bottom pt-3 pb-0">
+                <Nav variant="tabs">
+                  <Nav.Item>
+                    <Nav.Link eventKey="storage" className="d-flex align-items-center gap-1">
+                      <i className="bi bi-hdd-stack" />
+                      <span>Armazenamento & Tabelas</span>
+                    </Nav.Link>
+                  </Nav.Item>
+                  <Nav.Item>
+                    <Nav.Link eventKey="connections" className="d-flex align-items-center gap-1">
+                      <i className="bi bi-activity" />
+                      <span>Conexões & Atividade</span>
+                    </Nav.Link>
+                  </Nav.Item>
+                  <Nav.Item>
+                    <Nav.Link eventKey="locks" className="d-flex align-items-center gap-1">
+                      <i className="bi bi-shield-lock" />
+                      <span>Locks & Concorrência</span>
+                    </Nav.Link>
+                  </Nav.Item>
+                  <Nav.Item>
+                    <Nav.Link eventKey="timescale" className="d-flex align-items-center gap-1">
+                      <i className="bi bi-layers-half" />
+                      <span>TimescaleDB</span>
+                    </Nav.Link>
+                  </Nav.Item>
+                  <Nav.Item>
+                    <Nav.Link eventKey="freshness" className="d-flex align-items-center gap-1">
+                      <i className="bi bi-arrow-repeat" />
+                      <span>Frescor dos Dados</span>
+                    </Nav.Link>
+                  </Nav.Item>
+                  <Nav.Item>
+                    <Nav.Link eventKey="checks" className="d-flex align-items-center gap-1">
+                      <i className="bi bi-check2-circle" />
+                      <span>Diagnósticos ({data.checks.length})</span>
+                    </Nav.Link>
+                  </Nav.Item>
+                </Nav>
+              </Card.Header>
 
-            <Card.Body className="p-4">
-              <Tab.Container activeKey={activeTab}>
+              <Card.Body className="p-4">
                 <Tab.Content>
                   {/* Tab 1: Storage */}
                   <Tab.Pane eventKey="storage">
                     <div className="mb-4">
+                      {/* Top Storage Cards */}
                       <Row className="g-3 mb-3">
-                        <Col sm={4}>
-                          <div className="p-3 bg-light rounded">
-                            <div className="text-muted small">Tamanho Total da Base</div>
+                        <Col sm={3}>
+                          <div className="p-3 bg-light rounded h-100">
+                            <div className="d-flex align-items-center justify-content-between mb-1">
+                              <span className="text-muted small">Tamanho do Banco</span>
+                              <OverlayTrigger
+                                placement="top"
+                                overlay={<Tooltip id="tooltip-db-size">Tamanho do banco: Espaço atualmente alocado pelas relações deste banco.</Tooltip>}
+                              >
+                                <i className="bi bi-info-circle text-secondary" style={{ cursor: "pointer" }} />
+                              </OverlayTrigger>
+                            </div>
                             <div className="h5 fw-bold mb-0 text-primary">{data.storage.database_human}</div>
                           </div>
                         </Col>
-                        <Col sm={4}>
-                          <div className="p-3 bg-light rounded">
-                            <div className="text-muted small">Tamanho das Tabelas</div>
-                            <div className="h5 fw-bold mb-0">{data.storage.tables_human}</div>
+                        <Col sm={3}>
+                          <div className="p-3 bg-light rounded h-100">
+                            <div className="text-muted small mb-1">Tabelas (Heap Puro)</div>
+                            <div className="h5 fw-bold mb-0">{data.storage.tables_heap_human ?? data.storage.tables_human}</div>
+                            <div className="small text-muted" style={{ fontSize: "0.75rem" }}>Sem sobreposição com TOAST</div>
                           </div>
                         </Col>
-                        <Col sm={4}>
-                          <div className="p-3 bg-light rounded">
-                            <div className="text-muted small">Tamanho dos Índices</div>
+                        <Col sm={3}>
+                          <div className="p-3 bg-light rounded h-100">
+                            <div className="text-muted small mb-1">TOAST (Armazenamento Estendido)</div>
+                            <div className="h5 fw-bold mb-0">{data.storage.toast_human}</div>
+                            <div className="small text-muted" style={{ fontSize: "0.75rem" }}>Inclui blocos comprimidos columnstore</div>
+                          </div>
+                        </Col>
+                        <Col sm={3}>
+                          <div className="p-3 bg-light rounded h-100">
+                            <div className="text-muted small mb-1">Índices Totais</div>
                             <div className="h5 fw-bold mb-0">{data.storage.indexes_human}</div>
+                            <div className="small text-muted" style={{ fontSize: "0.75rem" }}>B-Tree do banco</div>
                           </div>
                         </Col>
                       </Row>
+
+                      {/* Decomposição da Hypertable pi_samples_timescale */}
+                      <Card className="border mb-3">
+                        <Card.Header className="bg-light d-flex justify-content-between align-items-center py-2">
+                          <span className="fw-bold small">Decomposição Física da Hypertable (pi_samples_timescale)</span>
+                          {data.storage.pi_samples_human && (
+                            <Badge bg="primary" className="px-2 py-1">
+                              Total: {data.storage.pi_samples_human}
+                            </Badge>
+                          )}
+                        </Card.Header>
+                        <Card.Body className="p-3">
+                          <Row className="g-3">
+                            <Col sm={6} lg={3}>
+                              <div className="p-2 border rounded">
+                                <div className="text-muted small">Chunks Recentes (Rowstore)</div>
+                                <div className="h6 fw-bold mb-0">{data.storage.recent_rowstore_human ?? "-"}</div>
+                                <div className="text-secondary" style={{ fontSize: "0.75rem" }}>Últimos 7 dias (ingestão ativa)</div>
+                              </div>
+                            </Col>
+                            <Col sm={6} lg={3}>
+                              <div className="p-2 border rounded">
+                                <div className="d-flex align-items-center justify-content-between">
+                                  <span className="text-muted small">Delta Rowstore Histórico</span>
+                                  <OverlayTrigger
+                                    placement="top"
+                                    overlay={<Tooltip id="tooltip-delta">Delta rowstore histórico: Dados inseridos por backfill em chunks que já estavam no columnstore e ainda aguardam reconversão.</Tooltip>}
+                                  >
+                                    <i className="bi bi-info-circle text-secondary" style={{ cursor: "pointer" }} />
+                                  </OverlayTrigger>
+                                </div>
+                                <div className="h6 fw-bold mb-0 text-warning">{data.storage.historical_delta_rowstore_human ?? "-"}</div>
+                                <div className="text-secondary" style={{ fontSize: "0.75rem" }}>Backfills em chunks históricos</div>
+                              </div>
+                            </Col>
+                            <Col sm={6} lg={3}>
+                              <div className="p-2 border rounded">
+                                <div className="d-flex align-items-center justify-content-between">
+                                  <span className="text-muted small">Columnstore Atual</span>
+                                  <OverlayTrigger
+                                    placement="top"
+                                    overlay={<Tooltip id="tooltip-col">Columnstore atual: Espaço físico atual das estruturas colunares comprimidas.</Tooltip>}
+                                  >
+                                    <i className="bi bi-info-circle text-secondary" style={{ cursor: "pointer" }} />
+                                  </OverlayTrigger>
+                                </div>
+                                <div className="h6 fw-bold mb-0 text-success">{data.storage.columnstore_human ?? "-"}</div>
+                                <div className="text-secondary" style={{ fontSize: "0.75rem" }}>Estruturas colunares compactadas</div>
+                              </div>
+                            </Col>
+                            <Col sm={6} lg={3}>
+                              <div className="p-2 border rounded">
+                                <div className="text-muted small">Índices Rowstore da Hypertable</div>
+                                <div className="h6 fw-bold mb-0">{data.storage.rowstore_indexes_human ?? "-"}</div>
+                                <div className="text-secondary" style={{ fontSize: "0.75rem" }}>Árvores B-Tree nos chunks</div>
+                              </div>
+                            </Col>
+                          </Row>
+
+                          {data.storage.continuous_aggregates_human && (
+                            <div className="mt-3 pt-2 border-top d-flex justify-content-between align-items-center small text-muted">
+                              <span>Continuous Aggregates (Gráficos e Agregações Contínuas):</span>
+                              <strong className="text-dark">{data.storage.continuous_aggregates_human}</strong>
+                            </div>
+                          )}
+                        </Card.Body>
+                      </Card>
+
+                      {/* Conversão Inicial Snapshot */}
+                      {data.storage.compression_before_human && (
+                        <Card className="border mb-3 bg-light">
+                          <Card.Body className="py-2 px-3">
+                            <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                              <div className="d-flex align-items-center gap-2">
+                                <i className="bi bi-clock-history text-secondary" />
+                                <span className="small fw-semibold">Conversão Inicial (Snapshot Histórico):</span>
+                                <OverlayTrigger
+                                  placement="top"
+                                  overlay={<Tooltip id="tooltip-comp-stats">Antes/depois da conversão: Estatística histórica registrada no momento em que os chunks foram convertidos. Não representa o tamanho total atual da hypertable.</Tooltip>}
+                                >
+                                  <i className="bi bi-info-circle text-secondary" style={{ cursor: "pointer" }} />
+                                </OverlayTrigger>
+                              </div>
+                              <div className="small">
+                                <span>Antes: <strong>{data.storage.compression_before_human}</strong></span>
+                                <span className="mx-2 text-muted">➔</span>
+                                <span>Depois: <strong className="text-success">{data.storage.compression_after_human}</strong></span>
+                                {data.storage.compression_ratio_pct !== null && data.storage.compression_ratio_pct !== undefined && (
+                                  <Badge bg="success" className="ms-2">
+                                    -{data.storage.compression_ratio_pct}%
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          </Card.Body>
+                        </Card>
+                      )}
 
                       {/* App Tables Breakdown */}
                       <Row className="g-3 mb-3">
@@ -806,13 +933,62 @@ export function DatabaseHealthPage() {
                               <div className="text-muted small">Jobs Agendados</div>
                               <div className="h4 fw-bold text-dark mb-0">
                                 {data.timescale.total_jobs}{" "}
-                                {data.timescale.failed_jobs > 0 && (
-                                  <span className="fs-6 text-danger">({data.timescale.failed_jobs} falhas)</span>
-                                )}
+                                {data.timescale.operational_failed_jobs && data.timescale.operational_failed_jobs > 0 ? (
+                                  <span className="fs-6 text-danger">({data.timescale.operational_failed_jobs} falhas)</span>
+                                ) : data.timescale.telemetry_failed ? (
+                                  <span className="fs-6 text-info">(telemetria externa offline)</span>
+                                ) : null}
                               </div>
                             </div>
                           </Col>
                         </Row>
+
+                        {data.timescale.telemetry_failed && (
+                          <Alert variant="info" className="small d-flex align-items-center gap-2 mb-3">
+                            <i className="bi bi-info-circle-fill flex-shrink-0 fs-5" />
+                            <div>
+                              <strong>Informativo: telemetria externa indisponível.</strong> O job interno nativo do TimescaleDB que reporta métricas anônimas para servidores externos não possui rota de internet no ambiente. Isso não afeta nenhuma operação de banco, integridade de dados ou jobs de ingestão/compressão.
+                            </div>
+                          </Alert>
+                        )}
+
+                        {/* Columnstore Maintenance Status Card */}
+                        {data.timescale.columnstore_maintenance && (
+                          <Card className="border mb-3">
+                            <Card.Header className="bg-light fw-bold small d-flex justify-content-between align-items-center py-2">
+                              <span>Manutenção de Columnstore (Recompressão de Deltas)</span>
+                              <Badge bg={data.timescale.columnstore_maintenance.enabled ? "success" : "secondary"}>
+                                {data.timescale.columnstore_maintenance.enabled ? "Habilitada" : "Aguardando / Desativada"}
+                              </Badge>
+                            </Card.Header>
+                            <Card.Body className="p-3">
+                              <Row className="g-3 mb-2">
+                                <Col sm={4}>
+                                  <div className="small text-muted">Candidatos com Delta</div>
+                                  <div className="fw-bold">{data.timescale.columnstore_maintenance.candidate_chunks_count ?? 0} chunks</div>
+                                </Col>
+                                <Col sm={4}>
+                                  <div className="small text-muted">Chunks Processados</div>
+                                  <div className="fw-bold">{data.timescale.columnstore_maintenance.chunks_processed_total ?? 0}</div>
+                                </Col>
+                                <Col sm={4}>
+                                  <div className="small text-muted">Espaço Recuperado</div>
+                                  <div className="fw-bold text-success">
+                                    {formatBytes(data.timescale.columnstore_maintenance.bytes_recovered_total ?? 0)}
+                                  </div>
+                                </Col>
+                              </Row>
+                              <div className="small text-muted mt-2 pt-2 border-top">
+                                <strong>Status:</strong> {data.timescale.columnstore_maintenance.waiting_reason ?? "Ocioso"}
+                                {data.timescale.columnstore_maintenance.current_chunk && (
+                                  <span className="ms-2 badge bg-primary">
+                                    Processando: {data.timescale.columnstore_maintenance.current_chunk}
+                                  </span>
+                                )}
+                              </div>
+                            </Card.Body>
+                          </Card>
+                        )}
 
                         <Card className="border">
                           <Card.Header className="bg-light fw-bold small">Políticas e Background Jobs</Card.Header>
@@ -1017,9 +1193,9 @@ export function DatabaseHealthPage() {
                     )}
                   </Tab.Pane>
                 </Tab.Content>
-              </Tab.Container>
-            </Card.Body>
-          </Card>
+              </Card.Body>
+            </Card>
+          </Tab.Container>
         </>
       )}
     </div>

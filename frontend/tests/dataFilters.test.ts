@@ -365,6 +365,73 @@ describe("Text filters", () => {
 });
 
 describe("Cross-series analysis filters", () => {
+  it("applies steel model and UM independently to the plotted series", () => {
+    const data = ts([
+      series(50, [
+        { timestamp: "2026-01-01T00:00:00Z", value: "P304A" },
+        { timestamp: "2026-01-01T00:01:00Z", value: "P304A" },
+        { timestamp: "2026-01-01T00:02:00Z", value: "P430A" },
+      ]),
+      series(51, [
+        { timestamp: "2026-01-01T00:00:00Z", value: "UM-1" },
+        { timestamp: "2026-01-01T00:01:00Z", value: "UM-2" },
+        { timestamp: "2026-01-01T00:02:00Z", value: "UM-1" },
+      ]),
+      series(20, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 1 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 2 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 3 },
+      ]),
+    ]);
+    const steelRule = { id: "named-filter:steelModel", kind: "text" as const, enabled: true, tagId: 50, operator: "equal" as const, value: "P304A", caseSensitive: false };
+    const umRule = { id: "named-filter:umCode", kind: "text" as const, enabled: true, tagId: 51, operator: "equal" as const, value: "UM-1", caseSensitive: false };
+    const steelOnly = applyDataFilters(data, { ...EMPTY_CONFIG, rules: [steelRule] }, { crossSeriesRuleIds: new Set([steelRule.id]) });
+    expect(steelOnly.filteredTimeSeries.series.find((item) => item.tag_id === 20)?.points.map((item) => item.value)).toEqual([1, 2]);
+
+    const both = applyDataFilters(data, { ...EMPTY_CONFIG, rules: [steelRule, umRule] }, { crossSeriesRuleIds: new Set([steelRule.id, umRule.id]) });
+    expect(both.filteredTimeSeries.series.find((item) => item.tag_id === 20)?.points.map((item) => item.value)).toEqual([1]);
+  });
+
+  it("matches P49* against the configured steel series without matching unrelated grades", () => {
+    const data = ts([
+      series(80, [
+        { timestamp: "2026-01-01T00:00:00Z", value: "P498A" },
+        { timestamp: "2026-01-01T00:01:00Z", value: "P499B" },
+        { timestamp: "2026-01-01T00:02:00Z", value: "P304A" },
+        { timestamp: "2026-01-01T00:03:00Z", value: "XP498A" },
+      ]),
+      series(20, [
+        { timestamp: "2026-01-01T00:00:00Z", value: 1 },
+        { timestamp: "2026-01-01T00:01:00Z", value: 2 },
+        { timestamp: "2026-01-01T00:02:00Z", value: 3 },
+        { timestamp: "2026-01-01T00:03:00Z", value: 4 },
+      ]),
+    ]);
+    const rule = { id: "named-filter:steelModel", kind: "text" as const, enabled: true, tagId: 80, operator: "wildcard" as const, value: "P49*", caseSensitive: false };
+    for (const [pattern, expected] of [
+      ["P49*", [1, 2]],
+      ["*98A", [1, 4]],
+      ["P*8A", [1]],
+      ["P304A;P49*", [1, 2, 3]],
+      ["P000;P49*", [1, 2]],
+      ["P49*;P000", [1, 2]],
+      ["P000;P111", []],
+    ] as const) {
+      const result = applyDataFilters(data, { ...EMPTY_CONFIG, rules: [{ ...rule, value: pattern }] }, { crossSeriesRuleIds: new Set([rule.id]) });
+      expect(result.filteredTimeSeries.series.find((item) => item.tag_id === 20)?.points.map((item) => item.value)).toEqual(expected);
+    }
+  });
+
+  it("matches a complete steel code exactly", () => {
+    const data = ts([series(80, [
+      { timestamp: "2026-01-01T00:00:00Z", value: "P498A" },
+      { timestamp: "2026-01-01T00:01:00Z", value: "P498A_R" },
+    ])]);
+    const rule = { id: "named-filter:steelModel", kind: "text" as const, enabled: true, tagId: 80, operator: "equal" as const, value: "P498A", caseSensitive: false };
+    const result = applyDataFilters(data, { ...EMPTY_CONFIG, rules: [rule] });
+    expect(result.filteredTimeSeries.series[0].points.map((item) => item.value)).toEqual(["P498A"]);
+  });
+
   it("combines width, UM and thickness masks on the same timestamps", () => {
     const data = ts([
       series(10, [

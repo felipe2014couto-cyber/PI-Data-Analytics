@@ -1,5 +1,5 @@
 """PiTag API endpoints."""
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
@@ -153,3 +153,18 @@ async def get_norm_limits(
         interval=interval,
         max_count=max_count,
     )
+
+
+@router.get(
+    "/{pi_tag_id}/distinct-values",
+    response_model=List[str],
+    summary="Obter valores distintos de uma tag para filtro de seleção",
+)
+def get_distinct_values(
+    pi_tag_id: int,
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db_session),
+) -> List[str]:
+    service = PiTagService(db)
+    return service.get_distinct_values(pi_tag_id=pi_tag_id, limit=limit)
+

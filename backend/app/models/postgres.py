@@ -86,8 +86,28 @@ class PiBackfillJob(Base):
     next_attempt_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(50), nullable=False, default="PENDING")
     error_message = Column(String, nullable=True)
+    materialization_status = Column(
+        String(32), nullable=False, default="NOT_REQUESTED", server_default="NOT_REQUESTED"
+    )
+    materialization_error = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PiCaggRefreshJob(Base):
+    __tablename__ = "pi_cagg_refresh_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    backfill_job_id = Column(Integer, ForeignKey("pi_backfill_jobs.id", ondelete="CASCADE"), nullable=False, unique=True)
+    tag_id = Column(Integer, ForeignKey("pi_tags.id", ondelete="CASCADE"), nullable=False)
+    range_start = Column(DateTime(timezone=True), nullable=False)
+    range_end = Column(DateTime(timezone=True), nullable=False)
+    status = Column(String(32), nullable=False, default="PENDING", server_default="PENDING")
+    attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    error_message = Column(String, nullable=True)
+    next_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 class PiTagDeletionJob(Base):
     __tablename__ = "pi_tag_deletion_jobs"

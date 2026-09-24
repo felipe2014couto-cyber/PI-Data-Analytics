@@ -22,7 +22,7 @@ const CARDS = [
     icon: "bi-tags",
   },
   {
-    title: "Tags PI",
+    title: "Tags Temporais",
     description: "Tags do PI Web API (somente administracao na Fase 1).",
     to: "/cadastros/tags-pi",
     icon: "bi-bookmark-star",

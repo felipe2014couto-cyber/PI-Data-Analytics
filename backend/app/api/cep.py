@@ -50,7 +50,7 @@ from app.services.cep_query_store import (
     get_cep_query_store,
 )
 from app.services.query_registry import QueryRegistry
-from app.services.coverage_service import CoverageService, normalize_mode
+from app.services.coverage_service import CoverageService
 from app.services.timescale_cep_provider import TimescaleCepProvider
 
 logger = logging.getLogger("pi_analytics_data.api.cep")
@@ -218,39 +218,34 @@ def _load_and_materialize(
 
 def _validate_historical_coverage(db: Session, materialized: MaterializedAnalysisData) -> None:
     """Reject CEP requests whose required Timescale ranges are incomplete."""
-    modes = [("interpolated", materialized.request.interpolated_interval)]
-    if materialized.request.include_recorded:
-        modes.append(("recorded", None))
+    # CEP interpolates from the RECORDED history maintained by the live worker.
+    # The old INTERPOLATED_* coverage stopped advancing when ingestion moved to
+    # RECORDED-only mode, so requiring it rejects fully populated periods.
     affected: list[dict] = []
-    for mode, interval in modes:
-        interval_seconds = None
-        if interval:
-            unit = interval[-1]
-            interval_seconds = int(interval[:-1]) * {"s": 1, "m": 60, "h": 3600}[unit]
-        requested_mode, interval_seconds = normalize_mode(mode, interval_seconds)
-        for item in materialized.unique_tags:
-            row = db.execute(
-                text("SELECT id FROM pi_tags WHERE pi_server = :server AND pi_tag_name = :name"),
-                {"server": item.pi_server, "name": item.pi_tag_name},
-            ).first()
-            if row is None:
-                affected.append({"tag_id": item.id, "tag_name": item.pi_tag_name, "mode": mode, "intervals": []})
-                continue
-            missing = CoverageService.get_missing_intervals(
-                db, int(row[0]), materialized.request.start_time, materialized.request.end_time,
-                requested_mode, interval_seconds,
-            )
-            if missing:
-                affected.append({
-                    "tag_id": item.id,
-                    "tag_name": item.pi_tag_name,
-                    "mode": mode,
-                    "intervals": [{"start": start.isoformat(), "end": end.isoformat()} for start, end in missing],
-                })
+    for item in materialized.unique_tags:
+        row = db.execute(
+            text("SELECT id FROM pi_tags WHERE pi_server = :server AND pi_tag_name = :name"),
+            {"server": item.pi_server, "name": item.pi_tag_name},
+        ).first()
+        if row is None:
+            affected.append({"tag_id": item.id, "tag_name": item.pi_tag_name, "mode": "recorded", "intervals": []})
+            continue
+        missing = CoverageService.get_missing_intervals(
+            db, int(row[0]), materialized.request.start_time, materialized.request.end_time,
+            "RECORDED",
+        )
+        if missing:
+            affected.append({
+                "tag_id": item.id,
+                "tag_name": item.pi_tag_name,
+                "mode": "recorded",
+                "intervals": [{"start": start.isoformat(), "end": end.isoformat()} for start, end in missing],
+            })
     if affected:
         raise HistoricalDataNotLoadedError(details={
             "affected_tags": affected,
-            "mode": materialized.request.interpolated_interval,
+            "mode": "recorded",
+            "interpolated_interval": materialized.request.interpolated_interval,
             "requested_period": {
                 "start": materialized.request.start_time.isoformat(),
                 "end": materialized.request.end_time.isoformat(),

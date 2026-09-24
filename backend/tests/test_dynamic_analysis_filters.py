@@ -355,3 +355,31 @@ def test_multiple_combined_dynamic_filters(client: TestClient, db_session: Sessi
     points = resp.json()["series"][0]["points"]
     assert len(points) == 1
     assert points[0]["value"] == 300.0
+
+
+def test_dynamic_filter_real_selection_and_all_ignored(client: TestClient, db_session: Session):
+    data = _setup_section_with_tags(db_session)
+    start = datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
+    end = start + timedelta(hours=1)
+    _seed_data(db_session, data, start, end)
+
+    # Exact selection on REAL tag: expression="75.0" and digital value="ALL"
+    filters = [
+        {"variable_type_id": data["types"]["real"].id, "expression": "75.0"},
+        {"variable_type_id": data["types"]["digital"].id, "value": "ALL"},
+    ]
+    resp = client.get(
+        "/api/time-series",
+        params={
+            "tag_ids": [data["tags"]["speed"].id],
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+            "section_id": data["section"].id,
+            "analysis_filters": json.dumps(filters),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    points = resp.json()["series"][0]["points"]
+    assert len(points) == 1
+    assert points[0]["value"] == 200.0  # t1 point where TEMP was 75.0
+

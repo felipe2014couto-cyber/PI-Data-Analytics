@@ -93,6 +93,19 @@ class LruCache(Generic[K, V]):
     def clear(self) -> None:
         self._data.clear()
 
+    def remove_where(self, predicate) -> int:
+        """Remove only keys matching ``predicate`` and return the count.
+
+        Cache invalidation after historical persistence must be scoped to the
+        affected tags and time range; clearing unrelated visual queries would
+        create an avoidable thundering herd.
+        """
+        self._evict_expired()
+        keys = [key for key in self._data if predicate(key)]
+        for key in keys:
+            del self._data[key]
+        return len(keys)
+
     @property
     def size(self) -> int:
         self._evict_expired()

@@ -443,8 +443,17 @@ async def backfill_tag_interval(
                                 )},
                             )
                             db.execute(stmt)
-                    CoverageService.record_coverage(db, tag_id, start, end, mode, interval_seconds, pi_web_id=tag_web_id)
+                    CoverageService.record_coverage(
+                        db, tag_id, start, end, mode, interval_seconds,
+                        status="COMPLETE" if points else "EMPTY_CONFIRMED",
+                        pi_web_id=tag_web_id,
+                    )
                     db.commit()
+                    if is_final:
+                        # Raw data is durable before a separate retryable task
+                        # is created; no PI HTTP or refresh runs in this tx.
+                        from app.services.cagg_refresh_service import enqueue_cagg_refresh
+                        enqueue_cagg_refresh(job_id, tag_id, _as_utc(target_job.target_start), _as_utc(target_job.target_end))
                     logger.info(
                         "backfill_window_completed job_id=%s tag_id=%s round=%s start=%s end=%s points=%d final=%s",
                         job_id, tag_id, round_name, start, end, len(points), is_final,
@@ -684,6 +693,18 @@ async def run_backfill_loop(
             if acquired:
                 _recover_expired_leases()
                 _recover_legacy_running_jobs()
+                # Durable refresh jobs are separate from raw persistence and
+                # are retried independently under the backfill leader.
+                try:
+                    from app.services.cagg_refresh_service import cagg_refresh_schema_available, process_one_cagg_refresh
+                    # Continuous aggregates are PostgreSQL/TimescaleDB-only.
+                    # Do not create default-executor work for SQLite runs;
+                    # asyncio cannot cancel a thread that is still opening a
+                    # connection during graceful shutdown.
+                    if engine.dialect.name == "postgresql" and await asyncio.to_thread(cagg_refresh_schema_available):
+                        await asyncio.to_thread(process_one_cagg_refresh)
+                except Exception:
+                    logger.exception("cagg_refresh_cycle_failed")
                 if job_ids:
                     await _resume_jobs(job_ids, explicit=True)
                 else:

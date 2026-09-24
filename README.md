@@ -141,6 +141,13 @@ project-root/
    seu ambiente. Para autenticacao basica, preencha tambem
    `PI_WEB_API_USERNAME` e `PI_WEB_API_PASSWORD`.
 
+   Para consultas SIP Oracle, configure `SIP_ORACLE_USERNAME` e
+   `SIP_ORACLE_PASSWORD` com uma conta que tenha somente `SELECT`. Se a
+   conta usar um verificador de senha legado (`DPY-3015`), instale o
+   [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client/linux-x86-64-downloads.html),
+   defina `SIP_ORACLE_THICK_MODE=true` e inclua o diretório do cliente em
+   `LD_LIBRARY_PATH` antes de iniciar o backend.
+
 4. Executar as migrations do Alembic:
 
    ```bash

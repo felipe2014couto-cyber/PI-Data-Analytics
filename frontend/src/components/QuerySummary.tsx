@@ -83,7 +83,9 @@ export function QuerySummary({
     ? "Batch Recorded (fallback)"
     : strategy ?? (streamsetUsed ? "StreamSet" : "Streams Recorded");
 
-  const sourceLabel = source === "hybrid"
+  const sourceLabel = source === "sip"
+    ? "SIP Oracle"
+    : source === "hybrid"
     ? "Banco + PI Web API"
     : source === "timescaledb" || isPostgres
     ? "TimescaleDB"
@@ -233,6 +235,11 @@ export function QuerySummary({
           Todos os pontos recuperados foram utilizados.
         </div>
       )}
+      {queryExecution?.status === "PARTIAL" ? (
+        <div className="mt-2 p-2 border rounded bg-warning bg-opacity-10 small" data-testid="partial-coverage-warning">
+          Cobertura parcial: trechos sem fonte confirmada foram mantidos como lacunas e nenhum valor foi inventado.
+        </div>
+      ) : null}
       {anyTruncated || queryExecution?.truncated ? (
         <div className="mt-1 p-2 border rounded bg-danger bg-opacity-10 small" data-testid="truncated-warning">
           A consulta atingiu o limite de segurança e pode não conter todos os eventos.

@@ -1,8 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { AdvancedFiltersPanel } from "../src/components/AdvancedFiltersPanel";
+import { apiMock, mockApiModule } from "./mocks/api";
 import type { DataFilterConfiguration } from "../src/types";
+
+vi.mock("../src/api", () => mockApiModule());
+
+import { AdvancedFiltersPanel } from "../src/components/AdvancedFiltersPanel";
 
 const configuration: DataFilterConfiguration = {
   quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
@@ -47,6 +51,79 @@ describe("AdvancedFiltersPanel", () => {
     for (const key of kept) {
       expect(screen.getByTestId(`named-filter-${key}`)).toBeInTheDocument();
     }
+    expect(screen.getByTestId("named-filter-steelModel")).toHaveValue("");
+    expect(screen.getByTestId("named-filter-steelModel")).toHaveAttribute("placeholder", "Digite o aço");
+  });
+
+  it("aceita código completo e curinga na tag fixa de aço, mantendo UM independente", () => {
+    const onChange = vi.fn();
+    const fixedTagOptions = [
+      ...tagOptions,
+      { id: 80, displayName: "AÇO", tagName: "LFI_RB1_TIPO_ACO", dataType: "TEXT", analysisRole: "steelType" as const },
+      { id: 51, displayName: "Código UM", tagName: "LFI.RB1.UM", dataType: "TEXT", analysisRole: "um" as const },
+    ];
+    render(
+      <AdvancedFiltersPanel
+        configuration={configuration}
+        enabled
+        hasData
+        summary={null}
+        ruleResults={[]}
+        onChange={onChange}
+        tagOptions={fixedTagOptions}
+      />,
+    );
+
+    const steelModel = screen.getByTestId("named-filter-steelModel");
+    expect(steelModel).not.toHaveAttribute("list");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByText("Use ; para vários aços e * antes, no meio ou depois. Ex.: P304A;P49*.")).toBeInTheDocument();
+    fireEvent.change(steelModel, { target: { value: "P498A" } });
+    expect(onChange.mock.calls[onChange.mock.calls.length - 1]?.[0].rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "named-filter:steelModel", tagId: 80, operator: "equal", value: "P498A" }),
+    ]));
+
+    fireEvent.change(steelModel, { target: { value: "P49*" } });
+    for (const value of ["*98A", "P*8A"]) {
+      fireEvent.change(steelModel, { target: { value } });
+      expect(onChange.mock.calls[onChange.mock.calls.length - 1]?.[0].rules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: "named-filter:steelModel", tagId: 80, operator: "wildcard", value }),
+      ]));
+    }
+    fireEvent.change(steelModel, { target: { value: "P304A ; P49* ; P999Z" } });
+    expect(onChange.mock.calls[onChange.mock.calls.length - 1]?.[0].rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "named-filter:steelModel", tagId: 80, operator: "wildcard", value: "P304A;P49*;P999Z" }),
+    ]));
+    fireEvent.change(steelModel, { target: { value: "P49*" } });
+    fireEvent.change(screen.getByTestId("named-filter-umCode"), { target: { value: "UM-123" } });
+    fireEvent.click(screen.getByTestId("named-filters-apply"));
+    expect(onChange.mock.calls[onChange.mock.calls.length - 1]?.[0].rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "named-filter:steelModel", tagId: 80, operator: "wildcard", value: "P49*" }),
+      expect.objectContaining({ id: "named-filter:umCode", tagId: 51, operator: "contains", value: "UM-123" }),
+    ]));
+    expect(apiMock.getDistinctValues).not.toHaveBeenCalledWith(80);
+  });
+
+  it("permite digitar aço mesmo quando a tag configurada não tem valores distintos locais", () => {
+    const onChange = vi.fn();
+    render(
+      <AdvancedFiltersPanel
+        configuration={configuration}
+        enabled
+        hasData
+        summary={null}
+        ruleResults={[]}
+        onChange={onChange}
+        tagOptions={[...tagOptions, { id: 80, displayName: "AÇO", tagName: "LFI_RB1_TIPO_ACO", dataType: "TEXT", analysisRole: "steelType" as const }]}
+      />,
+    );
+
+    const steelModel = screen.getByTestId("named-filter-steelModel");
+    fireEvent.change(steelModel, { target: { value: "P304A" } });
+    expect(steelModel).toHaveValue("P304A");
+    expect(onChange.mock.calls[onChange.mock.calls.length - 1]?.[0].rules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "named-filter:steelModel", tagId: 80, operator: "equal", value: "P304A" }),
+    ]));
   });
 
   it("não renderiza nenhum campo removido", () => {

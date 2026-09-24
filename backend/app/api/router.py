@@ -14,6 +14,8 @@ from app.api.pi import router as pi_router
 from app.api.pi_tags import router as pi_tags_router
 from app.api.classification_tags import router as classification_tags_router
 from app.api.sections import router as sections_router
+from app.api.sip import router as sip_router
+from app.api.sip_reloads import router as sip_reloads_router
 from app.api.time_series import router as time_series_router
 from app.api.variable_types import router as variable_types_router
 from app.api.visual_configurations import router as visual_configurations_router
@@ -24,12 +26,14 @@ api_router.include_router(database_health_router)
 api_router.include_router(auth_router)
 api_router.include_router(admin_users_router)
 api_router.include_router(historical_reload_router)
+api_router.include_router(sip_reloads_router)
 api_router.include_router(cep_dependencies_router)
 protected = [Depends(get_current_user), Depends(validate_csrf)]
 api_router.include_router(classification_tags_router, dependencies=protected)
 api_router.include_router(pi_router, dependencies=protected)
 api_router.include_router(equipments_router, dependencies=protected)
 api_router.include_router(sections_router, dependencies=protected)
+api_router.include_router(sip_router, dependencies=protected)
 api_router.include_router(variable_types_router, dependencies=protected)
 api_router.include_router(pi_tags_router, dependencies=protected)
 api_router.include_router(time_series_router, dependencies=protected)

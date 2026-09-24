@@ -13,6 +13,12 @@ import type {
   PiTagUpdate,
   PiTagValidationBatchResponse,
   PiTagValidationResult,
+  SipSource,
+  SipSourceCreate,
+  SipSourceUpdate,
+  SipDatabaseTag,
+  SipDatabaseTagCreate,
+  SipReloadJob,
   Section,
   SectionCreate,
   SectionUpdate,
@@ -212,6 +218,44 @@ export const piTagsApi = {
     if (params.max_count !== undefined) query.max_count = params.max_count;
     return httpClient.get<PiTagNormLimitsResponse>(`/pi-tags/${id}/norm-limits`, query, signal);
   },
+  getDistinctValues(id: number, limit: number = 200, signal?: AbortSignal) {
+    return httpClient.get<string[]>(`/pi-tags/${id}/distinct-values`, { limit }, signal);
+  },
+};
+
+export const sipApi = {
+  list() {
+    return httpClient.get<SipSource[]>("/sip/sources");
+  },
+  inspectColumns(sql_text: string) {
+    return httpClient.post<{ columns: string[] }>("/sip/columns", { sql_text });
+  },
+  create(payload: SipSourceCreate) {
+    return httpClient.post<SipSource>("/sip/sources", payload);
+  },
+  update(id: number, payload: SipSourceUpdate) {
+    return httpClient.put<SipSource>(`/sip/sources/${id}`, payload);
+  },
+  remove(id: number) {
+    return httpClient.delete<void>(`/sip/sources/${id}`);
+  },
+};
+
+export const sipDatabaseTagsApi = {
+  list() { return httpClient.get<SipDatabaseTag[]>("/sip/database-tags"); },
+  create(payload: SipDatabaseTagCreate) { return httpClient.post<SipDatabaseTag>("/sip/database-tags", payload); },
+  update(id: number, payload: SipDatabaseTagCreate) { return httpClient.put<SipDatabaseTag>(`/sip/database-tags/${id}`, payload); },
+  remove(id: number) { return httpClient.delete<void>(`/sip/database-tags/${id}`); },
+  value(id: number) { return httpClient.get<{ id: number; value: string | number | boolean | null }>(`/sip/database-tags/${id}/value`); },
+};
+
+export const sipReloadApi = {
+  list() { return httpClient.get<SipReloadJob[]>("/admin/sip-reloads"); },
+  create(source_id: number, start_time: string, end_time: string) {
+    return httpClient.post<SipReloadJob>("/admin/sip-reloads", { source_id, start_time, end_time });
+  },
+  cancel(id: number) { return httpClient.post<SipReloadJob>(`/admin/sip-reloads/${id}/cancel`); },
+  clearTerminal() { return httpClient.delete<{ deleted: number }>("/admin/sip-reloads/terminal"); },
 };
 
 export const piApi = {

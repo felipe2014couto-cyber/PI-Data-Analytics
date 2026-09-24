@@ -134,7 +134,9 @@ def test_plot_extrema_query_scans_raw_samples_once_instead_of_per_bucket() -> No
     statement = str(service.db.execute.call_args.args[0])
     assert "LEFT JOIN LATERAL" not in statement
     assert "JOIN pi_samples_timescale AS sample" in statement
-    assert "GROUP BY display_buckets.bucket" in statement
+    assert "GROUP BY populated.bucket" in statement
+    assert "time_bucket_gapfill" not in statement
+    assert "interpolated_value" not in statement
 
 
 @pytest.mark.asyncio
@@ -194,9 +196,38 @@ async def test_query_metadata_exposes_effective_recorded_source_mode() -> None:
     service.repo.get.return_value = tag
     service._available_plot_aggregates = MagicMock(return_value=_PLOT_AGGREGATES)
     service._count_qualified_raw_points = MagicMock(return_value=5001)
-    service._get_from_plot = MagicMock(return_value=[])
+    from app.services.database_time_series_service import PlotReadResult
+    service._get_from_plot_coverage_aware = MagicMock(return_value=PlotReadResult([], [], []))
 
     result = await service.fetch_time_series(request)
 
     assert result.query_execution is not None
     assert result.query_execution.effective_source_mode == "RECORDED"
+
+
+def test_gap_markers_are_null_and_no_numeric_value_is_invented() -> None:
+    from app.schemas.pi import TimeSeriesPoint
+    from app.services.database_time_series_service import PlotReadResult
+
+    service = object.__new__(DatabaseTimeSeriesService)
+    service._available_plot_aggregates = MagicMock(return_value=((3600, "pi_recorded_plot_hourly", "1h"),))
+    service.db = MagicMock()
+    service.db.execute.return_value.one.return_value = (
+        datetime(2026, 9, 1, tzinfo=timezone.utc),
+        datetime(2026, 9, 1, 6, tzinfo=timezone.utc),
+    )
+    service._get_from_plot = MagicMock(return_value=[
+        TimeSeriesPoint(timestamp=datetime(2026, 9, 1, tzinfo=timezone.utc), value=0.0),
+        TimeSeriesPoint(timestamp=datetime(2026, 9, 1, 6, tzinfo=timezone.utc), value=5.0),
+    ])
+    service._get_from_raw_plot = MagicMock(return_value=[])
+
+    result = service._get_from_plot_coverage_aware(
+        20, datetime(2026, 9, 1, tzinfo=timezone.utc),
+        datetime(2026, 9, 1, 7, tzinfo=timezone.utc),
+        "pi_recorded_plot_hourly", display_bucket_seconds=3600,
+    )
+
+    assert isinstance(result, PlotReadResult)
+    assert [point.value for point in result.points] == [0.0, None, 5.0]
+    assert result.points == sorted(result.points, key=lambda point: point.timestamp)

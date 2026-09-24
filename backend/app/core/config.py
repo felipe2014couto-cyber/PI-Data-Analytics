@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     auth_cookie_name: str = Field(default="pads_session", min_length=3, max_length=64)
     auth_csrf_cookie_name: str = Field(default="pads_csrf", min_length=3, max_length=64)
 
+    sip_oracle_host: str = Field(default="10.247.0.236")
+    sip_oracle_port: int = Field(default=1521, ge=1, le=65535)
+    sip_oracle_service_name: str = Field(default="po40")
+    sip_oracle_username: str | None = Field(default=None)
+    sip_oracle_password: SecretStr | None = Field(default=None)
+    sip_oracle_thick_mode: bool = Field(default=False)
+    sip_oracle_timezone: str = Field(default="America/Sao_Paulo")
+    sip_oracle_timeout_seconds: int = Field(default=15, ge=1, le=120)
+    sip_oracle_max_rows: int = Field(default=5000, ge=1, le=20000)
+
     api_prefix: str = "/api"
     cors_origins: list[str] = Field(default_factory=list)
 
@@ -418,6 +428,50 @@ class Settings(BaseSettings):
         default=False,
         description="Ativa ciclos automaticos em lote (R1..R4) no worker de backfill. Quando False, apenas recargas manuais/administrativas sao executadas.",
     )
+    # Columnstore Maintenance
+    columnstore_maintenance_enabled: bool = Field(
+        default=False,
+        description="Ativa rotina de reconversao segura de deltas rowstore em chunks columnstore.",
+    )
+    columnstore_maintenance_interval_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=86400,
+        description="Intervalo em segundos entre ciclos de manutencao do columnstore.",
+    )
+    columnstore_maintenance_chunks_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Quantidade maxima de chunks processados por ciclo de manutencao.",
+    )
+    columnstore_maintenance_statement_timeout_seconds: int = Field(
+        default=120,
+        ge=10,
+        le=3600,
+        description="Timeout em segundos para o comando convert_to_columnstore.",
+    )
+    columnstore_maintenance_min_delta_bytes: int = Field(
+        default=1048576,
+        ge=0,
+        description="Tamanho minimo em bytes de delta rowstore para tornar um chunk elegivel a reconversao.",
+    )
+    columnstore_maintenance_vacuum_enabled: bool = Field(
+        default=False,
+        description="Habilita ou desabilita execucao de VACUUM pos-reconversao de columnstore (opt-in estrito).",
+    )
+    columnstore_maintenance_vacuum_lock_timeout_seconds: int = Field(
+        default=2,
+        ge=1,
+        le=30,
+        description="Timeout de lock em segundos para o VACUUM do chunk.",
+    )
+    columnstore_maintenance_vacuum_statement_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        le=600,
+        description="Statement timeout em segundos para o VACUUM do chunk.",
+    )
     deletion_batch_days: int = Field(
         default=30,
         ge=1,
@@ -488,6 +542,9 @@ class Settings(BaseSettings):
         if self.cors_origins:
             return self.cors_origins
         return [origin.strip() for origin in self.frontend_origin.split(",") if origin.strip()]
+
+    def is_sip_configured(self) -> bool:
+        return bool(self.sip_oracle_username and self.sip_oracle_password)
 
     def is_pi_configured(self) -> bool:
         return bool(self.pi_web_api_base_url and self.pi_data_server_name)

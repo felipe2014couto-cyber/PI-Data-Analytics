@@ -201,6 +201,14 @@ def workers_status(
     backfill_data = backfill_status.to_dict()
     backfill_data["last_error"] = sanitize_error_message(backfill_data.get("last_error"))
 
+    col_maint_data = {}
+    try:
+        from app.services.columnstore_maintenance_service import maintenance_status
+        col_maint_data = maintenance_status.to_dict()
+        col_maint_data["last_error"] = sanitize_error_message(col_maint_data.get("last_error"))
+    except Exception:
+        pass
+
     return {
         "ingestion": {
             **ingestion_data,
@@ -216,6 +224,7 @@ def workers_status(
             "legacy_running_without_lease": legacy_running,
             "expired_leases_pending_recovery": expired_leases,
         },
+        "columnstore_maintenance": col_maint_data,
     }
 
 

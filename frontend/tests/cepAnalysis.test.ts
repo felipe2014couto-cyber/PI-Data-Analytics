@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildCepSeriesChartOption, toIsoUtc } from "../src/pages/CepAnalysisPage";
+import { buildCepSeriesChartOption, relativeCepPeriod, toIsoUtc } from "../src/pages/CepAnalysisPage";
 import layoutSource from "../src/layouts/MainLayout.tsx?raw";
 import pageSource from "../src/pages/CepAnalysisPage.tsx?raw";
 
@@ -8,6 +8,13 @@ describe("CEP analysis page", () => {
   it("serializes datetime-local values using the browser timezone", () => {
     const localValue = "2026-08-04T10:30";
     expect(toIsoUtc(localValue)).toBe(new Date(localValue).toISOString());
+  });
+
+  it("ends relative analysis at a completed ingestion interval", () => {
+    expect(relativeCepPeriod(new Date("2026-09-23T12:07:34Z"), 24, "5m")).toEqual({
+      start: "2026-09-22T12:00:00.000Z",
+      end: "2026-09-23T12:00:00.000Z",
+    });
   });
 
   it("uses UTF-8 text for the CEP title and sidebar label", () => {

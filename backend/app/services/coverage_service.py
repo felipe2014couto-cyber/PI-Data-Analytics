@@ -57,7 +57,7 @@ class CoverageService:
                 PiIngestionCoverage.tag_id == tag_id,
                 PiIngestionCoverage.mode == mode,
                 PiIngestionCoverage.interval_seconds == interval_seconds,
-                PiIngestionCoverage.status == "COMPLETE",
+                PiIngestionCoverage.status.in_(("COMPLETE", "EMPTY_CONFIRMED")),
                 PiIngestionCoverage.range_end > start,
                 PiIngestionCoverage.range_start < end,
             )
@@ -131,7 +131,7 @@ class CoverageService:
             start = start.replace(tzinfo=timezone.utc)
         if end.tzinfo is None:
             end = end.replace(tzinfo=timezone.utc)
-        if start >= end or status != "COMPLETE":
+        if start >= end or status not in {"COMPLETE", "EMPTY_CONFIRMED"}:
             return
         mode, interval_seconds = normalize_mode(mode, interval_seconds)
         if db.bind is not None and db.bind.dialect.name == "postgresql":
@@ -142,7 +142,7 @@ class CoverageService:
                     PiIngestionCoverage.tag_id == tag_id,
                     PiIngestionCoverage.mode == mode,
                     PiIngestionCoverage.interval_seconds == interval_seconds,
-                    PiIngestionCoverage.status == "COMPLETE",
+                    PiIngestionCoverage.status == status,
                     PiIngestionCoverage.range_end >= start,
                     PiIngestionCoverage.range_start <= end,
                 )
@@ -160,6 +160,6 @@ class CoverageService:
             range_end=merged_end,
             mode=mode,
             interval_seconds=interval_seconds,
-            status="COMPLETE",
+            status=status,
             pi_web_id=pi_web_id,
         ))

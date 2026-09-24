@@ -71,6 +71,8 @@ export interface EquipmentUpdate {
 
 export type VariableFilterDataType = "REAL" | "STRING" | "DIGITAL";
 
+export type AnalysisFilterType = "SELECTION" | "MIN_MAX" | "TEXT";
+
 export interface SectionAnalysisTag {
   id: number;
   variable_type_id: number;
@@ -79,11 +81,22 @@ export interface SectionAnalysisTag {
   filter_data_type: VariableFilterDataType;
   pi_tag_id: number;
   pi_tag_name: string;
+  filter_type: AnalysisFilterType;
+  section_tag_map?: Record<number, number>;
+  pi_tag_ids?: number[];
+}
+
+export interface ConflictedVariable {
+  variableTypeId: number;
+  variableTypeCode: string;
+  variableTypeName: string;
+  details: Array<{ sectionId: number; sectionName: string; filterType: AnalysisFilterType }>;
 }
 
 export interface SectionAnalysisTagInput {
   variable_type_id: number;
   pi_tag_id: number;
+  filter_type?: AnalysisFilterType;
 }
 
 export interface Section {
@@ -99,6 +112,7 @@ export interface Section {
   width_tag_id: number | null;
   um_tag_id: number | null;
   thickness_tag_id: number | null;
+  steel_type_tag_id: number | null;
   analysis_tags?: SectionAnalysisTag[];
   created_at: string;
   updated_at: string;
@@ -116,6 +130,7 @@ export interface SectionCreate {
   width_tag_id?: number | null;
   um_tag_id?: number | null;
   thickness_tag_id?: number | null;
+  steel_type_tag_id?: number | null;
   analysis_tags?: SectionAnalysisTagInput[] | null;
 }
 
@@ -131,6 +146,7 @@ export interface SectionUpdate {
   width_tag_id?: number | null;
   um_tag_id?: number | null;
   thickness_tag_id?: number | null;
+  steel_type_tag_id?: number | null;
   analysis_tags?: SectionAnalysisTagInput[] | null;
 }
 
@@ -169,7 +185,7 @@ export interface DynamicAnalysisFilter {
   min?: number | null;
   max?: number | null;
   expression?: string;
-  value?: "ALL" | "ON" | "OFF";
+  value?: "ALL" | "ON" | "OFF" | string;
 }
 
 export type PiTagLifecycleStatus = "ACTIVE" | "INACTIVE" | "DELETION_PENDING";
@@ -198,6 +214,49 @@ export interface PiTag {
   created_at: string;
   updated_at: string;
 }
+
+export interface SipSource {
+  id: number;
+  equipment_id: number;
+  section_id: number | null;
+  variable_type_id: number;
+  name: string;
+  sql_text: string;
+  timestamp_column: string;
+  value_column: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type SipSourceCreate = Omit<SipSource, "id" | "created_at" | "updated_at">;
+export type SipSourceUpdate = Partial<SipSourceCreate>;
+
+export interface SipDatabaseTag {
+  id: number;
+  equipment_id: number;
+  section_id: number | null;
+  variable_type_id: number;
+  name: string;
+  sql_text: string;
+  value_column: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+export type SipDatabaseTagCreate = Omit<SipDatabaseTag, "id" | "created_at" | "updated_at">;
+
+export interface SipReloadJob {
+  id: number;
+  source_id: number;
+  target_start: string;
+  target_end: string;
+  status: string;
+  progress_percent: number;
+  rows_written: number;
+  error_message: string | null;
+}
+
 
 export interface PiTagCreate {
   equipment_id: number;
@@ -541,7 +600,7 @@ export interface TimeSeriesSeries {
 }
 
 export interface QueryExecutionMetadata {
-  source?: "timescaledb" | "pi_web_api" | "hybrid" | null;
+  source?: "timescaledb" | "pi_web_api" | "hybrid" | "sip" | null;
   effective_source_mode?: string | null;
   strategy?: string | null;
   resolution_mode: string;
@@ -578,6 +637,11 @@ export interface QueryExecutionMetadata {
   points_returned?: number | null;
   rate_limit_count?: number | null;
   complete?: boolean | null;
+  status?: "COMPLETE" | "PARTIAL" | null;
+  real_points?: number | null;
+  null_points?: number | null;
+  uncovered_intervals?: Array<{ tag_id: number; start: string; end: string; reason: string }>;
+  source_segments?: Array<{ tag_id: number; start: string; end: string; source: string; interval: string }>;
   truncated?: boolean | null;
   queue_wait_ms?: number | null;
   resolve_ms?: number | null;
@@ -675,7 +739,8 @@ export type TextFilterOperator =
   | "notEqual"
   | "contains"
   | "startsWith"
-  | "endsWith";
+  | "endsWith"
+  | "wildcard";
 
 export type Weekday =
   | "monday"
@@ -699,6 +764,7 @@ export type DataFilterRule =
       enabled: boolean;
       tagId: number;
       seriesInstanceId?: string;
+      sectionTagMap?: Record<number, number>;
       operator: NumericFilterOperator;
       value: number | null;
       secondValue: number | null;
@@ -709,6 +775,7 @@ export type DataFilterRule =
       enabled: boolean;
       tagId: number;
       seriesInstanceId?: string;
+      sectionTagMap?: Record<number, number>;
       operator: TextFilterOperator;
       value: string;
       caseSensitive: boolean;
@@ -965,12 +1032,29 @@ export interface StorageInfo {
   database_human: string;
   tables_bytes: number;
   tables_human: string;
+  tables_heap_bytes?: number;
+  tables_heap_human?: string;
   indexes_bytes: number;
   indexes_human: string;
   toast_bytes: number;
   toast_human: string;
   pi_samples_bytes: number | null;
   pi_samples_human: string | null;
+  recent_rowstore_bytes?: number | null;
+  recent_rowstore_human?: string | null;
+  historical_delta_rowstore_bytes?: number | null;
+  historical_delta_rowstore_human?: string | null;
+  columnstore_bytes?: number | null;
+  columnstore_human?: string | null;
+  rowstore_indexes_bytes?: number | null;
+  rowstore_indexes_human?: string | null;
+  continuous_aggregates_bytes?: number | null;
+  continuous_aggregates_human?: string | null;
+  compression_before_bytes?: number | null;
+  compression_before_human?: string | null;
+  compression_after_bytes?: number | null;
+  compression_after_human?: string | null;
+  compression_ratio_pct?: number | null;
   pi_backfill_bytes: number | null;
   pi_backfill_human: string | null;
   pi_ingestion_bytes: number | null;
@@ -1019,10 +1103,13 @@ export interface TimescaleInfo {
   continuous_aggregates: number;
   total_jobs: number;
   failed_jobs: number;
+  operational_failed_jobs?: number;
+  telemetry_failed?: boolean;
   last_run_status: string | null;
   last_successful_finish: string | null;
   compression_enabled: boolean | null;
   retention_configured: boolean | null;
+  columnstore_maintenance?: Record<string, any> | null;
 }
 
 export interface FreshnessInfo {
@@ -1060,4 +1147,3 @@ export interface DatabaseHealthResponse {
   checks: HealthCheckItem[];
   unavailable_metrics: string[];
 }
-

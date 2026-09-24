@@ -132,7 +132,7 @@ describe("Data visualization page", () => {
     await waitFor(() => expect(screen.getByTestId("visual-config-select")).toHaveValue(""));
     fireEvent.change(screen.getByTestId("visual-config-select"), { target: { value: "complete" } });
     fireEvent.click(screen.getByRole("button", { name: "Ações da configuração" })); fireEvent.click(screen.getByText("Abrir"));
-    await waitFor(() => expect(screen.getByTestId("equipment-select")).toHaveValue("1"));
+    await waitFor(() => expect(screen.getByTestId("equipment-select")).toHaveValue("1"), { timeout: 3000 });
     expect(screen.getByTestId("section-select")).toHaveValue("1");
     expect(screen.getByTestId("variable-type-select")).toHaveValue("1");
     expect(screen.getByTestId("period-kind")).toHaveValue("preset");
@@ -158,6 +158,32 @@ describe("Data visualization page", () => {
     expect(screen.getByTestId("equipment-select")).toHaveValue("1");
     expect(screen.getByTestId("variable-type-select")).toBeVisible();
     expect(screen.getByTestId("tag-multi-select")).toBeVisible();
+  });
+
+  it("offers SIP sources and sends their IDs to the chart endpoint", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([]));
+    apiMock.listSipSources.mockResolvedValue([{
+      id: 7, equipment_id: 1, section_id: null, variable_type_id: 1,
+      name: "Temperatura SIP", sql_text: "SELECT TS, PV FROM MEDICOES",
+      timestamp_column: "TS", value_column: "PV", active: true,
+      created_at: "2026-01-01T00:00:00", updated_at: "2026-01-01T00:00:00",
+    }]);
+    apiMock.piHealth.mockResolvedValue(notConfiguredHealthFixture);
+    apiMock.timeSeriesQuery.mockResolvedValue({
+      ...TIME_SERIES,
+      series: [{ ...TIME_SERIES.series[0], tag_id: -7, display_name: "Temperatura SIP" }],
+      query_execution: { source: "sip" },
+    });
+    renderAt("/analises/visualizacao");
+    const equipmentSelect = (await screen.findByTestId("equipment-select")) as HTMLSelectElement;
+    fireEvent.change(equipmentSelect, { target: { value: "1" } });
+    const sipOption = await within(await screen.findByTestId("tag-multi-select")).findByTestId("tag-option--7");
+    fireEvent.click(sipOption);
+    await waitFor(() => expect(sipOption).toHaveAttribute("data-selected", "true"));
+    fireEvent.click(screen.getByTestId("filters-submit-top"));
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ tag_ids: [-7], mode: "recorded" }), expect.anything(),
+    ));
   });
 
   it("runs the existing query action from the top CSV toolbar", async () => {
@@ -673,6 +699,38 @@ describe("Data visualization page", () => {
     const submit = await screen.findByTestId("filters-submit");
     fireEvent.click(submit);
     expect(await screen.findByTestId("filters-error")).toHaveTextContent("Selecione ao menos uma tag");
+  });
+
+  it("includes the configured steel type tag as a hidden analysis context series", async () => {
+    const productionTag = { ...piTagFixture, validation_status: "VALID" as const };
+    const steelTypeTag: PiTag = {
+      ...piTagFixture,
+      id: 2,
+      section_id: 1,
+      variable_type_id: 2,
+      pi_tag_name: "RB3.STEEL_TYPE",
+      display_name: "Tipo de Aço",
+      data_type: "NON_NUMERIC",
+      validation_status: "VALID",
+    };
+    apiMock.listPiTags.mockResolvedValue(paginated([productionTag, steelTypeTag]));
+    apiMock.listSections.mockResolvedValue(paginated([{ ...sectionFixture, steel_type_tag_id: steelTypeTag.id }]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    let capturedParams: Record<string, unknown> | undefined;
+    apiMock.timeSeriesQuery.mockImplementation(async (params) => {
+      capturedParams = params;
+      return TIME_SERIES;
+    });
+
+    renderAt("/analises/visualizacao");
+    const equipmentSelect = await screen.findByTestId("equipment-select");
+    fireEvent.change(equipmentSelect, { target: { value: "1" } });
+    await waitFor(() => expect(screen.getByTestId("section-select")).not.toBeDisabled());
+    const tagList = await screen.findByTestId("tag-multi-select");
+    fireEvent.click(within(tagList).getByTestId("tag-option-1"));
+    fireEvent.click(await screen.findByTestId("filters-submit"));
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalled());
+    expect(capturedParams?.tag_ids).toEqual([1, 2]);
   });
 
   it("does not expose legacy interpolation interval controls", async () => {
@@ -1526,5 +1584,25 @@ describe("Data visualization page", () => {
     await waitFor(() => {
       expect(screen.queryByTestId("query-summary")).toBeNull();
     });
+  });
+
+  it("em 'Todas as seções', a consulta não envia analysis_filters ao backend (evitando erro 422)", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([{ ...piTagFixture, validation_status: "VALID" as const }]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.timeSeriesQuery.mockResolvedValue(TIME_SERIES);
+
+    renderAt("/analises/visualizacao");
+
+    // Seleciona equipamento 1, mantendo seção em "Todas" (vazio)
+    const equipment = await screen.findByTestId("equipment-select");
+    fireEvent.change(equipment, { target: { value: "1" } });
+
+    // Submete consulta
+    await submitFirstAvailableTag();
+
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalled());
+    const lastCallParams = apiMock.timeSeriesQuery.mock.calls[apiMock.timeSeriesQuery.mock.calls.length - 1][0];
+    expect(lastCallParams.section_id).toBeUndefined();
+    expect(lastCallParams.analysis_filters).toBeUndefined();
   });
 });

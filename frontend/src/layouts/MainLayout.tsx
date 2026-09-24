@@ -14,13 +14,14 @@ interface NavItem {
 
 const CADASTROS_ITEMS: NavItem[] = [
   { to: "/cadastros/equipamentos", label: "Equipamentos", icon: "bi-gear" },
-  { to: "/cadastros/secoes", label: "Secoes", icon: "bi-diagram-3" },
-  { to: "/cadastros/tipos-variavel", label: "Tipos de Variavel", icon: "bi-tags" },
-  { to: "/cadastros/tags-pi", label: "Tags PI", icon: "bi-bookmark-star" },
+  { to: "/cadastros/secoes", label: "Seções", icon: "bi-diagram-3" },
+  { to: "/cadastros/tipos-variavel", label: "Tipos de Variável", icon: "bi-tags" },
+  { to: "/cadastros/tags-pi", label: "Tags Temporais", icon: "bi-bookmark-star" },
+  { to: "/cadastros/tags-banco", label: "Tags de Banco", icon: "bi-database" },
 ];
 
 const ANALISES_ITEMS: NavItem[] = [
-  { to: "/analises/visualizacao", label: "Visualizacao de Dados", icon: "bi-graph-up" },
+  { to: "/analises/visualizacao", label: "Visualização de Dados", icon: "bi-graph-up" },
   { to: "/analises/cep", label: "Análise CEP", icon: "bi-clipboard-data" },
 ];
 
@@ -29,13 +30,10 @@ function Sidebar({ open, onClose, admin }: { open: boolean; onClose: () => void;
     <>
       {open ? <div className="app-sidebar__backdrop" onClick={onClose} /> : null}
       <aside className={`app-sidebar ${open ? "open" : ""}`} aria-label="Menu principal">
-        <div className="app-sidebar__brand">
+        <Link to="/" className="app-sidebar__brand" onClick={onClose} aria-label={`${APP_NAME} — início`}>
           <span className="app-sidebar__brand-mark">PI</span>
-          <div>
-            <div>{APP_NAME}</div>
-            <div className="small text-white-50">Fase 1</div>
-          </div>
-        </div>
+          <span className="app-sidebar__brand-name">{APP_NAME}</span>
+        </Link>
         <nav className="app-sidebar__nav">
           <div className="app-sidebar__section">Cadastros</div>
           {CADASTROS_ITEMS.map((item) => (
@@ -46,10 +44,11 @@ function Sidebar({ open, onClose, admin }: { open: boolean; onClose: () => void;
               onClick={onClose}
             >
               <i className={`bi ${item.icon}`} aria-hidden="true" />
-              <span>{item.label}</span>
+              <span className="app-sidebar__link-label">{item.label}</span>
+              <i className="bi bi-chevron-right app-sidebar__chevron" aria-hidden="true" />
             </NavLink>
           ))}
-          <div className="app-sidebar__section">Analises</div>
+          <div className="app-sidebar__section app-sidebar__section--divided">Análises</div>
           {ANALISES_ITEMS.map((item) => (
             <NavLink
               key={item.to}
@@ -58,23 +57,16 @@ function Sidebar({ open, onClose, admin }: { open: boolean; onClose: () => void;
               onClick={onClose}
             >
               <i className={`bi ${item.icon}`} aria-hidden="true" />
-              <span>{item.label}</span>
+              <span className="app-sidebar__link-label">{item.label}</span>
+              <i className="bi bi-chevron-right app-sidebar__chevron" aria-hidden="true" />
             </NavLink>
           ))}
           {admin ? <>
-            <NavLink to="/admin/usuarios" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-people" /><span>Usuários</span></NavLink>
-            <NavLink to="/admin/recargas-historicas" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-cloud-download" /><span>Recargas históricas</span></NavLink>
-            <NavLink to="/admin/saude-banco" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-database-check" /><span>Saúde do Banco</span></NavLink>
+            <NavLink to="/admin/usuarios" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-people" aria-hidden="true" /><span className="app-sidebar__link-label">Usuários</span><i className="bi bi-chevron-right app-sidebar__chevron" aria-hidden="true" /></NavLink>
+            <NavLink to="/admin/recargas-historicas" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-cloud-download" aria-hidden="true" /><span className="app-sidebar__link-label">Recargas históricas</span><i className="bi bi-chevron-right app-sidebar__chevron" aria-hidden="true" /></NavLink>
+            <NavLink to="/admin/saude-banco" className={({ isActive }) => `app-sidebar__link ${isActive ? "active" : ""}`} onClick={onClose}><i className="bi bi-database-check" aria-hidden="true" /><span className="app-sidebar__link-label">Saúde do Banco</span><i className="bi bi-chevron-right app-sidebar__chevron" aria-hidden="true" /></NavLink>
           </> : null}
         </nav>
-        <div className="app-sidebar__footer">
-          <div>Versao 0.1.0</div>
-          <div>
-            <Link to="/" className="text-white-50 text-decoration-none" onClick={onClose}>
-              Inicio
-            </Link>
-          </div>
-        </div>
       </aside>
     </>
   );

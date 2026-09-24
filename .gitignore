@@ -55,3 +55,9 @@ dist/
 # Coverage
 .coverage
 htmlcov/
+
+# Oracle Instant Client local installation
+backend/.oracle-client/
+
+# Vite / Vitest cache
+.vite/

@@ -44,6 +44,18 @@ export function toIsoUtc(dateStr: string): string {
   return new Date(dateStr).toISOString();
 }
 
+export function relativeCepPeriod(now: Date, hours: number, interval: string): { start: string; end: string } {
+  const match = /^(\d+)([smh])$/.exec(interval);
+  const unitSeconds = match?.[2] === "h" ? 3600 : match?.[2] === "m" ? 60 : 1;
+  const intervalMs = Number(match?.[1] ?? 300) * unitSeconds * 1000;
+  // Coverage is only complete after the ingestion worker persists a finished interval.
+  const endMs = Math.floor(now.getTime() / intervalMs) * intervalMs - intervalMs;
+  return {
+    start: new Date(endMs - hours * 60 * 60 * 1000).toISOString(),
+    end: new Date(endMs).toISOString(),
+  };
+}
+
 function formatPct(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   return value.toFixed(1) + "%";
@@ -375,15 +387,15 @@ export function CepAnalysisPage() {
     let startIso: string;
     let endIso: string;
     if (periodMode === "relative") {
-      const end = new Date();
       const durationHours: Record<string, number> = { "1h": 1, "6h": 6, "12h": 12, "24h": 24, "7d": 24 * 7, "15d": 24 * 15, "30d": 24 * 30 };
       const hours = durationHours[relativePeriod];
       if (!hours) {
         setError("Período relativo inválido.");
         return;
       }
-      endIso = end.toISOString();
-      startIso = new Date(end.getTime() - hours * 60 * 60 * 1000).toISOString();
+      const period = relativeCepPeriod(new Date(), hours, interpolatedInterval ?? "5m");
+      startIso = period.start;
+      endIso = period.end;
     } else {
       if (!startTime || !endTime) {
         setError("Período inicial e final são obrigatórios.");

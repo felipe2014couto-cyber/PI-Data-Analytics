@@ -1,5 +1,7 @@
 """SQLAlchemy ORM models."""
 from app.models.equipment import Equipment
+from app.models.sip_source import SipSource
+from app.models.sip_history import SipSample, SipReloadJob, SipCoverage, SipDatabaseTag
 from app.models.section import Section
 from app.models.section_analysis_tag import SectionAnalysisTag
 from app.models.classification_tag import ClassificationTag, SectionClassificationTag
@@ -20,6 +22,8 @@ from app.models.postgres import (
 
 __all__ = [
     "Equipment",
+    "SipSource",
+    "SipSample", "SipReloadJob", "SipCoverage", "SipDatabaseTag",
     "Section",
     "SectionAnalysisTag",
     "ClassificationTag",

@@ -1,6 +1,7 @@
 """Coverage-aware TimescaleDB/PI resolver for the time-series endpoint."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from dataclasses import dataclass
@@ -15,14 +16,16 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.exceptions import HistoricalDataNotLoadedError, QueryLimitExceededError, TimeRangeInvalidError, ValidationError
 from app.models.pi_tag import PiTag
+from app.models.sip_source import SipSource
 from app.models.postgres import PiIngestionState, PiSample
 from app.models.section_analysis_tag import SectionAnalysisTag
 from app.models.variable_type import VariableFilterDataType
 from app.repositories.pi_tag_repository import PiTagRepository
-from app.schemas.pi import AnalysisFilterRequest, TimeSeries, TimeSeriesPoint, TimeSeriesRequest, TimeSeriesSeries
+from app.schemas.pi import AnalysisFilterRequest, QueryExecutionMetadata, TimeSeries, TimeSeriesPoint, TimeSeriesRequest, TimeSeriesSeries
 from app.services.cache import LruCache
 from app.services.coverage_service import CoverageService, normalize_mode
 from app.services.string_filter_parser import ExactMatch, RangeMatch, WildcardMatch, parse_string_filter
+from app.services.sip_oracle_service import SipOracleService
 
 logger = logging.getLogger("pi_analytics_data.service.timescaledb")
 
@@ -47,10 +50,33 @@ class DynamicPlotPlan:
     raw_point_count: int
 
 
+@dataclass(frozen=True)
+class PlotReadResult:
+    points: list[TimeSeriesPoint]
+    segments: list[dict[str, Any]]
+    uncovered: list[dict[str, Any]]
+
+
 _timescaledb_query_cache = LruCache[tuple[Any, ...], TimeSeries](
     max_size=settings.timescaledb_query_cache_max_entries,
     default_ttl_seconds=settings.timescaledb_query_cache_ttl_seconds,
 )
+
+
+def invalidate_time_series_cache(tag_ids: list[int], start: datetime, end: datetime) -> int:
+    """Invalidate cached visual queries intersecting persisted history."""
+    affected = set(tag_ids)
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+
+    def intersects(key: tuple[Any, ...]) -> bool:
+        if len(key) < 5 or not str(key[0]).startswith("timescaledb-dynamic-v"):
+            return False
+        cached_tags = set(key[1])
+        cached_start, cached_end = key[2], key[3]
+        return bool(affected & cached_tags) and cached_start < end_utc and cached_end > start_utc
+
+    return _timescaledb_query_cache.remove_where(intersects)
 
 
 def _interval_seconds(interval: Optional[str]) -> Optional[int]:
@@ -138,6 +164,70 @@ class DatabaseTimeSeriesService:
         self.db = db
         self.repo = PiTagRepository(db)
 
+    async def _fetch_with_sip(self, request: TimeSeriesRequest, **kwargs: Any) -> TimeSeries:
+        from app.core.exceptions import NotFoundError
+
+        if request.mode != "recorded":
+            raise ValidationError("Fontes SIP aceitam somente modo Recorded.")
+        if request.analysis_filters:
+            raise ValidationError("Filtros de análise da seção não são suportados para fontes SIP.")
+        if request.start_time >= request.end_time:
+            raise TimeRangeInvalidError("O início deve ser anterior ao fim.")
+        pi_ids = [tag_id for tag_id in request.tag_ids if tag_id > 0]
+        sip_ids = [tag_id for tag_id in request.tag_ids if tag_id < 0]
+        pi_result = await self.fetch_time_series(request.model_copy(update={"tag_ids": pi_ids}), **kwargs) if pi_ids else None
+        sip_series: list[TimeSeriesSeries] = []
+        any_truncated = False
+        for tag_id in sip_ids:
+            source = self.db.get(SipSource, -tag_id)
+            if source is None or not source.active:
+                raise NotFoundError("Fonte SIP não encontrada.", details={"source_id": -tag_id})
+            if request.section_id is not None and source.section_id not in (None, request.section_id):
+                raise ValidationError("A fonte SIP não pertence à seção selecionada.")
+            from app.services.sip_reload_service import has_coverage, stored_rows
+            from app.services.sip_oracle_service import period_sql
+            if has_coverage(self.db, source, request.start_time, request.end_time):
+                row_limit = settings.sip_oracle_max_rows
+                rows = stored_rows(self.db, source.id, request.start_time, request.end_time, row_limit + 1)
+                truncated = len(rows) > row_limit
+                if truncated:
+                    rows = rows[-row_limit:]
+            else:
+                rows, truncated = await asyncio.to_thread(
+                    SipOracleService().fetch_rows,
+                    period_sql(source.sql_text),
+                    source.timestamp_column,
+                    source.value_column,
+                    request.start_time,
+                    request.end_time,
+                )
+            any_truncated = any_truncated or truncated
+            sip_series.append(TimeSeriesSeries(
+                tag_id=tag_id,
+                tag_name=f"SIP:{source.id}",
+                display_name=source.name,
+                points=[TimeSeriesPoint(timestamp=timestamp, value=value) for timestamp, value in rows],
+                source_point_count=len(rows),
+                returned_point_count=len(rows),
+                truncated=truncated,
+            ))
+        series_by_id = {series.tag_id: series for series in (pi_result.series if pi_result else []) + sip_series}
+        metadata = pi_result.query_execution if pi_result else QueryExecutionMetadata()
+        metadata.source = "hybrid" if pi_result else "sip"
+        if not pi_result:
+            metadata.effective_source_mode = "SIP_RECORDED"
+            metadata.effective_interval = "recorded"
+        metadata.visual_total_points = sum(len(item.points) for item in series_by_id.values())
+        metadata.truncated = bool(metadata.truncated or any_truncated)
+        return TimeSeries(
+            start_time=request.start_time,
+            end_time=request.end_time,
+            mode=request.mode,
+            series=[series_by_id[tag_id] for tag_id in request.tag_ids],
+            errors=pi_result.errors if pi_result else [],
+            query_execution=metadata,
+        )
+
     def _available_plot_aggregates(self) -> tuple[tuple[int, str, str], ...]:
         if self.db.bind is None or self.db.bind.dialect.name != "postgresql":
             return ()
@@ -155,6 +245,8 @@ class DatabaseTimeSeriesService:
         return tuple(entry for entry in _PLOT_AGGREGATES if entry[1] in names)
 
     async def fetch_time_series(self, request: TimeSeriesRequest, **_kwargs: Any) -> TimeSeries:
+        if any(tag_id < 0 for tag_id in request.tag_ids):
+            return await self._fetch_with_sip(request, **_kwargs)
         if request.start_time >= request.end_time:
             raise TimeRangeInvalidError("O inicio deve ser anterior ao fim.")
         if len(request.tag_ids) > 100:
@@ -264,12 +356,15 @@ class DatabaseTimeSeriesService:
                 max(1, settings.pi_query_visual_max_total_points // len(tags)),
             )
             cache_key = (
-                "timescaledb-dynamic-v1",
+                "timescaledb-dynamic-v2",
                 tuple(sorted(request.tag_ids)),
                 request.start_time.astimezone(timezone.utc),
                 effective_end.astimezone(timezone.utc),
                 effective_target_points,
                 request.max_count,
+                requested_mode,
+                request.resolution_mode,
+                tuple(sorted((f.variable_type_id, f.min, f.max, f.expression, f.value) for f in active_filters)),
             )
             if not bool(_kwargs.get("refresh")):
                 cached = _timescaledb_query_cache.get(cache_key)
@@ -310,7 +405,11 @@ class DatabaseTimeSeriesService:
 
         series: list[TimeSeriesSeries] = []
         missing_details: list[dict[str, Any]] = []
+        source_segments: list[dict[str, Any]] = []
+        uncovered_intervals: list[dict[str, Any]] = []
         total_returned_points = 0
+        total_real_points = 0
+        total_null_points = 0
 
         for tag in tags:
             if raw_visual:
@@ -336,7 +435,7 @@ class DatabaseTimeSeriesService:
                 else:
                     points = all_points
             elif plot_aggregate:
-                points = self._get_from_plot(
+                plot_result = self._get_from_plot_coverage_aware(
                     tag.id,
                     request.start_time,
                     effective_end,
@@ -345,6 +444,9 @@ class DatabaseTimeSeriesService:
                         dynamic_plan.display_bucket_seconds if dynamic_plan is not None else None
                     ),
                 )
+                points = plot_result.points
+                source_segments.extend(plot_result.segments)
+                uncovered_intervals.extend(plot_result.uncovered)
             else:
                 covered = CoverageService.get_coverage(
                     self.db, tag.id, request.start_time, effective_end,
@@ -376,6 +478,8 @@ class DatabaseTimeSeriesService:
                 # contract; the dynamic path never reaches this truncation.
                 points = points[:request.max_count]
             total_returned_points += len(points)
+            total_real_points += sum(point.value is not None for point in points)
+            total_null_points += sum(point.value is None for point in points)
             if total_returned_points > settings.pi_query_visual_max_total_points:
                 raise QueryLimitExceededError(
                     "Quantidade de pontos excede o limite visual da requisição.",
@@ -401,14 +505,20 @@ class DatabaseTimeSeriesService:
                 "reload_available": True,
             })
 
+        partial = bool(uncovered_intervals)
         query_execution: dict[str, Any] = {
             "strategy": "timescaledb_continuous_aggregate" if plot_aggregate else "timescaledb_direct",
             "source": "timescaledb",
             "effective_source_mode": "RECORDED" if plot_aggregate or raw_visual else requested_mode,
-            "complete": True,
-            "partial": False,
+            "complete": not partial,
+            "partial": partial,
+            "status": "PARTIAL" if partial else "COMPLETE",
             "effective_interval": effective_interval,
             "points_returned": total_returned_points,
+            "real_points": total_real_points,
+            "null_points": total_null_points,
+            "source_segments": source_segments,
+            "uncovered_intervals": uncovered_intervals,
             "cache_hit": False if dynamic_requested else None,
         }
         if plot_aggregate:
@@ -563,9 +673,11 @@ class DatabaseTimeSeriesService:
     def _is_filter_active(f: AnalysisFilterRequest) -> bool:
         if f.min is not None or f.max is not None:
             return True
-        if f.expression is not None and f.expression.strip():
+        if f.expression is not None and f.expression.strip() and f.expression.strip() != "ALL":
             return True
         if f.value in ("ON", "OFF"):
+            return True
+        if f.value is not None and f.value.strip() and f.value.strip() != "ALL":
             return True
         return False
 
@@ -615,19 +727,31 @@ class DatabaseTimeSeriesService:
                     pname = f"f_max_{idx}"
                     filter_params[pname] = f.max
                     real_clauses.append(f"value_double <= :{pname}")
+                if f.min is None and f.max is None:
+                    val_str = (f.value or f.expression or "").strip()
+                    if val_str and val_str != "ALL":
+                        try:
+                            pname = f"f_exact_{idx}"
+                            filter_params[pname] = float(val_str)
+                            real_clauses.append(f"value_double = :{pname}")
+                        except ValueError:
+                            pass
+                if len(real_clauses) == 1:
+                    continue
                 cond_sql = " AND ".join(real_clauses)
 
             elif data_type == VariableFilterDataType.DIGITAL:
-                if f.value == "ON":
+                val = (f.value or f.expression or "").strip().upper()
+                if val == "ON":
                     cond_sql = "value_boolean IS TRUE"
-                elif f.value == "OFF":
+                elif val == "OFF":
                     cond_sql = "value_boolean IS FALSE"
                 else:
                     continue
 
             elif data_type == VariableFilterDataType.STRING:
-                expr = (f.expression or "").strip()
-                if not expr:
+                expr = (f.value if (f.value and f.value != "ALL") else (f.expression or "")).strip()
+                if not expr or expr == "ALL":
                     continue
                 try:
                     ast_tokens = parse_string_filter(expr)
@@ -799,13 +923,11 @@ class DatabaseTimeSeriesService:
         *,
         display_bucket_seconds: Optional[int] = None,
     ) -> list[TimeSeriesPoint]:
-        """Read Plot aggregates with PI-style query-time interpolation.
+        """Read only buckets that contain real qualified samples.
 
-        The materialized aggregates remain sparse and faithful to RecordedValues.
-        ``time_bucket_gapfill`` creates display buckets. Empty numeric buckets
-        are linearly interpolated between the surrounding RecordedValues, which
-        matches the PI Web API Plot boundary behavior. The view name and interval
-        are selected from a fixed allow-list above this method.
+        Missing materialization and real event gaps are deliberately absent
+        here.  The caller adds a minimal null marker at discontinuities; it
+        never manufactures numeric values.
         """
         source_interval_seconds = {
             "pi_recorded_plot_10s": 10,
@@ -819,27 +941,9 @@ class DatabaseTimeSeriesService:
         bucket_seconds = max(source_interval_seconds, int(display_bucket_seconds or source_interval_seconds))
         interval = f"{bucket_seconds} seconds"
         rows = self.db.execute(text(f"""
-            WITH seed AS (
-                SELECT value_double AS last_value, ts AS last_ts
-                FROM pi_samples_timescale
-                WHERE tag_id = :tag_id
-                  AND ts < CAST(:start AS timestamptz)
-                  AND source_mode = 'RECORDED'
-                  AND value_type IN ('double', 'float', 'int')
-                  AND value_double IS NOT NULL
-                  AND good IS TRUE
-                  AND questionable IS FALSE
-                  AND substituted IS FALSE
-                ORDER BY ts DESC
-                LIMIT 1
-            ), gapfilled AS (
+            WITH populated AS (
               SELECT
-                time_bucket_gapfill(
-                    INTERVAL '{interval}',
-                    bucket,
-                    start => CAST(:start AS timestamptz),
-                    finish => CAST(:end AS timestamptz)
-                ) AS bucket,
+                time_bucket(INTERVAL '{interval}', bucket) AS bucket,
                 min(min_value) AS min_value,
                 max(max_value) AS max_value,
                 first(first_value, bucket) FILTER (WHERE sample_count > 0) AS first_value,
@@ -847,75 +951,21 @@ class DatabaseTimeSeriesService:
                 {_WEIGHTED_PLOT_AVERAGE_SQL} AS avg_value,
                 min(first_ts) AS first_ts,
                 max(last_ts) AS last_ts,
-                COALESCE(sum(sample_count), 0) AS sample_count
+                sum(sample_count) AS sample_count
               FROM {view_name}
               WHERE tag_id = :tag_id
                 AND bucket >= CAST(:start AS timestamptz)
                 AND bucket < CAST(:end AS timestamptz)
-              GROUP BY time_bucket_gapfill(
-                  INTERVAL '{interval}',
-                  bucket,
-                  start => CAST(:start AS timestamptz),
-                  finish => CAST(:end AS timestamptz)
-              )
-            ), grouped AS (
-              SELECT
-                gapfilled.*,
-                count(last_value) FILTER (WHERE sample_count > 0)
-                  OVER (ORDER BY bucket ASC) AS previous_group,
-                count(first_value) FILTER (WHERE sample_count > 0)
-                  OVER (ORDER BY bucket DESC) AS following_group
-              FROM gapfilled
-            ), neighbors AS (
-              SELECT
-                grouped.*,
-                COALESCE(
-                  max(last_ts) OVER (PARTITION BY previous_group),
-                  (SELECT last_ts FROM seed)
-                ) AS previous_ts,
-                COALESCE(
-                  max(last_value) OVER (PARTITION BY previous_group),
-                  (SELECT last_value FROM seed)
-                ) AS previous_value,
-                max(first_ts) OVER (PARTITION BY following_group) AS following_ts,
-                max(first_value) OVER (PARTITION BY following_group) AS following_value
-              FROM grouped
-            ), filled AS (
-              SELECT
-                neighbors.*,
-                CASE
-                  WHEN sample_count <> 0 THEN NULL
-                  WHEN previous_ts IS NOT NULL
-                   AND following_ts IS NOT NULL
-                   AND following_ts > previous_ts
-                    THEN previous_value + (following_value - previous_value) *
-                      EXTRACT(EPOCH FROM (bucket - previous_ts)) /
-                      NULLIF(EXTRACT(EPOCH FROM (following_ts - previous_ts)), 0)
-                  ELSE COALESCE(previous_value, following_value)
-                END AS interpolated_value
-              FROM neighbors
-            ), display_buckets AS (
-              SELECT
-                bucket,
-                CASE WHEN sample_count = 0 THEN interpolated_value ELSE min_value END AS min_value,
-                CASE WHEN sample_count = 0 THEN interpolated_value ELSE max_value END AS max_value,
-                CASE WHEN sample_count = 0 THEN interpolated_value ELSE first_value END AS first_value,
-                CASE WHEN sample_count = 0 THEN interpolated_value ELSE last_value END AS last_value,
-                CASE WHEN sample_count = 0 THEN interpolated_value ELSE avg_value END AS avg_value,
-                first_ts,
-                last_ts,
-                sample_count,
-                sample_count = 0 AS is_gapfilled
-              FROM filled
+              GROUP BY time_bucket(INTERVAL '{interval}', bucket)
             ), extrema AS (
               SELECT
-                display_buckets.bucket,
-                min(sample.ts) FILTER (WHERE sample.value_double = display_buckets.min_value) AS min_ts,
-                min(sample.ts) FILTER (WHERE sample.value_double = display_buckets.max_value) AS max_ts
-              FROM display_buckets
+                populated.bucket,
+                min(sample.ts) FILTER (WHERE sample.value_double = populated.min_value) AS min_ts,
+                min(sample.ts) FILTER (WHERE sample.value_double = populated.max_value) AS max_ts
+              FROM populated
               JOIN pi_samples_timescale AS sample
-                ON time_bucket(INTERVAL '{interval}', sample.ts) = display_buckets.bucket
-              WHERE display_buckets.sample_count > 0
+                ON time_bucket(INTERVAL '{interval}', sample.ts) = populated.bucket
+              WHERE populated.sample_count > 0
                 AND sample.tag_id = :tag_id
                 AND sample.source_mode = 'RECORDED'
                 AND sample.value_type IN ('double', 'float', 'int')
@@ -925,16 +975,15 @@ class DatabaseTimeSeriesService:
                 AND sample.substituted IS FALSE
                 AND sample.ts >= CAST(:start AS timestamptz)
                 AND sample.ts < CAST(:end AS timestamptz)
-              GROUP BY display_buckets.bucket
+              GROUP BY populated.bucket
             )
             SELECT
-              display_buckets.*,
+              populated.*,
               extrema.min_ts,
-              extrema.max_ts,
-              (SELECT COUNT(*) > 0 FROM seed) AS has_previous_value
-            FROM display_buckets
-            LEFT JOIN extrema ON extrema.bucket = display_buckets.bucket
-            ORDER BY display_buckets.bucket ASC
+              extrema.max_ts
+            FROM populated
+            LEFT JOIN extrema ON extrema.bucket = populated.bucket
+            ORDER BY populated.bucket ASC
         """), {"tag_id": tag_id, "start": start, "end": end}).fetchall()
         points: list[TimeSeriesPoint] = []
         for row in rows:
@@ -950,12 +999,128 @@ class DatabaseTimeSeriesService:
                 plot_first_ts=row[6],
                 plot_last_ts=row[7],
                 plot_sample_count=int(row[8]) if row[8] is not None else None,
-                is_gapfilled=bool(row[9]),
-                plot_min_ts=row[10],
-                plot_max_ts=row[11],
-                has_previous_value=bool(row[12]) if row[12] is not None else None,
+                is_gapfilled=False,
+                plot_min_ts=row[9],
+                plot_max_ts=row[10],
+                has_previous_value=None,
             ))
         return points
+
+    def _get_from_plot_coverage_aware(
+        self,
+        tag_id: int,
+        start: datetime,
+        end: datetime,
+        preferred_view: str,
+        *,
+        display_bucket_seconds: Optional[int] = None,
+    ) -> PlotReadResult:
+        """Compose a preferred CAGG with coarser historical CAGGs.
+
+        Each source is used only from its first real bucket onward.  Earlier
+        history falls back to progressively coarser materialized aggregates.
+        Any uncovered prefix/suffix is explicit and forces PARTIAL.
+        """
+        installed = list(self._available_plot_aggregates())
+        by_name = {name: (seconds, label) for seconds, name, label in installed}
+        if preferred_view not in by_name:
+            return PlotReadResult([], [], [{"tag_id": tag_id, "start": start, "end": end, "reason": "aggregate_unavailable"}])
+        preferred_seconds = by_name[preferred_view][0]
+        candidates = [(s, n, l) for s, n, l in installed if s >= preferred_seconds]
+        candidates.sort(key=lambda item: item[0])
+        cursor = start
+        collected: list[tuple[TimeSeriesPoint, int]] = []
+        segments: list[dict[str, Any]] = []
+
+        # Find real bounds once. A tag without buckets is not considered
+        # covered merely because the aggregate has a global watermark.
+        bounds: dict[str, tuple[datetime, datetime] | None] = {}
+        for _, name, _ in candidates:
+            row = self.db.execute(text(f"""
+                SELECT min(bucket), max(bucket)
+                FROM {name}
+                WHERE tag_id = :tag_id AND bucket >= :start AND bucket < :end
+            """), {"tag_id": tag_id, "start": start, "end": end}).one()
+            bounds[name] = (row[0], row[1]) if row[0] is not None else None
+
+        # Coarsest sources cover old history; finer preferred data takes
+        # deterministic precedence from its first real bucket onward.
+        cutovers = []
+        for seconds, name, label in reversed(candidates):
+            bound = bounds[name]
+            if bound is not None:
+                cutovers.append((max(start, bound[0]), seconds, name, label))
+        cutovers.sort(key=lambda item: item[0])
+        earliest_cutover = cutovers[0][0] if cutovers else end
+        if start < earliest_cutover:
+            raw_bucket = max(preferred_seconds, int(display_bucket_seconds or preferred_seconds))
+            raw_points = self._get_from_raw_plot(tag_id, start, earliest_cutover, raw_bucket)
+            if raw_points:
+                collected.extend((point, raw_bucket) for point in raw_points)
+                segments.append({"tag_id": tag_id, "start": start, "end": earliest_cutover, "source": "pi_samples_timescale", "interval": _format_interval(raw_bucket)})
+        for index, (segment_start, seconds, name, label) in enumerate(cutovers):
+            segment_end = cutovers[index + 1][0] if index + 1 < len(cutovers) else end
+            if segment_start >= segment_end:
+                continue
+            read_bucket = display_bucket_seconds if name == preferred_view else seconds
+            points = self._get_from_plot(tag_id, segment_start, segment_end, name, display_bucket_seconds=read_bucket)
+            if not points:
+                continue
+            collected.extend((point, int(read_bucket or seconds)) for point in points)
+            segments.append({"tag_id": tag_id, "start": segment_start, "end": segment_end, "source": name, "interval": _format_interval(read_bucket)})
+            cursor = max(cursor, segment_end)
+
+        collected = list({point.timestamp: (point, bucket) for point, bucket in collected}.values())
+        collected.sort(key=lambda item: item[0].timestamp)
+        uncovered: list[dict[str, Any]] = []
+        if not collected:
+            uncovered.append({"tag_id": tag_id, "start": start, "end": end, "reason": "no_materialized_buckets"})
+            return PlotReadResult([], segments, uncovered)
+        if collected[0][0].timestamp > start:
+            uncovered.append({"tag_id": tag_id, "start": start, "end": collected[0][0].timestamp, "reason": "no_confirmed_source"})
+        if collected[-1][0].timestamp + timedelta(seconds=collected[-1][1]) < end:
+            uncovered.append({"tag_id": tag_id, "start": collected[-1][0].timestamp + timedelta(seconds=collected[-1][1]), "end": end, "reason": "no_confirmed_source"})
+
+        # One null marker per discontinuity is enough for ECharts to break the
+        # line. Do not materialize every empty display bucket.
+        with_markers: list[TimeSeriesPoint] = []
+        previous_bucket: Optional[int] = None
+        for point, bucket_seconds in collected:
+            threshold = max(previous_bucket or bucket_seconds, bucket_seconds) * 1.5
+            if with_markers and (point.timestamp - with_markers[-1].timestamp).total_seconds() > threshold:
+                marker_ts = with_markers[-1].timestamp + timedelta(microseconds=1)
+                with_markers.append(TimeSeriesPoint(timestamp=marker_ts, value=None, good=False))
+            with_markers.append(point)
+            previous_bucket = bucket_seconds
+        return PlotReadResult(with_markers, segments, uncovered)
+
+    def _get_from_raw_plot(
+        self, tag_id: int, start: datetime, end: datetime, bucket_seconds: int
+    ) -> list[TimeSeriesPoint]:
+        """Bounded raw fallback aggregated in SQL without gap filling."""
+        interval = f"{max(1, bucket_seconds)} seconds"
+        rows = self.db.execute(text(f"""
+            SELECT time_bucket(INTERVAL '{interval}', ts) AS bucket,
+                   min(value_double), max(value_double),
+                   first(value_double, ts), last(value_double, ts),
+                   avg(value_double), min(ts), max(ts), count(*)
+            FROM pi_samples_timescale
+            WHERE tag_id = :tag_id
+              AND ts >= :start AND ts < :end
+              AND source_mode = 'RECORDED'
+              AND value_type IN ('double', 'float', 'int')
+              AND value_double IS NOT NULL
+              AND good IS TRUE AND questionable IS FALSE AND substituted IS FALSE
+            GROUP BY time_bucket(INTERVAL '{interval}', ts)
+            ORDER BY bucket
+        """), {"tag_id": tag_id, "start": start, "end": end}).fetchall()
+        return [TimeSeriesPoint(
+            timestamp=row[0], value=float(row[5]),
+            plot_min=float(row[1]), plot_max=float(row[2]),
+            plot_first=float(row[3]), plot_last=float(row[4]), plot_avg=float(row[5]),
+            plot_first_ts=row[6], plot_last_ts=row[7], plot_sample_count=int(row[8]),
+            is_gapfilled=False,
+        ) for row in rows]
 
     @staticmethod
     def _value(value_double: Any, value_boolean: Any, value_text: Any, value_type: str) -> Any:

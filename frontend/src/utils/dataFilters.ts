@@ -128,6 +128,11 @@ function textMatches(value: string, operator: TextFilterOperator, ruleValue: str
     case "contains": return subject.includes(pattern);
     case "startsWith": return subject.startsWith(pattern);
     case "endsWith": return subject.endsWith(pattern);
+    case "wildcard":
+      return pattern.split(";").map((part) => part.trim()).filter(Boolean).some((part) => {
+        const regex = new RegExp(`^${part.split("*").map((fragment) => fragment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+        return regex.test(subject);
+      });
   }
 }
 
@@ -196,7 +201,11 @@ export function validateFilterConfiguration(
 export function applyDataFilters(
   timeSeries: TimeSeries,
   configuration: DataFilterConfiguration,
-  options: { summarySeriesKeys?: Set<string>; crossSeriesRuleIds?: Set<string> } = {},
+  options: {
+    summarySeriesKeys?: Set<string>;
+    crossSeriesRuleIds?: Set<string>;
+    seriesSectionMap?: Map<string, number>;
+  } = {},
 ): FilterApplicationResult {
   const errors: FilterRuleError[] = validateFilterConfiguration(configuration);
   const validRuleIds = new Set(
@@ -231,12 +240,61 @@ export function applyDataFilters(
   }
 
   const filteredSeries: TimeSeriesSeries[] = [];
-  const pointMapsBySeries = new Map(
-    timeSeries.series.map((series) => [
-      series.series_instance_id ?? `tag:${series.tag_id}`,
-      new Map(series.points.map((point) => [point.timestamp, point])),
-    ]),
-  );
+  interface SeriesSampleIndex {
+    exactMap: Map<string, TimeSeriesPoint>;
+    timestamps: number[];
+    values: Array<number | string | boolean | null>;
+  }
+
+  const seriesSampleIndices = new Map<string, SeriesSampleIndex>();
+  for (const s of timeSeries.series) {
+    const key = s.series_instance_id ?? `tag:${s.tag_id}`;
+    const exactMap = new Map<string, TimeSeriesPoint>();
+    const timestamps: number[] = [];
+    const values: Array<number | string | boolean | null> = [];
+    for (const p of s.points) {
+      exactMap.set(p.timestamp, p);
+      const t = Date.parse(p.timestamp);
+      if (!Number.isNaN(t)) {
+        timestamps.push(t);
+        values.push(p.value);
+      }
+    }
+    const idx: SeriesSampleIndex = { exactMap, timestamps, values };
+    seriesSampleIndices.set(key, idx);
+    if (!seriesSampleIndices.has(`tag:${s.tag_id}`)) {
+      seriesSampleIndices.set(`tag:${s.tag_id}`, idx);
+    }
+  }
+
+  function getCrossSeriesValue(targetKey: string, pointTimestampStr: string): number | string | boolean | null | undefined {
+    const idx = seriesSampleIndices.get(targetKey);
+    if (!idx) return undefined;
+    const exact = idx.exactMap.get(pointTimestampStr);
+    if (exact !== undefined) {
+      return exact.value;
+    }
+    const pointTime = Date.parse(pointTimestampStr);
+    if (Number.isNaN(pointTime) || idx.timestamps.length === 0) return undefined;
+
+    let low = 0;
+    let high = idx.timestamps.length - 1;
+    let best = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (idx.timestamps[mid] <= pointTime) {
+        best = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    if (best >= 0) {
+      return idx.values[best];
+    }
+    return undefined;
+  }
+
   const ruleResultsMap = new Map<string, number>();
   for (const rule of configuration.rules) {
     ruleResultsMap.set(rule.id, 0);
@@ -253,12 +311,26 @@ export function applyDataFilters(
   for (const series of timeSeries.series) {
     const seriesKey = series.series_instance_id ?? `tag:${series.tag_id}`;
     const tagRules = rulesByTag.get(seriesKey) ?? [];
-    const crossSeriesRules = [...numericRules, ...textRules].filter(
-      (rule) => options.crossSeriesRuleIds?.has(rule.id) === true &&
-        (rule.seriesInstanceId ?? `tag:${rule.tagId}`) !== seriesKey,
-    );
-    const applicableTagRules = [...tagRules, ...crossSeriesRules];
+    const crossSeriesRules = [...numericRules, ...textRules].filter((rule) => {
+      if (options.crossSeriesRuleIds?.has(rule.id) === true) {
+        if (rule.sectionTagMap) return true;
+        const defaultKey = rule.seriesInstanceId ?? `tag:${rule.tagId}`;
+        return defaultKey !== seriesKey;
+      }
+      return false;
+    });
+
+    const applicableRuleIds = new Set<string>();
+    const applicableTagRules: Array<DataFilterRule & { kind: "numeric" | "text" }> = [];
+    for (const rule of [...tagRules, ...crossSeriesRules]) {
+      if (!applicableRuleIds.has(rule.id)) {
+        applicableRuleIds.add(rule.id);
+        applicableTagRules.push(rule as any);
+      }
+    }
+
     const countsForSummary = !options.summarySeriesKeys || options.summarySeriesKeys.has(seriesKey);
+    const seriesSectionId = options.seriesSectionMap?.get(seriesKey);
     const newPoints: TimeSeriesPoint[] = [];
     const excludedPoints: TimeSeriesPoint[] = [];
 
@@ -316,12 +388,24 @@ export function applyDataFilters(
 
       if (!removed) {
         for (const rule of applicableTagRules) {
+          let targetTagId = rule.tagId;
+          if (rule.sectionTagMap) {
+            if (seriesSectionId === undefined || !(seriesSectionId in rule.sectionTagMap)) {
+              // Seção sem a variável: a regra é estritamente NEUTRA para esta série
+              continue;
+            }
+            targetTagId = rule.sectionTagMap[seriesSectionId];
+          }
+
+          const targetRuleKey = (targetTagId === rule.tagId && rule.seriesInstanceId)
+            ? rule.seriesInstanceId
+            : `tag:${targetTagId}`;
+          const isCrossSeries = targetRuleKey !== seriesKey;
+          const ruleValue = !isCrossSeries
+            ? point.value
+            : getCrossSeriesValue(targetRuleKey, point.timestamp);
+
           if (rule.kind === "numeric" && isValidNumericConfig(rule)) {
-            const ruleKey = rule.seriesInstanceId ?? `tag:${rule.tagId}`;
-            const ruleValue = ruleKey === seriesKey
-              ? point.value
-              : pointMapsBySeries.get(ruleKey)?.get(point.timestamp)?.value;
-            const isCrossSeries = ruleKey !== seriesKey;
             const matches = typeof ruleValue === "number" && Number.isFinite(ruleValue)
               ? numericMatches(ruleValue, rule.operator, rule.value, rule.secondValue)
               : !isCrossSeries;
@@ -337,14 +421,27 @@ export function applyDataFilters(
             }
           }
           if (rule.kind === "text" && isValidTextConfig(rule)) {
-            const ruleKey = rule.seriesInstanceId ?? `tag:${rule.tagId}`;
-            const ruleValue = ruleKey === seriesKey
-              ? point.value
-              : pointMapsBySeries.get(ruleKey)?.get(point.timestamp)?.value;
-            const isCrossSeries = ruleKey !== seriesKey;
-            const matches = typeof ruleValue === "string"
-              ? textMatches(ruleValue, rule.operator, rule.value, rule.caseSensitive)
-              : !isCrossSeries;
+            let matches = false;
+            if (typeof ruleValue === "string") {
+              matches = textMatches(ruleValue, rule.operator, rule.value, rule.caseSensitive);
+            } else if (isCrossSeries) {
+              if (typeof ruleValue === "boolean") {
+                const strVal = ruleValue ? "ON" : "OFF";
+                const target = rule.value.toUpperCase();
+                matches = (strVal === target) || (String(ruleValue) === rule.value.toLowerCase());
+              } else if (typeof ruleValue === "number" && Number.isFinite(ruleValue)) {
+                const target = rule.value.toUpperCase();
+                matches =
+                  (ruleValue === 1 && target === "ON") ||
+                  (ruleValue === 0 && target === "OFF") ||
+                  String(ruleValue) === rule.value ||
+                  textMatches(String(ruleValue), rule.operator, rule.value, rule.caseSensitive);
+              } else {
+                matches = false;
+              }
+            } else {
+              matches = true;
+            }
             if (!matches) {
               removed = true;
               if (countsForSummary) {

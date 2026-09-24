@@ -29,6 +29,7 @@ class Section(Base, TimestampMixin):
     width_tag_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     um_tag_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     thickness_tag_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    steel_type_tag_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     equipment: Mapped["Equipment"] = relationship(  # noqa: F821
         "Equipment",
@@ -68,6 +69,7 @@ class Section(Base, TimestampMixin):
         Index("ix_sections_width_tag_id", "width_tag_id"),
         Index("ix_sections_um_tag_id", "um_tag_id"),
         Index("ix_sections_thickness_tag_id", "thickness_tag_id"),
+        Index("ix_sections_steel_type_tag_id", "steel_type_tag_id"),
     )
 
     @property

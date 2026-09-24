@@ -783,3 +783,248 @@ def test_legacy_section_with_fixed_tags_and_empty_analysis_tags(client: TestClie
     assert item["thickness_tag_id"] == tag_thickness["id"]
     assert item["analysis_tags"] == []
 
+
+def test_section_analysis_tag_filter_type_lifecycle(client: TestClient) -> None:
+    eq = client.post("/api/equipments", json={"code": "EQ-FT", "name": "Equip FilterType"}).json()
+    vt_real = client.post("/api/variable-types", json={"code": "CURR_FT", "name": "Corrente", "filter_data_type": "REAL"}).json()
+    vt_text = client.post("/api/variable-types", json={"code": "PROD_FT", "name": "Produto", "filter_data_type": "STRING"}).json()
+    vt_disc = client.post("/api/variable-types", json={"code": "STATUS_FT", "name": "Status", "filter_data_type": "DIGITAL"}).json()
+
+    tag_curr = client.post("/api/pi-tags", json={"equipment_id": eq["id"], "variable_type_id": vt_real["id"], "pi_server": "P", "pi_tag_name": "T.CURR", "display_name": "Corrente", "data_type": "NUMERIC"}).json()
+    tag_prod = client.post("/api/pi-tags", json={"equipment_id": eq["id"], "variable_type_id": vt_text["id"], "pi_server": "P", "pi_tag_name": "T.PROD", "display_name": "Produto", "data_type": "NON_NUMERIC"}).json()
+    tag_status = client.post("/api/pi-tags", json={"equipment_id": eq["id"], "variable_type_id": vt_disc["id"], "pi_server": "P", "pi_tag_name": "T.STAT", "display_name": "Status", "data_type": "NON_NUMERIC"}).json()
+
+    # Create section with all 3 filter types
+    resp = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": eq["id"],
+            "code": "SEC-FT1",
+            "name": "Secao Filtro Tipos",
+            "analysis_tags": [
+                {"variable_type_id": vt_real["id"], "pi_tag_id": tag_curr["id"], "filter_type": "MIN_MAX"},
+                {"variable_type_id": vt_text["id"], "pi_tag_id": tag_prod["id"], "filter_type": "TEXT"},
+                {"variable_type_id": vt_disc["id"], "pi_tag_id": tag_status["id"], "filter_type": "SELECTION"},
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    sec = resp.json()
+    tags_by_vt = {t["variable_type_id"]: t for t in sec["analysis_tags"]}
+    assert tags_by_vt[vt_real["id"]]["filter_type"] == "MIN_MAX"
+    assert tags_by_vt[vt_text["id"]]["filter_type"] == "TEXT"
+    assert tags_by_vt[vt_disc["id"]]["filter_type"] == "SELECTION"
+
+    # Verify GET by ID
+    get_resp = client.get(f"/api/sections/{sec['id']}")
+    assert get_resp.status_code == 200
+    get_tags_by_vt = {t["variable_type_id"]: t for t in get_resp.json()["analysis_tags"]}
+    assert get_tags_by_vt[vt_real["id"]]["filter_type"] == "MIN_MAX"
+    assert get_tags_by_vt[vt_text["id"]]["filter_type"] == "TEXT"
+    assert get_tags_by_vt[vt_disc["id"]]["filter_type"] == "SELECTION"
+
+    # Update section changing filter_type on one tag and keeping others
+    update_resp = client.put(
+        f"/api/sections/{sec['id']}",
+        json={
+            "analysis_tags": [
+                {"variable_type_id": vt_real["id"], "pi_tag_id": tag_curr["id"], "filter_type": "SELECTION"},
+                {"variable_type_id": vt_text["id"], "pi_tag_id": tag_prod["id"], "filter_type": "TEXT"},
+            ],
+        },
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    updated_tags = {t["variable_type_id"]: t for t in update_resp.json()["analysis_tags"]}
+    assert len(updated_tags) == 2
+    assert updated_tags[vt_real["id"]]["filter_type"] == "SELECTION"
+    assert updated_tags[vt_text["id"]]["filter_type"] == "TEXT"
+
+
+def test_section_analysis_tag_min_max_rejects_non_numeric(client: TestClient) -> None:
+    eq = client.post("/api/equipments", json={"code": "EQ-REJ", "name": "Equip Reject"}).json()
+    vt_text = client.post("/api/variable-types", json={"code": "TXT_VAR", "name": "Variavel Texto", "filter_data_type": "STRING"}).json()
+    tag_prod = client.post("/api/pi-tags", json={"equipment_id": eq["id"], "variable_type_id": vt_text["id"], "pi_server": "P", "pi_tag_name": "T.PROD2", "display_name": "Produto 2", "data_type": "NON_NUMERIC"}).json()
+
+    # Attempt to assign MIN_MAX to a text tag/variable
+    resp = client.post(
+        "/api/sections",
+        json={
+            "equipment_id": eq["id"],
+            "code": "SEC-REJ",
+            "name": "Secao Rejeitada",
+            "analysis_tags": [
+                {"variable_type_id": vt_text["id"], "pi_tag_id": tag_prod["id"], "filter_type": "MIN_MAX"},
+            ],
+        },
+    )
+    assert resp.status_code == 422
+    assert "MIN_MAX" in resp.json()["error"]["message"]
+
+
+def test_pi_tag_distinct_values_endpoint(client: TestClient, db_session) -> None:
+    from datetime import datetime, timedelta, timezone
+    from app.models.postgres import PiSample
+
+    eq = client.post("/api/equipments", json={"code": "EQ-DIST", "name": "Equip Distinct"}).json()
+    vt_str = client.post("/api/variable-types", json={"code": "BATCH_VT", "name": "Lote", "filter_data_type": "STRING"}).json()
+    tag = client.post("/api/pi-tags", json={"equipment_id": eq["id"], "variable_type_id": vt_str["id"], "pi_server": "P", "pi_tag_name": "BATCH.TAG", "display_name": "Tag Lote", "data_type": "NON_NUMERIC"}).json()
+
+    # Insert sample points with distinct timestamps
+    now = datetime.now(timezone.utc)
+    for i, val in enumerate(["LOTE-A", "LOTE-B", "LOTE-A", "LOTE-C"]):
+        db_session.add(PiSample(
+            tag_id=tag["id"],
+            ts=now + timedelta(minutes=i),
+            value_type="string",
+            value_text=val,
+            good=True,
+        ))
+    db_session.commit()
+
+    resp = client.get(f"/api/pi-tags/{tag['id']}/distinct-values")
+    assert resp.status_code == 200
+    values = resp.json()
+    assert sorted(values) == ["LOTE-A", "LOTE-B", "LOTE-C"]
+
+
+
+
+
+def test_section_steel_type_fixed_tag_lifecycle(client: TestClient, db_session) -> None:
+    equipment = _create_equipment(client, code="STEEL-EQ")
+    section = client.post(
+        "/api/sections",
+        json={"equipment_id": equipment["id"], "code": "STEEL-SEC", "name": "Steel section"},
+    ).json()
+    steel_type = client.post(
+        "/api/variable-types",
+        json={"code": "TIPO_DE_ACO", "name": "Tipo de Aço", "filter_data_type": "STRING"},
+    ).json()
+
+    def create_tag(tag_name: str) -> dict:
+        response = client.post("/api/pi-tags", json={
+            "equipment_id": equipment["id"], "section_id": section["id"],
+            "variable_type_id": steel_type["id"], "pi_server": "PIMS",
+            "pi_tag_name": tag_name, "display_name": tag_name,
+            "data_type": "NON_NUMERIC",
+        })
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    first_tag = create_tag("STEEL.MODEL.1")
+    second_tag = create_tag("STEEL.MODEL.2")
+    from datetime import datetime, timedelta, timezone
+    from app.models.postgres import PiSample
+
+    now = datetime.now(timezone.utc)
+    for index, (tag_id, value) in enumerate([
+        (first_tag["id"], "P304A"),
+        (first_tag["id"], "P430A"),
+        (second_tag["id"], "P399B"),
+    ]):
+        db_session.add(PiSample(
+            tag_id=tag_id,
+            ts=now + timedelta(minutes=index),
+            value_type="string",
+            value_text=value,
+            good=True,
+        ))
+    db_session.commit()
+
+    global_tag_response = client.post("/api/pi-tags", json={
+        "equipment_id": equipment["id"], "section_id": None,
+        "variable_type_id": steel_type["id"], "pi_server": "PIMS",
+        "pi_tag_name": "STEEL.MODEL.GLOBAL", "display_name": "Global steel model",
+        "data_type": "NON_NUMERIC",
+    })
+    assert global_tag_response.status_code == 201, global_tag_response.text
+    created = client.post("/api/sections", json={
+        "equipment_id": equipment["id"], "code": "STEEL-NEW", "name": "Steel new",
+        "steel_type_tag_id": global_tag_response.json()["id"],
+    })
+    assert created.status_code == 201, created.text
+    assert created.json()["steel_type_tag_id"] == global_tag_response.json()["id"]
+
+    # A tag scoped to another section is rejected, just like the existing fixed slots.
+    other_section = client.post("/api/sections", json={
+        "equipment_id": equipment["id"], "code": "STEEL-OTHER", "name": "Other",
+    }).json()
+    invalid_scope = client.put(f"/api/sections/{other_section['id']}", json={
+        "steel_type_tag_id": first_tag["id"],
+    })
+    assert invalid_scope.status_code == 422
+
+    assigned = client.put(f"/api/sections/{section['id']}", json={
+        "steel_type_tag_id": first_tag["id"],
+    })
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["steel_type_tag_id"] == first_tag["id"]
+    first_values = client.get(f"/api/pi-tags/{assigned.json()['steel_type_tag_id']}/distinct-values")
+    assert first_values.status_code == 200, first_values.text
+    assert first_values.json() == ["P304A", "P430A"]
+
+    changed = client.put(f"/api/sections/{section['id']}", json={
+        "steel_type_tag_id": second_tag["id"],
+    })
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["steel_type_tag_id"] == second_tag["id"]
+    second_values = client.get(f"/api/pi-tags/{changed.json()['steel_type_tag_id']}/distinct-values")
+    assert second_values.status_code == 200, second_values.text
+    assert second_values.json() == ["P399B"]
+
+    reopened = client.get(f"/api/sections/{section['id']}")
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["steel_type_tag_id"] == second_tag["id"]
+    listed = client.get("/api/sections", params={"equipment_id": equipment["id"]})
+    assert listed.status_code == 200, listed.text
+    listed_section = next(item for item in listed.json()["items"] if item["id"] == section["id"])
+    assert listed_section["steel_type_tag_id"] == second_tag["id"]
+
+    cleared = client.put(f"/api/sections/{section['id']}", json={"steel_type_tag_id": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["steel_type_tag_id"] is None
+    assert client.get(f"/api/sections/{section['id']}").json()["steel_type_tag_id"] is None
+
+    legacy = client.post("/api/sections", json={
+        "equipment_id": equipment["id"], "code": "STEEL-LEGACY", "name": "Legacy",
+    })
+    assert legacy.status_code == 201, legacy.text
+    assert legacy.json()["steel_type_tag_id"] is None
+
+
+def test_section_accepts_aco_variable_type_as_fixed_steel_tag(client: TestClient) -> None:
+    equipment = _create_equipment(client, code="ACO-EQ")
+    section = client.post("/api/sections", json={
+        "equipment_id": equipment["id"], "code": "FORNO", "name": "Forno",
+    }).json()
+    variable_type = client.post("/api/variable-types", json={
+        "code": "AÇO", "name": "AÇO", "filter_data_type": "STRING",
+    }).json()
+    tag = client.post("/api/pi-tags", json={
+        "equipment_id": equipment["id"], "section_id": None,
+        "variable_type_id": variable_type["id"], "pi_server": "PIMS",
+        "pi_tag_name": "LFI_RB1_TIPO_ACO", "display_name": "AÇO",
+        "data_type": "NON_NUMERIC",
+    }).json()
+
+    response = client.put(f"/api/sections/{section['id']}", json={"steel_type_tag_id": tag["id"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["steel_type_tag_id"] == tag["id"]
+    assert client.get(f"/api/sections/{section['id']}").json()["steel_type_tag_id"] == tag["id"]
+
+
+def test_section_steel_type_tag_rejects_unrelated_variable_type(client: TestClient) -> None:
+    equipment = _create_equipment(client, code="STEEL-VALIDATION")
+    section = client.post("/api/sections", json={
+        "equipment_id": equipment["id"], "code": "SEC", "name": "Section",
+    }).json()
+    variable_type = client.post("/api/variable-types", json={
+        "code": "TEMPERATURE", "name": "Temperatura", "filter_data_type": "REAL",
+    }).json()
+    tag = client.post("/api/pi-tags", json={
+        "equipment_id": equipment["id"], "section_id": section["id"],
+        "variable_type_id": variable_type["id"], "pi_server": "PIMS",
+        "pi_tag_name": "STEEL.INVALID", "display_name": "Not a steel type",
+    }).json()
+    response = client.put(f"/api/sections/{section['id']}", json={"steel_type_tag_id": tag["id"]})
+    assert response.status_code == 422

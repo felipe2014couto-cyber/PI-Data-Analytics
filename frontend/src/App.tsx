@@ -6,6 +6,7 @@ import { EquipmentsPage } from "./pages/EquipmentsPage";
 import { SectionsPage } from "./pages/SectionsPage";
 import { VariableTypesPage } from "./pages/VariableTypesPage";
 import { PiTagsPage } from "./pages/PiTagsPage";
+import { DatabaseTagsPage } from "./pages/DatabaseTagsPage";
 import { DataVisualizationPage } from "./pages/DataVisualizationPage";
 import { CepAnalysisPage } from "./pages/CepAnalysisPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="cadastros/secoes" element={<SectionsPage />} />
           <Route path="cadastros/tipos-variavel" element={<VariableTypesPage />} />
           <Route path="cadastros/tags-pi" element={<PiTagsPage />} />
+          <Route path="cadastros/tags-banco" element={<DatabaseTagsPage />} />
           <Route path="analises/visualizacao" element={<DataVisualizationPage />} />
           <Route path="analises/cep" element={<CepAnalysisPage />} />
           <Route element={<ProtectedRoute admin />}><Route path="admin/usuarios" element={<AdminUsersPage />} /></Route>

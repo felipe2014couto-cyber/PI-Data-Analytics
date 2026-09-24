@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal, Form, Button, Table } from "react-bootstrap";
 
 import { equipmentsApi, piTagsApi, sectionsApi, variableTypesApi } from "../api";
-import type { Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
+import type { AnalysisFilterType, Equipment, PiTag, Section, SectionCreate, SectionUpdate, VariableType } from "../types";
 import { ActiveBadge } from "../components/ActiveBadge";
 import { ConfirmModal } from "../components/ConfirmModal";
 import { EmptyState } from "../components/EmptyState";
@@ -14,16 +14,17 @@ import { Pagination } from "../components/Pagination";
 import { formatDateTime } from "../utils/format";
 
 const PAGE_SIZE = 10;
-type AnalysisTagKind = "width" | "um" | "thickness";
+type AnalysisTagKind = "width" | "um" | "thickness" | "steelType";
 
 const ANALYSIS_TAG_TYPE_ALIASES: Record<AnalysisTagKind, string[]> = {
   width: ["largura", "width"],
   um: ["um", "codigo um", "código um", "unidade material"],
   thickness: ["espessura", "thickness"],
+  steelType: ["aço", "tipo de aço", "tipo aço", "tipo_aco", "modelo do aço", "modelo aço", "modelo_do_aco", "steel type", "steel_type", "steel model", "steel_model"],
 };
 
 function normalizeTypeLabel(value: string): string {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[_-]+/g, " ").toLowerCase().trim();
 }
 
 function isFixedVariableType(vt: VariableType): boolean {
@@ -31,7 +32,8 @@ function isFixedVariableType(vt: VariableType): boolean {
   return (
     ANALYSIS_TAG_TYPE_ALIASES.width.some((alias) => labels.includes(normalizeTypeLabel(alias))) ||
     ANALYSIS_TAG_TYPE_ALIASES.um.some((alias) => labels.includes(normalizeTypeLabel(alias))) ||
-    ANALYSIS_TAG_TYPE_ALIASES.thickness.some((alias) => labels.includes(normalizeTypeLabel(alias)))
+    ANALYSIS_TAG_TYPE_ALIASES.thickness.some((alias) => labels.includes(normalizeTypeLabel(alias))) ||
+    ANALYSIS_TAG_TYPE_ALIASES.steelType.some((alias) => labels.includes(normalizeTypeLabel(alias)))
   );
 }
 
@@ -44,7 +46,14 @@ function getDynamicTagLabel(vt?: VariableType): string {
 interface DynamicAnalysisTagState {
   variable_type_id: number;
   pi_tag_id: string;
+  filter_type: AnalysisFilterType;
 }
+
+const FILTER_TYPE_LABELS: Record<AnalysisFilterType, string> = {
+  SELECTION: "Seleção",
+  MIN_MAX: "Valor mínimo / máximo",
+  TEXT: "Digitável",
+};
 
 interface FormState {
   equipment_id: string;
@@ -58,6 +67,7 @@ interface FormState {
   width_tag_id: string;
   um_tag_id: string;
   thickness_tag_id: string;
+  steel_type_tag_id: string;
   analysis_tags: DynamicAnalysisTagState[];
 }
 
@@ -73,6 +83,7 @@ const EMPTY_FORM: FormState = {
   width_tag_id: "",
   um_tag_id: "",
   thickness_tag_id: "",
+  steel_type_tag_id: "",
   analysis_tags: [],
 };
 
@@ -97,11 +108,17 @@ export function SectionsPage() {
   const [showFormModal, setShowFormModal] = useState(false);
   const [showAddTagModal, setShowAddTagModal] = useState(false);
   const [selectedVariableTypeId, setSelectedVariableTypeId] = useState<string>("");
+  const [selectedFilterType, setSelectedFilterType] = useState<AnalysisFilterType | "">("");
   const [editing, setEditing] = useState<Section | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string>("");
+
+  const selectedVariableType = useMemo(
+    () => variableTypes.find((vt) => vt.id === Number(selectedVariableTypeId)),
+    [variableTypes, selectedVariableTypeId],
+  );
 
   const [confirmDelete, setConfirmDelete] = useState<Section | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -212,9 +229,11 @@ export function SectionsPage() {
       width_tag_id: item.width_tag_id ? String(item.width_tag_id) : "",
       um_tag_id: item.um_tag_id ? String(item.um_tag_id) : "",
       thickness_tag_id: item.thickness_tag_id ? String(item.thickness_tag_id) : "",
+      steel_type_tag_id: item.steel_type_tag_id ? String(item.steel_type_tag_id) : "",
       analysis_tags: (item.analysis_tags ?? []).map((at) => ({
         variable_type_id: at.variable_type_id,
         pi_tag_id: String(at.pi_tag_id),
+        filter_type: at.filter_type ?? "SELECTION",
       })),
     });
     setFormError(null);
@@ -239,6 +258,7 @@ export function SectionsPage() {
       const dynamicPayload = form.analysis_tags.map((at) => ({
         variable_type_id: at.variable_type_id,
         pi_tag_id: Number(at.pi_tag_id),
+        filter_type: at.filter_type,
       }));
 
       if (editing) {
@@ -254,6 +274,7 @@ export function SectionsPage() {
           width_tag_id: form.width_tag_id ? Number(form.width_tag_id) : null,
           um_tag_id: form.um_tag_id ? Number(form.um_tag_id) : null,
           thickness_tag_id: form.thickness_tag_id ? Number(form.thickness_tag_id) : null,
+          steel_type_tag_id: form.steel_type_tag_id ? Number(form.steel_type_tag_id) : null,
           analysis_tags: dynamicPayload,
         };
         await sectionsApi.update(editing.id, update);
@@ -271,6 +292,7 @@ export function SectionsPage() {
           width_tag_id: null,
           um_tag_id: null,
           thickness_tag_id: null,
+          steel_type_tag_id: null,
           analysis_tags: [],
         };
         await sectionsApi.create(payload);
@@ -320,7 +342,7 @@ export function SectionsPage() {
   const analysisTagOptions = useMemo(() => {
     const equipmentId = Number(form.equipment_id);
     const sectionId = editing?.id;
-    const selectedIds = new Set([form.width_tag_id, form.um_tag_id, form.thickness_tag_id].filter(Boolean));
+    const selectedIds = new Set([form.width_tag_id, form.um_tag_id, form.thickness_tag_id, form.steel_type_tag_id].filter(Boolean));
     const variableTypeById = new Map(variableTypes.map((type) => [type.id, type]));
     const tagMatchesKind = (tag: PiTag, kind: AnalysisTagKind) => {
       const variableType = variableTypeById.get(tag.variable_type_id);
@@ -337,8 +359,9 @@ export function SectionsPage() {
       width: tagOptionsFor("width"),
       um: tagOptionsFor("um"),
       thickness: tagOptionsFor("thickness"),
+      steelType: tagOptionsFor("steelType"),
     };
-  }, [editing?.id, form.equipment_id, form.thickness_tag_id, form.um_tag_id, form.width_tag_id, piTags, variableTypes]);
+  }, [editing?.id, form.equipment_id, form.thickness_tag_id, form.um_tag_id, form.width_tag_id, form.steel_type_tag_id, piTags, variableTypes]);
 
   const getDynamicTagOptions = (variableTypeId: number, currentSelectedTagId: string) => {
     const equipmentId = Number(form.equipment_id);
@@ -365,6 +388,7 @@ export function SectionsPage() {
         width_tag_id: validTagIds.has(prev.width_tag_id) ? prev.width_tag_id : "",
         um_tag_id: validTagIds.has(prev.um_tag_id) ? prev.um_tag_id : "",
         thickness_tag_id: validTagIds.has(prev.thickness_tag_id) ? prev.thickness_tag_id : "",
+        steel_type_tag_id: validTagIds.has(prev.steel_type_tag_id) ? prev.steel_type_tag_id : "",
         analysis_tags: prev.analysis_tags.map((at) => ({
           ...at,
           pi_tag_id: validTagIds.has(at.pi_tag_id) ? at.pi_tag_id : "",
@@ -497,6 +521,7 @@ export function SectionsPage() {
                       <div><strong>Largura:</strong> {tagLabel(item.width_tag_id)}</div>
                       <div><strong>UM:</strong> {tagLabel(item.um_tag_id)}</div>
                       <div><strong>Espessura:</strong> {tagLabel(item.thickness_tag_id)}</div>
+                      <div><strong>Tipo de aço:</strong> {tagLabel(item.steel_type_tag_id)}</div>
                     </td>
                     <td>
                       <ActiveBadge active={item.active} />
@@ -601,7 +626,7 @@ export function SectionsPage() {
             <div className="border rounded p-3 mb-3 bg-light">
               <h6 className="mb-1">Tags para análise da seção</h6>
               <Form.Text className="d-block text-muted mb-3">
-                Selecione as tags PI de largura, UM e espessura usadas nas análises desta seção.
+                Selecione as tags PI de largura, UM, espessura e tipo de aço usadas nas análises desta seção.
               </Form.Text>
               {!editing ? (
                 <div className="small text-muted mb-0">
@@ -648,6 +673,19 @@ export function SectionsPage() {
                     </Form.Select>
                   </Form.Group>
 
+                  <Form.Group className="mb-3" controlId="section-steel-type-tag">
+                    <Form.Label>Tag de tipo de aço</Form.Label>
+                    <Form.Select
+                      value={form.steel_type_tag_id}
+                      onChange={(event) => setForm((prev) => ({ ...prev, steel_type_tag_id: event.target.value }))}
+                    >
+                      <option value="">Não selecionar</option>
+                      {analysisTagOptions.steelType.map((tag) => (
+                        <option key={tag.id} value={tag.id}>{tag.display_name} — {tag.pi_tag_name}</option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+
                   {form.analysis_tags.map((item) => {
                     const varType = variableTypes.find((vt) => vt.id === item.variable_type_id);
                     const options = getDynamicTagOptions(item.variable_type_id, item.pi_tag_id);
@@ -658,7 +696,12 @@ export function SectionsPage() {
                         controlId={`section-analysis-tag-${item.variable_type_id}`}
                       >
                         <div className="d-flex justify-content-between align-items-center mb-1">
-                          <Form.Label className="mb-0">{getDynamicTagLabel(varType)}</Form.Label>
+                          <div className="d-flex align-items-center gap-2">
+                            <Form.Label className="mb-0">{getDynamicTagLabel(varType)}</Form.Label>
+                            <span className="badge bg-secondary" data-testid={`filter-type-badge-${item.variable_type_id}`}>
+                              {FILTER_TYPE_LABELS[item.filter_type] ?? item.filter_type}
+                            </span>
+                          </div>
                           <Button
                             variant="link"
                             size="sm"
@@ -689,6 +732,7 @@ export function SectionsPage() {
                       size="sm"
                       onClick={() => {
                         setSelectedVariableTypeId("");
+                        setSelectedFilterType("");
                         setShowAddTagModal(true);
                       }}
                     >
@@ -722,11 +766,18 @@ export function SectionsPage() {
           <Modal.Title>Adicionar tag de análise</Modal.Title>
         </Modal.Header>
         <Modal.Body>
-          <Form.Group controlId="modal-add-analysis-tag-type">
+          <Form.Group className="mb-3" controlId="modal-add-analysis-tag-type">
             <Form.Label>Tipo de variável</Form.Label>
             <Form.Select
               value={selectedVariableTypeId}
-              onChange={(e) => setSelectedVariableTypeId(e.target.value)}
+              onChange={(e) => {
+                const newId = e.target.value;
+                setSelectedVariableTypeId(newId);
+                const vt = variableTypes.find((v) => v.id === Number(newId));
+                if (vt && vt.filter_data_type !== "REAL" && selectedFilterType === "MIN_MAX") {
+                  setSelectedFilterType("");
+                }
+              }}
             >
               <option value="">Selecionar...</option>
               {variableTypes
@@ -741,6 +792,29 @@ export function SectionsPage() {
                 })}
             </Form.Select>
           </Form.Group>
+
+          <Form.Group controlId="modal-add-analysis-tag-filter-type">
+            <Form.Label>Tipo de filtro</Form.Label>
+            <Form.Select
+              value={selectedFilterType}
+              onChange={(e) => setSelectedFilterType(e.target.value as AnalysisFilterType)}
+            >
+              <option value="">Selecione...</option>
+              <option value="SELECTION">Seleção</option>
+              <option
+                value="MIN_MAX"
+                disabled={Boolean(selectedVariableType && selectedVariableType.filter_data_type !== "REAL")}
+              >
+                Valor mínimo / máximo
+              </option>
+              <option value="TEXT">Digitável</option>
+            </Form.Select>
+            {selectedVariableType && selectedVariableType.filter_data_type !== "REAL" && (
+              <Form.Text className="text-muted">
+                O tipo Valor mínimo / máximo só está disponível para variáveis numéricas.
+              </Form.Text>
+            )}
+          </Form.Group>
         </Modal.Body>
         <Modal.Footer>
           <Button variant="outline-secondary" onClick={() => setShowAddTagModal(false)}>
@@ -751,18 +825,27 @@ export function SectionsPage() {
             className="btn-piad-primary"
             disabled={
               !selectedVariableTypeId ||
+              !selectedFilterType ||
               form.analysis_tags.some((at) => at.variable_type_id === Number(selectedVariableTypeId))
             }
             onClick={() => {
               const vtId = Number(selectedVariableTypeId);
-              if (vtId && !form.analysis_tags.some((at) => at.variable_type_id === vtId)) {
+              if (vtId && selectedFilterType && !form.analysis_tags.some((at) => at.variable_type_id === vtId)) {
                 setForm((prev) => ({
                   ...prev,
-                  analysis_tags: [...prev.analysis_tags, { variable_type_id: vtId, pi_tag_id: "" }],
+                  analysis_tags: [
+                    ...prev.analysis_tags,
+                    {
+                      variable_type_id: vtId,
+                      pi_tag_id: "",
+                      filter_type: selectedFilterType as AnalysisFilterType,
+                    },
+                  ],
                 }));
               }
               setShowAddTagModal(false);
               setSelectedVariableTypeId("");
+              setSelectedFilterType("");
             }}
           >
             Adicionar

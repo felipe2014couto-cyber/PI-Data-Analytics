@@ -34,6 +34,7 @@ export const sectionFixture: Section = {
   width_tag_id: null,
   um_tag_id: null,
   thickness_tag_id: null,
+  steel_type_tag_id: null,
   analysis_tags: [],
   created_at: "2026-01-01T00:00:00",
   updated_at: "2026-01-01T00:00:00",
@@ -147,13 +148,20 @@ export const apiMock = {
   listVariableTypes: vi.fn(),
   createVariableType: vi.fn(),
   listPiTags: vi.fn(),
+  listSipSources: vi.fn().mockResolvedValue([]),
+  inspectSipColumns: vi.fn(),
+  createSipSource: vi.fn(),
+  updateSipSource: vi.fn(),
+  removeSipSource: vi.fn(),
   createPiTag: vi.fn(),
   updatePiTag: vi.fn(),
   validatePiTag: vi.fn(),
   validateBatchPiTags: vi.fn(),
+  getDistinctValues: vi.fn().mockResolvedValue([]),
   timeSeriesQuery: vi.fn(),
   timeSeriesCompare: vi.fn(),
   cancelQuery: vi.fn(),
+  databaseHealthGet: vi.fn(),
 };
 
 export function mockApiModule() {
@@ -194,6 +202,7 @@ export function mockApiModule() {
       update: vi.fn(),
       remove: vi.fn(),
     },
+    sipApi: { list: apiMock.listSipSources, inspectColumns: apiMock.inspectSipColumns, create: apiMock.createSipSource, update: apiMock.updateSipSource, remove: apiMock.removeSipSource },
     piTagsApi: {
       list: apiMock.listPiTags,
       get: vi.fn(),
@@ -202,11 +211,15 @@ export function mockApiModule() {
       remove: vi.fn(),
       validate: apiMock.validatePiTag,
       validateBatch: apiMock.validateBatchPiTags,
+      getDistinctValues: apiMock.getDistinctValues,
     },
     timeSeriesApi: {
       query: apiMock.timeSeriesQuery,
       compare: apiMock.timeSeriesCompare,
       cancelQuery: apiMock.cancelQuery,
+    },
+    databaseHealthApi: {
+      getHealth: apiMock.databaseHealthGet,
     },
   };
 }

@@ -37,6 +37,8 @@ def _job_response(job) -> HistoricalReloadJobResponse:
         lease_owner=job.lease_owner, lease_expires_at=job.lease_expires_at,
         heartbeat_at=job.heartbeat_at, next_attempt_at=job.next_attempt_at,
         created_at=job.created_at, updated_at=job.updated_at,
+        materialization_status=getattr(job, "materialization_status", "NOT_REQUESTED"),
+        materialization_error=getattr(job, "materialization_error", None),
     )
 
 

@@ -79,4 +79,27 @@ describe("QuerySummary recorded 10s", () => {
     expect(screen.getByTestId("metric-source")).toHaveTextContent("TimescaleDB");
     expect(screen.getByTestId("metric-strategy")).toHaveTextContent("TimescaleDB Direto");
   });
+
+  it("explicita cobertura parcial sem sugerir preenchimento artificial", () => {
+    render(
+      <QuerySummary
+        chart={null}
+        startLocal="2026-07-01"
+        endLocal="2026-07-02"
+        durationMs={25}
+        seriesCount={1}
+        partial
+        mode="recorded"
+        queryExecution={{
+          ...metadata,
+          status: "PARTIAL",
+          complete: false,
+          real_points: 42,
+          null_points: 3,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("partial-coverage-warning")).toHaveTextContent("mantidos como lacunas");
+    expect(screen.getByTestId("partial-coverage-warning")).toHaveTextContent("nenhum valor foi inventado");
+  });
 });
