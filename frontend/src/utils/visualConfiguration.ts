@@ -6,6 +6,7 @@ import type {
   VisualConfigurationSidebarState,
   VisualRulesState,
 } from "../types";
+import { DEFAULT_ANALYSIS_MODEL } from "../constants/analysisModels";
 
 export interface PersistablePageState {
   filters: VisualConfigurationSidebarState["filters"];
@@ -49,7 +50,7 @@ export function normalizeVisualConfigurationDocument(
   const analysisModel =
     savedModel === "unit" || savedModel === "cyclic" || savedModel === "oee" || savedModel === "downtime" || savedModel === "quality"
       ? savedModel
-      : (defaults.filters.analysisModel ?? "unit");
+      : (defaults.filters.analysisModel ?? DEFAULT_ANALYSIS_MODEL);
 
   return copy({
     filters: {

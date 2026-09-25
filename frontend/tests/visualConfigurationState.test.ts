@@ -105,14 +105,25 @@ describe("estado persistente da configuração visual", () => {
     expect(ids).toContain("rule-generic");
   });
 
-  it("abre configuração antiga sem o campo de modelo aplicando Base Unidade como compatibilidade", () => {
+  it("abre configuração antiga sem o campo de modelo usando o default Base Cíclica", () => {
     const defaults = state();
+    defaults.filters.analysisModel = "cyclic";
     const legacyDoc = buildVisualConfigurationDocument(defaults);
     // Remove o campo analysisModel simulando documento antigo
     delete (legacyDoc.sidebar_state?.filters as Record<string, unknown>).analysisModel;
     const restored = normalizeVisualConfigurationDocument(legacyDoc, defaults, "America/Sao_Paulo");
+    expect(restored.filters.analysisModel).toBe("cyclic");
+    expect(restored.filters.timeAnalysisRule).toBe("DEFAULT");
+  });
+
+  it("preserva Base Unidade quando esse modelo foi salvo explicitamente", () => {
+    const custom = state();
+    custom.filters.analysisModel = "unit";
+    custom.filters.timeAnalysisRule = "MEDIA";
+    const doc = buildVisualConfigurationDocument(custom);
+    const restored = normalizeVisualConfigurationDocument(doc, state(), "America/Sao_Paulo");
     expect(restored.filters.analysisModel).toBe("unit");
-    expect(restored.filters.timeAnalysisRule).toBeUndefined();
+    expect(restored.filters.timeAnalysisRule).toBe("MEDIA");
   });
 
   it("restaura configuração com Base Cíclica e regra Padrão preservadas", () => {
@@ -125,4 +136,3 @@ describe("estado persistente da configuração visual", () => {
     expect(restored.filters.timeAnalysisRule).toBe("DEFAULT");
   });
 });
-

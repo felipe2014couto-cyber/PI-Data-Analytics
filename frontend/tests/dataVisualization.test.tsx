@@ -1257,16 +1257,16 @@ describe("Data visualization page", () => {
     expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
   });
 
-  it("uses Base Unidade by default, exposes Base Cíclica enabled, other models disabled and maps Equipment to Máquina", async () => {
+  it("uses Base Cíclica by default and orders available and future models alphabetically", async () => {
     apiMock.listPiTags.mockResolvedValue(paginated([piTagFixture]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
     renderAt("/analises/visualizacao");
 
     const model = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
-    expect(model.value).toBe("unit");
+    expect(model.value).toBe("cyclic");
     expect(Array.from(model.options).map((option) => option.textContent)).toEqual([
-      "Base Unidade",
       "Base Cíclica",
+      "Base Unidade",
       "Base OEE — Disponível em uma fase futura.",
       "Base Paradas — Disponível em uma fase futura.",
       "Base Qualidade — Disponível em uma fase futura.",
@@ -1279,14 +1279,29 @@ describe("Data visualization page", () => {
     expect(screen.getByLabelText("Máquina")).toBe(screen.getByTestId("equipment-select"));
     expect(screen.getByLabelText(/Métrica de análise/i)).toBeInTheDocument();
 
-    // Em Base Unidade, regra de análise está visível e possui Média por padrão
+    // Base Cíclica é o estado inicial e oculta a regra de análise.
+    expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();
+
+    // Base Unidade mantém o comportamento anterior da regra de análise.
+    fireEvent.change(model, { target: { value: "unit" } });
+    expect(model.value).toBe("unit");
     const ruleSelect = screen.getByTestId("time-analysis-rule-select") as HTMLSelectElement;
     expect(ruleSelect.value).toBe("MEDIA");
+  });
 
-    // Selecionar Base Cíclica atualiza o select e oculta a regra de análise
-    fireEvent.change(model, { target: { value: "cyclic" } });
+  it("faz a primeira consulta com Base Cíclica sem consultar antes da interação", async () => {
+    apiMock.listPiTags.mockResolvedValue(paginated([{ ...piTagFixture, validation_status: "VALID" as const }]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.timeSeriesQuery.mockResolvedValue(TIME_SERIES);
+    renderAt("/analises/visualizacao");
+
+    const model = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
     expect(model.value).toBe("cyclic");
-    expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();
+    expect(apiMock.timeSeriesQuery).not.toHaveBeenCalled();
+
+    await submitFirstAvailableTag();
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1));
+    expect(model.value).toBe("cyclic");
   });
 
   it("validates manual line axes by unit and accepts different units on separate axes", async () => {
@@ -1512,6 +1527,8 @@ describe("Data visualization page", () => {
     apiMock.timeSeriesQuery.mockResolvedValue(TIME_SERIES);
     renderAt("/analises/visualizacao");
 
+    const model = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
+    fireEvent.change(model, { target: { value: "unit" } });
     const ruleSelect = (await screen.findByTestId("time-analysis-rule-select")) as HTMLSelectElement;
     expect(ruleSelect).toBeInTheDocument();
     expect(ruleSelect.value).toBe("MEDIA");
@@ -1537,9 +1554,12 @@ describe("Data visualization page", () => {
     renderAt("/analises/visualizacao");
 
     const modelSelect = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
-    expect(screen.getByTestId("time-analysis-rule-select")).toBeInTheDocument();
+    expect(modelSelect.value).toBe("cyclic");
+    expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();
 
-    // Seleciona Base Cíclica: regra de análise não deve aparecer
+    // Alterna para Base Unidade e retorna à Base Cíclica.
+    fireEvent.change(modelSelect, { target: { value: "unit" } });
+    expect(screen.getByTestId("time-analysis-rule-select")).toBeInTheDocument();
     fireEvent.change(modelSelect, { target: { value: "cyclic" } });
     expect(modelSelect.value).toBe("cyclic");
     expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();

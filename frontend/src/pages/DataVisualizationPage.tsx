@@ -30,6 +30,7 @@ import type {
   PiTagNormLimitsResponse,
 } from "../types";
 import { DataFiltersPanel } from "../components/DataFiltersPanel";
+import { DEFAULT_ANALYSIS_MODEL } from "../constants/analysisModels";
 import { SeriesAssignmentsPanel, type SeriesConfigurationTag } from "../components/SeriesAssignmentsPanel";
 import { QuerySummary } from "../components/QuerySummary";
 import { ComparisonPanel } from "../components/ComparisonPanel";
@@ -118,7 +119,7 @@ const INITIAL_FILTER_CONFIG: DataFilterConfiguration = {
 };
 
 const INITIAL_FILTERS: FiltersState = {
-  analysisModel: "unit",
+  analysisModel: DEFAULT_ANALYSIS_MODEL,
   equipmentId: null,
   sectionId: null,
   variableTypeId: null,
@@ -129,7 +130,7 @@ const INITIAL_FILTERS: FiltersState = {
   resolutionMode: "automatic",
   ignoreBadQuality: true,
   visualization: "automatic",
-  timeAnalysisRule: "MEDIA",
+  timeAnalysisRule: "DEFAULT",
   filtersEnabled: true,
   filterConfiguration: INITIAL_FILTER_CONFIG,
 };
@@ -1162,7 +1163,7 @@ export function DataVisualizationPage() {
     setFilters({
       ...INITIAL_FILTERS,
       ...restored.filters,
-      timeAnalysisRule: restored.filters.timeAnalysisRule ?? "DEFAULT",
+      timeAnalysisRule: restored.filters.timeAnalysisRule ?? (restored.filters.analysisModel === "cyclic" ? "DEFAULT" : "MEDIA"),
       filtersEnabled: restored.filters.filtersEnabled ?? true,
       filterConfiguration: cleanedFilterConfiguration,
     });

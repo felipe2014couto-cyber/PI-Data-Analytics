@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { TagMultiSelect, type TagOption } from "./TagMultiSelect";
 import { APPLICATION_TIMEZONE, TIME_PRESET_OPTIONS } from "../utils/timePeriod";
 import type { AnalysisModel, TimeAnalysisRule, TimePeriod, TimePreset, TimeSeriesMode, VisualizationType } from "../types";
+import { ANALYSIS_MODEL_OPTIONS } from "../constants/analysisModels";
 
 export type { TagOption };
 
@@ -260,13 +261,13 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
         <Form.Select value={analysisModel}
           onChange={(event) => onAnalysisModelChange(event.target.value as AnalysisModel)}
           data-testid="analysis-model">
-          <option value="unit">Base Unidade</option>
-          <option value="cyclic">Base Cíclica</option>
-          <option value="oee" disabled>Base OEE — Disponível em uma fase futura.</option>
-          <option value="downtime" disabled>Base Paradas — Disponível em uma fase futura.</option>
-          <option value="quality" disabled>Base Qualidade — Disponível em uma fase futura.</option>
+          {ANALYSIS_MODEL_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value} disabled={opt.disabled}>
+              {opt.label}
+            </option>
+          ))}
         </Form.Select>
-        <Form.Text className="text-muted">Modelos disponíveis: Base Unidade e Base Cíclica.</Form.Text>
+        <Form.Text className="text-muted">Modelos disponíveis: Base Cíclica e Base Unidade.</Form.Text>
       </Form.Group>
 
       {analysisModel === "unit" ? (
