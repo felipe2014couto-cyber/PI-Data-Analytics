@@ -701,7 +701,7 @@ describe("Data visualization page", () => {
     expect(await screen.findByTestId("filters-error")).toHaveTextContent("Selecione ao menos uma tag");
   });
 
-  it("includes the configured steel type tag as a hidden analysis context series", async () => {
+  it("does not include configured steel type tag unless an active filter depends on it", async () => {
     const productionTag = { ...piTagFixture, validation_status: "VALID" as const };
     const steelTypeTag: PiTag = {
       ...piTagFixture,
@@ -730,7 +730,7 @@ describe("Data visualization page", () => {
     fireEvent.click(within(tagList).getByTestId("tag-option-1"));
     fireEvent.click(await screen.findByTestId("filters-submit"));
     await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalled());
-    expect(capturedParams?.tag_ids).toEqual([1, 2]);
+    expect(capturedParams?.tag_ids).toEqual([1]);
   });
 
   it("does not expose legacy interpolation interval controls", async () => {

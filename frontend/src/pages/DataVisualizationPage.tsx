@@ -48,6 +48,7 @@ import { AdvancedFiltersPanel, isFixedAnalysisTag, stripRetiredNamedFilterRules 
 import { applyLineAssignments, buildChartDataGroups, resolveVisualization } from "../utils/chartData";
 import { downloadTimeSeriesCsv, buildCsvFilename, buildTimeSeriesCsv, downloadBlob } from "../utils/csv";
 import { applyDataFilters } from "../utils/dataFilters";
+import { resolveRequiredAnalysisTagIds } from "../utils/requiredAnalysisTags";
 import { groupSeriesByUnit } from "../utils/statistics";
 import { alignSeriesByTimestamp, groupLatestValuesByUnit } from "../utils/comparison";
 import { assignmentIdentity } from "../utils/seriesAssignments";
@@ -575,14 +576,39 @@ export function DataVisualizationPage() {
     ),
     [analysisContextTagIds, selectedTagIds],
   );
+  const requiredAnalysisTagIds = useMemo(() => {
+    return resolveRequiredAnalysisTagIds({
+      analysisTagIds,
+      extraAnalysisTags,
+      filtersEnabled: filters.filtersEnabled,
+      filterRules: filters.filterConfiguration.rules,
+      dynamicFilters,
+      sectionId: filters.sectionId,
+      seriesAssignments,
+      analysisContextTagIds,
+    });
+  }, [
+    analysisTagIds,
+    extraAnalysisTags,
+    filters.filtersEnabled,
+    filters.filterConfiguration.rules,
+    dynamicFilters,
+    filters.sectionId,
+    seriesAssignments,
+    analysisContextTagIds,
+  ]);
+
   const queryTagIds = useMemo(
     () => {
-      // Tags selecionadas pelo usuário + tags fixas auxiliares e tags de análise da seção
+      // Tags selecionadas pelo usuário + tags fixas auxiliares e tags de análise realmente necessárias
       // A UM NÃO entra automaticamente: só entra se o usuário selecioná-la explicitamente em selectedTagIds.
-      const set = new Set<number>([...selectedTagIds, ...analysisContextTagIds]);
+      const set = new Set<number>(selectedTagIds);
+      for (const id of requiredAnalysisTagIds) {
+        set.add(id);
+      }
       return Array.from(set);
     },
-    [analysisContextTagIds, selectedTagIds],
+    [selectedTagIds, requiredAnalysisTagIds],
   );
 
   const tagOptions: TagOption[] = useMemo(() => {
