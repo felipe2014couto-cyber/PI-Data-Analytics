@@ -1,7 +1,7 @@
 """PiTag API endpoints."""
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db_session, get_norm_limits_service, get_pi_service
@@ -18,9 +18,22 @@ from app.schemas.pi import (
 from app.schemas.pi_tag import PiTagCreate, PiTagResponse, PiTagUpdate
 from app.services.pi_norm_limits_service import PiNormLimitsService
 from app.services.pi_service import PiService
+from app.schemas.pi_tag_import import PiTagCsvImportResponse, PiTagCsvValidationResponse
+from app.services.pi_tag_import_service import csv_template, import_csv, validate_csv
 from app.services.pi_tag_service import PiTagService
 
 router = APIRouter(prefix="/pi-tags", tags=["pi-tags"])
+
+MAX_CSV_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+def _validate_and_read_csv(file: UploadFile) -> bytes:
+    if not (file.filename or "").lower().endswith((".csv", ".txt")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Arquivo inválido. Envie um arquivo .csv ou .txt.")
+    content = file.file.read(MAX_CSV_SIZE_BYTES + 1)
+    if len(content) > MAX_CSV_SIZE_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="O arquivo excede o tamanho maximo permitido de 5 MB.")
+    return content
 
 
 @router.get("", summary="Listar tags PI")
@@ -54,6 +67,29 @@ def list_pi_tags(
         page_size=pagination["page_size"],
         total=total,
     )
+
+
+@router.get("/csv-template", summary="Baixar modelo CSV de tags PI")
+def download_csv_template():
+    return Response(
+        content=csv_template(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="pi_tags_template.csv"'},
+    )
+
+
+@router.post("/import-csv/validate", response_model=PiTagCsvValidationResponse, summary="Validar CSV de tags PI")
+async def validate_pi_tag_csv(file: UploadFile, db: Session = Depends(get_db_session)) -> PiTagCsvValidationResponse:
+    result, _ = validate_csv(db, _validate_and_read_csv(file))
+    return result
+
+
+@router.post("/import-csv", response_model=PiTagCsvImportResponse, summary="Importar tags PI de CSV")
+async def import_pi_tag_csv(file: UploadFile, db: Session = Depends(get_db_session)) -> PiTagCsvImportResponse:
+    try:
+        return import_csv(db, _validate_and_read_csv(file))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.get("/{pi_tag_id}", summary="Obter tag PI")

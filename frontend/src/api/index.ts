@@ -176,7 +176,31 @@ export const classificationTagsApi = {
   },
 };
 
+export interface PiTagCsvRowError { row: number; column?: string | null; value?: string | null; message: string; }
+export interface PiTagCsvRowPreview { row: number; values: Record<string, string | null>; valid: boolean; }
+export interface PiTagCsvValidationResponse { valid: boolean; total_rows: number; valid_count: number; invalid_count: number; ignored_example_rows: number; detected_encoding?: string | null; detected_delimiter?: string | null; had_bom?: boolean | null; errors: PiTagCsvRowError[]; preview: PiTagCsvRowPreview[]; }
+export interface PiTagCsvImportResponse { imported_count: number; message: string; }
+
+async function uploadPiTagCsv(path: string, file: File) {
+  const form = new FormData(); form.append("file", file);
+  const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pads_csrf="))?.split("=").slice(1).join("=");
+  const response = await fetch(httpClient.buildUrl(path), { method: "POST", body: form, credentials: "include", headers: csrf ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {} });
+  const payload = await response.json();
+  if (!response.ok) {
+    const detail = payload?.error?.message ?? payload?.detail ?? "Erro ao processar arquivo CSV.";
+    throw new Error(typeof detail === "string" ? detail : "Erro ao processar arquivo CSV.");
+  }
+  return payload;
+}
+
 export const piTagsApi = {
+  async downloadCsvTemplate() {
+    const response = await fetch(httpClient.buildUrl("/pi-tags/csv-template"), { credentials: "include" });
+    if (!response.ok) throw new Error("Nao foi possivel baixar o modelo CSV.");
+    return response.blob();
+  },
+  validateCsv(file: File) { return uploadPiTagCsv("/pi-tags/import-csv/validate", file) as Promise<PiTagCsvValidationResponse>; },
+  importCsv(file: File) { return uploadPiTagCsv("/pi-tags/import-csv", file) as Promise<PiTagCsvImportResponse>; },
   list(params?: ListParams) {
     return httpClient.get<PaginatedResponse<PiTag>>("/pi-tags", buildListQuery(params));
   },
@@ -357,4 +381,3 @@ export const databaseHealthApi = {
     return httpClient.get<DatabaseHealthResponse>(`/database/health${refresh ? "?refresh=true" : ""}`);
   },
 };
-
