@@ -442,18 +442,23 @@ export interface SeriesVisualConfiguration {
 export interface PiTagNormLimitPoint {
   timestamp: string;
   value: number | null;
+  good?: boolean;
+  questionable?: boolean;
+  substituted?: boolean;
 }
 
 export interface PiTagNormLimitSeries {
   tag_name: string | null;
   points: PiTagNormLimitPoint[];
+  coverage_gaps?: Array<[string, string]>;
+  error?: string | null;
 }
 
 export interface PiTagNormLimitsResponse {
   source_tag_id: number;
   start_time: string;
   end_time: string;
-  mode: "recorded" | "interpolated";
+  mode: "recorded";
   interval: string | null;
   lower: PiTagNormLimitSeries;
   upper: PiTagNormLimitSeries;

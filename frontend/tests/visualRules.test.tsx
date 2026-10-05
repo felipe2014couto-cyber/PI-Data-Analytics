@@ -364,10 +364,39 @@ describe("integração ECharts sem alterar dados", () => {
     expect(optUpper.legend.data).toContain("Limite superior — Escova 01");
   });
 
-  it("limite constante unico e projetado ao longo de todo o intervalo de tempo", () => {
+  it.each(["MEDIA", "MIN", "MAXIMO"] as const)("mantém limites históricos visíveis em agregado físico %s", (rule) => {
+    const physicalSeries = { ...chartSeries("A-7"), unitAggregation: {
+      rule, segments: [{ start: 0, end: 1000, um: "UM-1", value: 10, rawSampleCount: 1, filteredSampleCount: 0, sampleCount: 1 }],
+    } };
+    const limits: NormLimitSeries[] = [{
+      seriesInstanceId: "A-7", tagName: "PV", yAxisIndex: 0, lowerTagName: "LOW", upperTagName: null,
+      lowerColor: "#00f", upperColor: "#f00", lineStyle: "dashed", width: 2,
+      lowerPoints: [[100, 5], [900, 5]], upperPoints: [],
+    }];
+    const option = buildTimeSeriesChartOption(props(chart([physicalSeries]), undefined, limits)) as any;
+    expect(option.series.find((series: any) => series.id === "norm-lower:A-7")?.data).toEqual([[100, 5], [900, 5]]);
+  });
+
+  it("mantém limite histórico visível em Base Cíclica e o oculta do eixo percentual OOC", () => {
+    const limits: NormLimitSeries[] = [{
+      seriesInstanceId: "A-7", tagName: "PV", yAxisIndex: 0,
+      lowerColor: "#00f", upperColor: "#f00", lineStyle: "dashed", width: 2,
+      lowerPoints: [[100, 5], [900, 5]], upperPoints: [],
+    }];
+    const cyclic = buildTimeSeriesChartOption(props(chart(), undefined, limits)) as any;
+    expect(cyclic.series.find((series: any) => series.id === "norm-lower:A-7")).toBeDefined();
+
+    const ooc = buildTimeSeriesChartOption({
+      ...props(chart(), undefined, limits),
+      hidePhysicalNormLimits: true,
+    }) as any;
+    expect(ooc.series.find((series: any) => series.id === "norm-lower:A-7")).toBeUndefined();
+    expect(ooc.legend.data).not.toContain("Limite inferior — PV");
+  });
+
+  it("mantém o limite desde seu primeiro evento Good, sem projetá-lo antes do histórico", () => {
     const startIso = "2026-01-01T00:00:00.000Z";
     const endIso = "2026-01-01T12:00:00.000Z";
-    const startMs = Date.parse(startIso);
     const endMs = Date.parse(endIso);
 
     const built = buildNormLimitSeries({
@@ -388,11 +417,11 @@ describe("integração ECharts sem alterar dados", () => {
     });
 
     expect(built.lowerPoints).toEqual([
-      [startMs, 40],
+      [Date.parse("2026-01-01T06:00:00.000Z"), 40],
       [endMs, 40],
     ]);
     expect(built.upperPoints).toEqual([
-      [startMs, 120],
+      [Date.parse("2026-01-01T06:00:00.000Z"), 120],
       [endMs, 120],
     ]);
   });
@@ -737,7 +766,7 @@ describe("painel local", () => {
     expect(screen.queryByTestId("add-norm-limit")).toBeNull();
     expect(screen.getByTestId("remove-norm-limit")).toBeInTheDocument();
   });
-  it("desabilita o botão de norma quando os limites não estão cadastrados", () => {
+  it("permite habilitar apenas um limite histórico cadastrado", () => {
     render(
       <VisualRulesPanel
         state={{ enabled: true, selectedSeriesInstanceId: "A", bySeries: {} }}
@@ -747,8 +776,8 @@ describe("painel local", () => {
         selectedPiTag={{ id: 1, lowerLimitTag: "L", upperLimitTag: null }}
       />,
     );
-    expect(screen.getByTestId("add-norm-limit")).toBeDisabled();
-    expect(screen.getByTestId("norm-limit-message")).toHaveTextContent("nao possui tags de limite cadastradas");
+    expect(screen.getByTestId("add-norm-limit")).toBeEnabled();
+    expect(screen.queryByTestId("norm-limit-message")).toBeNull();
   });
   it("não permite norma quando a série não tem tag PI correspondente", () => {
     render(

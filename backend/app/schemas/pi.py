@@ -340,6 +340,9 @@ class TimeSeriesComparison(BaseModel):
 class PiTagNormLimitPoint(BaseModel):
     timestamp: datetime
     value: Optional[float] = None
+    good: bool = True
+    questionable: bool = False
+    substituted: bool = False
 
     @field_validator("timestamp")
     @classmethod
@@ -354,6 +357,8 @@ class PiTagNormLimitPoint(BaseModel):
 class PiTagNormLimitSeries(BaseModel):
     tag_name: Optional[str] = None
     points: List[PiTagNormLimitPoint] = Field(default_factory=list)
+    coverage_gaps: List[tuple[datetime, datetime]] = Field(default_factory=list)
+    error: Optional[str] = None
 
 
 class PiTagNormLimitsResponse(BaseModel):

@@ -1620,13 +1620,14 @@ export function DataVisualizationPage() {
   }, [visualRules.enabled, visualRules.bySeries]);
 
   // Conjunto final de séries com limites de norma ativos. Reflete estritamente
-  // o que o usuário habilitou manualmente no painel visual (inclusive no modo OOC).
-  const effectiveNormEnabledKey = normEnabledSeriesKey;
+  // o que o usuário habilitou manualmente no painel visual. OOC por UM usa
+  // limites históricos no cálculo, sem linhas manuais no eixo percentual.
+  const effectiveNormEnabledKey = filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC" ? "" : normEnabledSeriesKey;
 
   const effectiveNormEnabledSeries = useMemo(() => {
-    if (!effectiveNormEnabledKey) return new Set<string>();
+    if ((filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC") || !effectiveNormEnabledKey) return new Set<string>();
     return new Set<string>(effectiveNormEnabledKey.split(","));
-  }, [effectiveNormEnabledKey]);
+  }, [effectiveNormEnabledKey, filters.analysisModel, filters.timeAnalysisRule]);
 
   // Constrói a série da UM a partir do chartTimeSeries original somente quando
   // a tag da UM estiver explicitamente marcada/selecionada pelo usuário em selectedTagIds.
@@ -1730,7 +1731,10 @@ export function DataVisualizationPage() {
           cacheKey,
         };
       })
-      .filter((item) => item.tagId > 0);
+      .filter((item) => {
+        const tag = seriesToPiTag.get(item.instanceId);
+        return item.tagId > 0 && Boolean(tag?.lower_limit_tag?.trim() || tag?.upper_limit_tag?.trim());
+      });
 
     const key =
       `${filters.mode}|${interval ?? ""}|${startTimeIso}|${endTimeIso}|` +
@@ -1889,6 +1893,8 @@ export function DataVisualizationPage() {
           upperColor: configNorm.upperColor,
           lowerPoints: response.lower.points,
           upperPoints: response.upper.points,
+          lowerCoverageGaps: response.lower.coverage_gaps,
+          upperCoverageGaps: response.upper.coverage_gaps,
           startTimeIso: chartStart.toISOString(),
           endTimeIso: chartEnd.toISOString(),
         }),
@@ -2338,6 +2344,7 @@ export function DataVisualizationPage() {
                         visualRules={visualRules}
                         limitSeries={resolvedLimitSeries}
                         normLimitSeries={displayedNormLimitSeries}
+                        hidePhysicalNormLimits={filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC"}
                         umSeries={umChartSeries}
                         syncGroup={TIME_CHART_SYNC_GROUP}
                         enableZoomKeyboardUndo

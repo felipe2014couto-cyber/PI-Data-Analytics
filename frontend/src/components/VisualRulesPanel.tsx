@@ -98,16 +98,16 @@ export function VisualRulesPanel({
   const normRuntime = selected ? normLimits?.[selected.seriesInstanceId] : undefined;
   const hasLower = !!selectedPiTag?.lowerLimitTag;
   const hasUpper = !!selectedPiTag?.upperLimitTag;
-  const bothTagsSet = hasLower && hasUpper;
+  const hasAnyTag = hasLower || hasUpper;
   const hasPiTag = !!selectedPiTag?.id;
   const normEnabled = config?.normLimit?.enabled ?? false;
-  const canAddNorm = !!selected?.numeric && bothTagsSet && !normEnabled && !!(onAddNormLimit);
+  const canAddNorm = !!selected?.numeric && hasAnyTag && !normEnabled && !!(onAddNormLimit);
   const normMessage = !hasPiTag
     ? "Selecione uma serie com tag PI correspondente."
     : !selected?.numeric
       ? "Limites de norma estao disponiveis apenas para series numericas."
-      : !bothTagsSet
-        ? "A serie selecionada nao possui tags de limite cadastradas."
+      : !hasAnyTag
+        ? "A série selecionada não possui tags de limite cadastradas."
         : null;
 
   return (

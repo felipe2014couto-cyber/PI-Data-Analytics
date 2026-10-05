@@ -78,6 +78,7 @@ export interface TimeSeriesChartProps {
   visualRules?: VisualRulesState;
   limitSeries?: ChartSeries[];
   normLimitSeries?: NormLimitSeries[];
+  hidePhysicalNormLimits?: boolean;
   umSeries?: UmChartSeries | null;
   pinnedCursorTs?: number | null;
   onClearCursor?: () => void;
@@ -506,6 +507,7 @@ function normLimitDisplayName(entry: NormLimitSeries, kind: "lower" | "upper"): 
 }
 
 export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): EChartsOption {
+  const visibleNormLimits = props.hidePhysicalNormLimits ? [] : props.normLimitSeries ?? [];
   const { chart, equipment, start, end, mode } = props;
   if (chart.valueKind === "textual" || chart.valueKind === "categorical") {
     return buildStateOption(props);
@@ -568,7 +570,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
     }
   }
 
-  const tooltipState = buildTooltipState(chart, props);
+  const tooltipState = buildTooltipState(chart, props, visibleNormLimits);
   const baseShowSymbol = chart.series.every((series) => series.points.length <= SAMPLE_THRESHOLD);
   const seriesOption = chart.series.map((series, idx) =>
     buildSeriesOption(
@@ -580,7 +582,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
     ),
   ) as EChartsOption["series"];
   const limitSeriesOption = (props.limitSeries ?? []).map((series) => buildLimitSeriesOption(series)) as EChartsOption["series"];
-  const normLimitSeriesOption = (props.normLimitSeries ?? []).flatMap((entry, idx) => {
+  const normLimitSeriesOption = visibleNormLimits.flatMap((entry, idx) => {
     const targetMainSeries = chart.series.find(
       (s) => (s.seriesInstanceId ?? `tag:${s.tagId}`) === entry.seriesInstanceId,
     );
@@ -599,7 +601,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
     : [];
 
   const normLimitLegend: string[] = [];
-  for (const entry of props.normLimitSeries ?? []) {
+  for (const entry of visibleNormLimits) {
     if (entry.lowerPoints.length > 0) {
       normLimitLegend.push(normLimitDisplayName(entry, "lower"));
     }
@@ -701,6 +703,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
 function buildTooltipState(
   chart: ChartBuildResult,
   props: TimeSeriesChartProps,
+  visibleNormLimits: NormLimitSeries[] = props.normLimitSeries ?? [],
 ): TooltipSeriesState {
   const main: TooltipSeries[] = chart.series.map((series) => ({
     seriesId: series.seriesInstanceId ?? `tag:${series.tagId}`,
@@ -729,7 +732,7 @@ function buildTooltipState(
     });
   }
 
-  for (const entry of props.normLimitSeries ?? []) {
+  for (const entry of visibleNormLimits) {
     const mainTarget = chart.series.find(
       (s) => (s.seriesInstanceId ?? `tag:${s.tagId}`) === entry.seriesInstanceId,
     );
@@ -898,6 +901,7 @@ function buildNormLimitSeriesOption(
     symbol: "none",
     sampling: undefined,
     connectNulls: false,
+    step: "end" as const,
     lineStyle: { color, width: entry.width, type: entry.lineStyle },
     itemStyle: { color },
     emphasis: { focus: "none" as const },
