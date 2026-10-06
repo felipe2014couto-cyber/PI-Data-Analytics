@@ -18,6 +18,17 @@ interface ZoomRange {
   end: number;
 }
 
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  ) return true;
+  return target.closest('[contenteditable="true"], [contenteditable=""]') !== null;
+}
+
 
 export type ZoomQueryOutcome = "applied" | "rejected" | "superseded";
 export type ZoomChangeReason = "selection" | "undo";
@@ -1579,19 +1590,21 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       if (!(props.enableZoomKeyboardUndo ?? true)) return;
       if (event.repeat) return;
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") return;
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      ) return;
+      // Prefer the event target, but also inspect the active element because
+      // synthetic/window-routed keyboard events may not retain the field target.
+      if (isEditableKeyboardTarget(event.target) || isEditableKeyboardTarget(document.activeElement)) return;
+      // Outside an editor, this shortcut belongs to the chart even when its
+      // zoom history is empty; suppress browser/page undo in either case.
+      event.preventDefault();
       const previous = zoomHistoryRef.current.pop();
       if (!previous) return;
-      event.preventDefault();
       const current = currentZoomRef.current;
       dispatchZoom(previous);
+      // Undo restores the viewport already held by the chart. It must not
+      // trigger a new historical query from the page. The callback is only
+      // used to cancel an in-flight refinement and synchronize the viewport.
       requestVisibleWindow(previous, current, "undo");
+      setRenderTick((t) => t + 1);
     };
     const forceUpdate = () => setRenderTick((t) => t + 1);
 

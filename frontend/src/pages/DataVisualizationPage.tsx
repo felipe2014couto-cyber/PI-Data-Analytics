@@ -1447,6 +1447,7 @@ export function DataVisualizationPage() {
   const handleVisibleWindowChange = useCallback((
     visibleStart: Date,
     visibleEnd: Date,
+    reason: "selection" | "undo",
   ): Promise<ZoomQueryOutcome> => {
     const initial = initialQueryRef.current;
     if (!initial?.timeSeries || !initial.resolvedPeriod) {
@@ -1457,6 +1458,20 @@ export function DataVisualizationPage() {
     const effectiveEnd = visibleEnd;
     const key = zoomCacheKey(effectiveStart, effectiveEnd);
     const activeResult = activeQueryRef.current.timeSeries;
+
+    if (reason === "undo") {
+      // The chart already has the data for its previous viewport. Invalidate
+      // any pending detail request, synchronize only the viewport, and never
+      // start another /api/time-series request for an undo action.
+      zoomAbortRef.current?.abort();
+      zoomRequestSeqRef.current += 1;
+      zoomInFlightRef.current = null;
+      setZoomQuery(INITIAL_ZOOM_QUERY);
+      setZoomedRange({ start: effectiveStart, end: effectiveEnd });
+      const cached = zoomCacheRef.current.get(key);
+      if (cached) setQuery(cached);
+      return Promise.resolve("applied");
+    }
 
     if (initial.unitAnalysis) {
       // A visual crop preserves the backend statistic for the entire UM.

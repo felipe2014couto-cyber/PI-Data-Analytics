@@ -87,19 +87,17 @@ function fireDataZoom(startPct: number, endPct: number) {
   }
 }
 
-function pressCtrlZ(options: { repeat?: boolean; target?: EventTarget | null } = {}) {
+function pressCtrlZ(options: { repeat?: boolean; target?: HTMLElement; metaKey?: boolean } = {}) {
   const event = new KeyboardEvent("keydown", {
     key: "z",
-    ctrlKey: true,
+    ctrlKey: !options.metaKey,
+    metaKey: Boolean(options.metaKey),
     bubbles: true,
     cancelable: true,
   });
   Object.defineProperty(event, "repeat", { value: Boolean(options.repeat) });
-  if (options.target !== undefined) {
-    Object.defineProperty(event, "target", { value: options.target });
-  }
   act(() => {
-    window.dispatchEvent(event);
+    (options.target ?? window).dispatchEvent(event);
   });
   return event;
 }
@@ -168,7 +166,8 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     fireDataZoom(10, 20);
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(3);
 
-    pressCtrlZ();
+    const firstUndo = pressCtrlZ();
+    expect(firstUndo.defaultPrevented).toBe(true);
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(4);
     expect(dispatchAction).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 30 }),
@@ -192,17 +191,17 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     unmount();
   });
 
-  it("cada undo aciona exatamente uma reconsulta da janela restaurada", () => {
+  it("cada undo notifica a página para cancelar refinamento sem solicitar dados", () => {
     renderChart();
     fireDataZoom(0, 50);
     fireDataZoom(0, 30);
     const before = onVisibleWindowChange.mock.calls.length;
     pressCtrlZ();
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(before + 1);
-    const [visibleStart, visibleEnd, reason] = onVisibleWindowChange.mock.calls.at(-1);
-    expect(reason).toBe("undo");
-    expect(visibleStart.getTime()).toBe(START_TS);
-    expect(visibleEnd.getTime()).toBe(START_TS + (DURATION * 50) / 100);
+    expect(onVisibleWindowChange.mock.calls.at(-1)?.[2]).toBe("undo");
+    expect(dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 0, end: 50 }),
+    );
   });
 
   it("event.repeat não desfaz níveis adicionais", () => {
@@ -214,23 +213,65 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(2);
   });
 
-  it("não captura Ctrl+Z em campos editáveis", () => {
+  it.each([
+    ["input", () => document.createElement("input")],
+    ["textarea", () => document.createElement("textarea")],
+    ["select", () => document.createElement("select")],
+    ["contenteditable", () => {
+      const element = document.createElement("div");
+      element.setAttribute("contenteditable", "true");
+      return element;
+    }],
+  ])("preserva Ctrl+Z nativo com foco em %s", (_name, makeElement) => {
+    renderChart();
+    fireDataZoom(0, 50);
+    const field = makeElement();
+    document.body.appendChild(field);
+    field.focus();
+    const event = pressCtrlZ({ target: field });
+    expect(dispatchAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+    );
+    expect(event.defaultPrevented).toBe(false);
+    field.remove();
+  });
+
+  it("após perder foco do campo, Ctrl+Z desfaz o zoom", () => {
     renderChart();
     fireDataZoom(0, 50);
     const input = document.createElement("input");
     document.body.appendChild(input);
-    const event = pressCtrlZ({ target: input });
-    expect(onVisibleWindowChange).toHaveBeenCalledTimes(1);
-    expect(event.defaultPrevented).toBe(false);
+    input.focus();
+    pressCtrlZ({ target: input });
+    expect(dispatchAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+    );
+    input.blur();
+    const event = pressCtrlZ();
+    expect(event.defaultPrevented).toBe(true);
+    expect(dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+    );
+    expect(onVisibleWindowChange.mock.calls.at(-1)?.[2]).toBe("undo");
     input.remove();
   });
 
-  it("sem histórico não altera estado nem chama preventDefault", () => {
+  it("sem histórico bloqueia undo da página/navegador sem alterar o gráfico", () => {
     renderChart();
     const event = pressCtrlZ();
     expect(onVisibleWindowChange).not.toHaveBeenCalled();
     expect(dispatchAction).not.toHaveBeenCalled();
-    expect(event.defaultPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("também encaminha Cmd+Z ao histórico do gráfico", () => {
+    renderChart();
+    fireDataZoom(0, 50);
+    const event = pressCtrlZ({ metaKey: true });
+    expect(event.defaultPrevented).toBe(true);
+    expect(dispatchAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+    );
   });
 
   it("o próprio undo não registra nova entrada no histórico (eco de dataZoom é suprimido)", () => {
@@ -244,7 +285,7 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     // Após o eco, o histórico permanece vazio: novo Ctrl+Z é no-op.
     const event = pressCtrlZ();
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(2);
-    expect(event.defaultPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it("listener de teclado é removido no unmount", () => {
