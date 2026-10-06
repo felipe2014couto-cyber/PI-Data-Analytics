@@ -54,7 +54,7 @@ def test_cep_accepts_recorded_coverage_without_legacy_interpolated_coverage(db_s
     assert exc.value.details["affected_tags"][0]["mode"] == "recorded"
 
 
-def test_provider_interpolates_recorded_values_and_preserves_quality(db_session):
+def test_provider_returns_only_recorded_events_and_preserves_quality(db_session):
     equipment = Equipment(code="SAMPLE", name="Sample")
     kind = VariableType(code="SAMPLE", name="Sample")
     db_session.add_all([equipment, kind])
@@ -79,8 +79,8 @@ def test_provider_interpolates_recorded_values_and_preserves_quality(db_session)
     provider = TimescaleCepProvider(db_session, [MaterializedTag(
         id=tag.id, pi_server=tag.pi_server, pi_tag_name=tag.pi_tag_name, pi_web_id=tag.pi_web_id,
     )])
-    result = asyncio.get_event_loop().run_until_complete(provider.get_interpolated_values(
-        "SAMPLE.WEB", start, start + timedelta(minutes=15), "5m",
+    result = asyncio.get_event_loop().run_until_complete(provider.get_recorded_values(
+        "SAMPLE.WEB", start, start + timedelta(minutes=15),
     ))
-    assert [point.value for point in result.values] == [10, 15, 20]
-    assert [point.questionable for point in result.values] == [False, True, True]
+    assert [point.value for point in result.values] == [10, 20]
+    assert [point.questionable for point in result.values] == [False, True]

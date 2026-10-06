@@ -4,7 +4,7 @@ from typing import List, Optional, Sequence, Tuple
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.pi_tag import PiTag, PiTagKind, PiTagValidationStatus
+from app.models.pi_tag import PiTag, PiTagDataType, PiTagKind, PiTagValidationStatus
 
 
 class PiTagRepository:
@@ -34,6 +34,7 @@ class PiTagRepository:
         equipment_id: Optional[int] = None,
         section_id: Optional[int] = None,
         variable_type_id: Optional[int] = None,
+        data_type: Optional[PiTagDataType] = None,
         active: Optional[bool] = None,
         validation_status: Optional[PiTagValidationStatus] = None,
         tag_kind: Optional[PiTagKind] = PiTagKind.PRIMARY,
@@ -63,6 +64,8 @@ class PiTagRepository:
             conditions.append(PiTag.active == active)
         if validation_status is not None:
             conditions.append(PiTag.validation_status == validation_status)
+        if data_type is not None:
+            conditions.append(PiTag.data_type == data_type)
         if tag_kind is not None:
             conditions.append(PiTag.tag_kind == tag_kind)
 

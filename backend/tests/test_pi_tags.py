@@ -1,5 +1,6 @@
 """PiTag endpoint tests."""
 from fastapi.testclient import TestClient
+from app.models.pi_tag import PiTag
 
 
 def _setup_dependencies(client: TestClient) -> dict:
@@ -18,7 +19,7 @@ def _setup_dependencies(client: TestClient) -> dict:
     return {"equipment": equipment, "section": section, "variable_type": variable_type}
 
 
-def test_create_pi_tag_starts_pending_without_webid(client: TestClient) -> None:
+def test_create_pi_tag_starts_pending_without_webid_and_uses_recorded(client: TestClient, db_session) -> None:
     deps = _setup_dependencies(client)
     response = client.post(
         "/api/pi-tags",
@@ -38,6 +39,9 @@ def test_create_pi_tag_starts_pending_without_webid(client: TestClient) -> None:
     assert body["validation_status"] == "PENDING"
     assert body["pi_web_id"] is None
     assert body["validated_at"] is None
+    created = db_session.get(PiTag, body["id"])
+    assert created is not None
+    assert not hasattr(created, "sampling_mode")
 
 
 def test_pi_tag_can_be_assigned_to_entire_equipment(client: TestClient) -> None:

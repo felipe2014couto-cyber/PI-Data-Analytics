@@ -74,7 +74,7 @@ class PiTagValidationBatchResponse(BaseModel):
 # ---------------------------------------------------------------------- time series
 
 
-TimeSeriesMode = Literal["recorded", "interpolated"]
+TimeSeriesMode = Literal["recorded"]
 ComparisonType = Literal["periods", "equipments", "categories"]
 
 
@@ -92,6 +92,8 @@ class TimeSeriesPoint(BaseModel):
     plot_last_ts: Optional[datetime] = None
     plot_sample_count: Optional[int] = None
     is_gapfilled: bool = False
+    is_render_sentinel: bool = False
+    is_boundary_seed: bool = False
     has_previous_value: Optional[bool] = None
     good: bool = True
     questionable: bool = False
@@ -110,6 +112,26 @@ class TimeSeriesPoint(BaseModel):
         return value.astimezone(timezone.utc)
 
 
+def determine_series_data_type(tag: Any) -> Literal["REAL", "DIGITAL", "STRING"]:
+    var_type = getattr(tag, "variable_type", None)
+    if var_type is not None:
+        fdt = getattr(var_type, "filter_data_type", None)
+        if fdt is not None:
+            val = fdt.value if hasattr(fdt, "value") else str(fdt)
+            if val in {"REAL", "DIGITAL", "STRING"}:
+                return val  # type: ignore[return-value]
+    tag_dt = getattr(tag, "data_type", None)
+    if tag_dt is not None:
+        val = tag_dt.value if hasattr(tag_dt, "value") else str(tag_dt)
+        if val == "NON_NUMERIC":
+            return "STRING"
+    return "REAL"
+
+
+def is_string_tag(tag: Any) -> bool:
+    return determine_series_data_type(tag) == "STRING"
+
+
 class TimeSeriesSeries(BaseModel):
     tag_id: int
     tag_name: str
@@ -118,6 +140,9 @@ class TimeSeriesSeries(BaseModel):
     section: Optional[str] = None
     variable_type: Optional[str] = None
     unit: Optional[str] = None
+    data_type: Optional[Literal["REAL", "DIGITAL", "STRING"]] = None
+    # PI Point Step is metadata, not inferable from the value series.
+    step: Optional[bool] = None
     points: List[TimeSeriesPoint]
     source_point_count: Optional[int] = None
     returned_point_count: Optional[int] = None

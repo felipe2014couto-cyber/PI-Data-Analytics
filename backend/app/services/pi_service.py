@@ -41,6 +41,7 @@ from app.schemas.pi import (
     TimeSeriesPoint,
     TimeSeriesRequest,
     TimeSeriesSeries,
+    determine_series_data_type,
 )
 
 logger = logging.getLogger("pi_analytics_data.service.pi")
@@ -254,11 +255,8 @@ class PiService:
                     "end_time": request.end_time.isoformat(),
                 },
             )
-        if request.mode == "interpolated" and not request.interval:
-            raise TimeRangeInvalidError(
-                "O intervalo e obrigatorio no modo interpolated.",
-                details={"mode": request.mode},
-            )
+        if request.mode != "recorded":
+            raise TimeRangeInvalidError("O histórico temporal aceita somente RECORDED.")
 
     def _load_tags(self, tag_ids: List[int]) -> List[PiTag]:
         if not tag_ids:
@@ -358,20 +356,10 @@ class PiService:
             )
 
         try:
-            if request.mode == "recorded":
-                response = await provider.get_recorded_values(
-                    tag.pi_web_id, request.start_time, request.end_time, max_count=max_count
-                )
-                values = response.values
-            else:
-                response = await provider.get_interpolated_values(
-                    tag.pi_web_id,
-                    request.start_time,
-                    request.end_time,
-                    request.interval or "1m",
-                    max_count=max_count,
-                )
-                values = response.values
+            response = await provider.get_recorded_values(
+                tag.pi_web_id, request.start_time, request.end_time, max_count=max_count
+            )
+            values = response.values
         except PiTagNotFoundError:
             # Try re-resolving once with the current name.
             tag.pi_web_id = None
@@ -382,21 +370,12 @@ class PiService:
                 self.db.rollback()
             if point is None or not tag.pi_web_id:
                 raise
-            if request.mode == "recorded":
-                response = await provider.get_recorded_values(
-                    tag.pi_web_id,
-                    request.start_time,
-                    request.end_time,
-                    max_count=max_count,
-                )
-            else:
-                response = await provider.get_interpolated_values(
-                    tag.pi_web_id,
-                    request.start_time,
-                    request.end_time,
-                    request.interval or "1m",
-                    max_count=max_count,
-                )
+            response = await provider.get_recorded_values(
+                tag.pi_web_id,
+                request.start_time,
+                request.end_time,
+                max_count=max_count,
+            )
             values = response.values
 
         return self._build_series(tag, request, values)
@@ -407,10 +386,14 @@ class PiService:
         request: TimeSeriesRequest,
         values: Iterable,
     ) -> TimeSeriesSeries:
-        equipment_code = getattr(tag, "_meta_equipment_code", None) or (tag.equipment.code if tag.equipment else None)
-        section_code = getattr(tag, "_meta_section_code", None) or (tag.section.code if tag.section else None)
-        variable_type_code = getattr(tag, "_meta_variable_type_code", None) or (tag.variable_type.code if tag.variable_type else None)
-        unit = getattr(tag, "_meta_unit", None) or tag.engineering_unit
+        meta_eq = getattr(tag, "_meta_equipment_code", None)
+        equipment_code = meta_eq if isinstance(meta_eq, str) else (tag.equipment.code if getattr(tag, "equipment", None) and hasattr(tag.equipment, "code") and isinstance(tag.equipment.code, str) else None)
+        meta_sec = getattr(tag, "_meta_section_code", None)
+        section_code = meta_sec if isinstance(meta_sec, str) else (tag.section.code if getattr(tag, "section", None) and hasattr(tag.section, "code") and isinstance(tag.section.code, str) else None)
+        meta_vt = getattr(tag, "_meta_variable_type_code", None)
+        variable_type_code = meta_vt if isinstance(meta_vt, str) else (tag.variable_type.code if getattr(tag, "variable_type", None) and hasattr(tag.variable_type, "code") and isinstance(tag.variable_type.code, str) else None)
+        meta_unit = getattr(tag, "_meta_unit", None)
+        unit = meta_unit if isinstance(meta_unit, str) else (tag.engineering_unit if isinstance(getattr(tag, "engineering_unit", None), str) else None)
         points = [
             TimeSeriesPoint(
                 timestamp=v.timestamp.astimezone(timezone.utc),
@@ -419,7 +402,7 @@ class PiService:
                 questionable=v.questionable,
                 substituted=v.substituted,
             )
-            for v in values
+            for v in sorted(values, key=lambda value: value.timestamp)
         ]
         return TimeSeriesSeries(
             tag_id=tag.id,
@@ -429,6 +412,7 @@ class PiService:
             section=section_code,
             variable_type=variable_type_code,
             unit=unit,
+            data_type=determine_series_data_type(tag),
             points=points,
         )
 

@@ -111,15 +111,17 @@ function renderPage() {
 
 async function loadInitialChart() {
   renderPage();
-  const equipment = (await screen.findByTestId("equipment-select", undefined, { timeout: 5_000 })) as HTMLSelectElement;
+  const equipment = (await screen.findByTestId("equipment-select", undefined, { timeout: 15_000 })) as HTMLSelectElement;
   fireEvent.change(equipment, { target: { value: "1" } });
-  const tagList = await screen.findByTestId("tag-multi-select", undefined, { timeout: 5_000 });
-  fireEvent.click(await within(tagList).findByTestId("tag-option-1", undefined, { timeout: 5_000 }));
-  fireEvent.click(await screen.findByTestId("filters-submit", undefined, { timeout: 5_000 }));
+  const tagList = await screen.findByTestId("tag-multi-select", undefined, { timeout: 15_000 });
+  fireEvent.click(await within(tagList).findByTestId("tag-option-1", undefined, { timeout: 15_000 }));
+  fireEvent.click(await screen.findByTestId("filters-submit", undefined, { timeout: 15_000 }));
   // The full suite initializes several route-level fixtures in parallel, so
   // leave enough time for the initial query without weakening the assertion.
-  await screen.findByTestId("deep-zoom-chart", undefined, { timeout: 5_000 });
-  await waitFor(() => expect(latestChartProps?.onVisibleWindowChange).toBeTypeOf("function"), { timeout: 5_000 });
+  // Parallel file-level workers can make route initialization take longer than
+  // a single test file. Keep the same observable assertion with a load-safe bound.
+  await screen.findByTestId("deep-zoom-chart", undefined, { timeout: 30_000 });
+  await waitFor(() => expect(latestChartProps?.onVisibleWindowChange).toBeTypeOf("function"), { timeout: 15_000 });
 }
 
 describe("deep zoom da visualização", () => {
@@ -309,7 +311,7 @@ describe("deep zoom da visualização", () => {
 
   it("recusa zoom de milissegundos sem pontos suficientes e não dispara outra consulta", async () => {
     const tenSecondDetail = detail(37, "10s", "timescaledb_continuous_aggregate");
-    tenSecondDetail.query_execution!.effective_source_mode = "INTERPOLATED_10S";
+    tenSecondDetail.query_execution!.effective_source_mode = "RECORDED";
     apiMock.timeSeriesQuery.mockResolvedValueOnce(INITIAL).mockResolvedValueOnce(tenSecondDetail);
     await loadInitialChart();
     await act(async () => {

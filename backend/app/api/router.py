@@ -12,6 +12,7 @@ from app.api.health import router as health_router
 from app.api.historical_reload import router as historical_reload_router
 from app.api.pi import router as pi_router
 from app.api.pi_tags import router as pi_tags_router
+from app.api.production_units import router as production_units_router
 from app.api.classification_tags import router as classification_tags_router
 from app.api.sections import router as sections_router
 from app.api.sip import router as sip_router
@@ -37,5 +38,6 @@ api_router.include_router(sip_router, dependencies=protected)
 api_router.include_router(variable_types_router, dependencies=protected)
 api_router.include_router(pi_tags_router, dependencies=protected)
 api_router.include_router(time_series_router, dependencies=protected)
+api_router.include_router(production_units_router, dependencies=protected)
 api_router.include_router(visual_configurations_router, dependencies=protected)
 api_router.include_router(cep_router, dependencies=protected)

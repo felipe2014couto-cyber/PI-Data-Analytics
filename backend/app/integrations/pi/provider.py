@@ -46,14 +46,6 @@ class PiRecordedValues:
     values: List[PiValue]
 
 
-@dataclass(frozen=True)
-class PiInterpolatedValues:
-    """A set of interpolated values for a PI point."""
-
-    web_id: str
-    values: List[PiValue]
-
-
 class PiDataProvider(ABC):
     """Abstract PI data provider.
 
@@ -75,6 +67,10 @@ class PiDataProvider(ABC):
         Returns ``None`` if the point does not exist.
         """
 
+    async def get_point_step(self, web_id: str) -> Optional[bool]:
+        """Return PI Point Step metadata when the provider supports it."""
+        return None
+
     @abstractmethod
     async def get_recorded_values(
         self,
@@ -84,17 +80,6 @@ class PiDataProvider(ABC):
         max_count: Optional[int] = None,
     ) -> PiRecordedValues:
         """Fetch recorded values for a point between two timestamps."""
-
-    @abstractmethod
-    async def get_interpolated_values(
-        self,
-        web_id: str,
-        start_time: datetime,
-        end_time: datetime,
-        interval: str,
-        max_count: Optional[int] = None,
-    ) -> PiInterpolatedValues:
-        """Fetch interpolated values for a point between two timestamps."""
 
     async def get_recorded_values_batch(
         self,
@@ -112,23 +97,5 @@ class PiDataProvider(ABC):
         for web_id in web_ids:
             results.append(
                 await self.get_recorded_values(web_id, start_time, end_time, max_count)
-            )
-        return results
-
-    async def get_interpolated_values_batch(
-        self,
-        web_ids: Sequence[str],
-        start_time: datetime,
-        end_time: datetime,
-        interval: str,
-        max_count: Optional[int] = None,
-    ) -> List[PiInterpolatedValues]:
-        """Fetch interpolated values for many points."""
-        results: List[PiInterpolatedValues] = []
-        for web_id in web_ids:
-            results.append(
-                await self.get_interpolated_values(
-                    web_id, start_time, end_time, interval, max_count
-                )
             )
         return results

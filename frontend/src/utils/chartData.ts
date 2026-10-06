@@ -1,10 +1,12 @@
 import type {
   ComparisonType,
   TimeSeries,
+  TimeSeriesDataType,
   TimeSeriesPoint,
   TimeSeriesSeries,
   VisualizationType,
   SeriesAssignment,
+  ProductionUnitAggregation,
 } from "../types";
 import { isNumericValue } from "./values";
 import { assignmentIdentity, resolveSeriesOrder } from "./seriesAssignments";
@@ -36,7 +38,10 @@ export interface ChartSeries {
   section: string | null;
   variableType: string | null;
   unit: string | null;
-  yAxisIndex: 0 | 1;
+  dataType?: TimeSeriesDataType | null;
+  step?: boolean | null;
+  unitAggregation?: ProductionUnitAggregation;
+  yAxisIndex: number;
   color: string;
   contextId?: "A" | "B" | null;
   seriesInstanceId?: string | null;
@@ -63,6 +68,7 @@ export interface ChartBuildResult {
   totalPoints: number;
   totalNumericPoints: number;
   totalDroppedPoints: number;
+  totalRenderSentinels: number;
   totalNonNumericPoints: number;
   valueKind: ChartValueKind;
   categories: string[];
@@ -190,6 +196,7 @@ export function buildChartData(
   let totalPoints = 0;
   let totalNumeric = 0;
   let totalDropped = 0;
+  let totalRenderSentinels = 0;
   let totalNonNumeric = 0;
   let valueKind: ChartValueKind = "empty";
   const categories: string[] = [];
@@ -203,12 +210,13 @@ export function buildChartData(
     const qualitySeries: Array<[number, ChartQuality]> = [];
     const statePoints: Array<[number, number | null]> = [];
     const stateValues: string[] = [];
+    const stateIndexes = new Map<string, number>();
     const stateQualitySeries: Array<[number, ChartQuality]> = [];
     const originalTimestamps: string[] = [];
     let numeric = 0;
     let dropped = 0;
     let nonNumeric = 0;
-    let seriesValueKind: ChartValueKind = "empty";
+    let seriesValueKind: ChartValueKind = seriesEntry.unit_aggregation ? "numeric" : "empty";
     let previousState: string | null = null;
     let isPlotSeries = false;
 
@@ -221,11 +229,23 @@ export function buildChartData(
       if (!Number.isFinite(absoluteTime) || !Number.isFinite(time)) {
         continue;
       }
-      originalTimestamps.push(point.timestamp);
-      totalPoints += 1;
+      if (!point.is_boundary_seed) {
+        originalTimestamps.push(point.timestamp);
+        totalPoints += 1;
+      }
+      if (point.is_render_sentinel) {
+        totalRenderSentinels += 1;
+        points.push([time, null]);
+        continue;
+      }
       if (options.ignoreBadQuality && !point.good) {
         points.push([time, null]);
         qualitySeries.push([time, classifyQuality(point)]);
+        if (seriesEntry.data_type === "STRING") {
+          statePoints.push([time, null]);
+          stateQualitySeries.push([time, classifyQuality(point)]);
+          previousState = null;
+        }
         dropped += 1;
         totalDropped += 1;
         continue;
@@ -253,11 +273,19 @@ export function buildChartData(
           points.push([time, point.value]);
           qualitySeries.push([time, classifyQuality(point)]);
         }
-        numeric += 1;
-        totalNumeric += 1;
+        if (!point.is_boundary_seed) {
+          numeric += 1;
+          totalNumeric += 1;
+        }
       } else {
         points.push([time, null]);
         qualitySeries.push([time, classifyQuality(point)]);
+        if (point.value == null && seriesEntry.data_type === "STRING") {
+          statePoints.push([time, null]);
+          stateQualitySeries.push([time, classifyQuality(point)]);
+          previousState = null;
+          continue;
+        }
         if (typeof point.value === "string" || typeof point.value === "boolean") {
           nonNumeric += 1;
           totalNonNumeric += 1;
@@ -269,8 +297,13 @@ export function buildChartData(
             categoryIndexes.set(state, categoryIndex);
           }
           if (state !== previousState) {
-            statePoints.push([time, categoryIndex]);
-            stateValues.push(state);
+            let stateIndex = stateIndexes.get(state);
+            if (stateIndex === undefined) {
+              stateIndex = stateValues.length;
+              stateIndexes.set(state, stateIndex);
+              stateValues.push(state);
+            }
+            statePoints.push([time, stateIndex]);
             stateQualitySeries.push([time, classifyQuality(point)]);
             previousState = state;
           }
@@ -290,12 +323,17 @@ export function buildChartData(
       seriesEndTime > statePoints[statePoints.length - 1][0]
     ) {
       const lastPoint = statePoints[statePoints.length - 1];
-      const lastState = stateValues[stateValues.length - 1];
       const lastQuality = stateQualitySeries[stateQualitySeries.length - 1][1];
       statePoints.push([seriesEndTime, lastPoint[1]]);
-      stateValues.push(lastState);
       stateQualitySeries.push([seriesEndTime, lastQuality]);
     }
+
+    // Plot buckets expand to their real event timestamps. Coverage sentinels
+    // can fall inside a bucket range, so sort the flattened render vertices
+    // before handing them to ECharts. Nulls still break the line (connectNulls
+    // remains false); this only preserves their temporal order.
+    points.sort((left, right) => left[0] - right[0]);
+    qualitySeries.sort((left, right) => left[0] - right[0]);
 
     series.push({
       tagId: seriesEntry.tag_id,
@@ -305,13 +343,16 @@ export function buildChartData(
       section: seriesEntry.section ?? null,
       variableType: seriesEntry.variable_type ?? null,
       unit: seriesEntry.unit ?? null,
+      dataType: seriesEntry.data_type ?? null,
+      step: seriesEntry.step ?? null,
+      unitAggregation: seriesEntry.unit_aggregation,
       yAxisIndex: yAxisIndex === 0 ? 0 : 1,
       color,
       contextId: seriesEntry.context_id ?? null,
       seriesInstanceId: seriesEntry.series_instance_id ?? null,
       comparisonType: seriesEntry.comparison_type ?? null,
       originalTimestamps,
-      total: seriesEntry.points.length,
+      total: seriesEntry.points.filter((point) => !point.is_boundary_seed).length,
       numeric,
       dropped,
       nonNumeric,
@@ -335,6 +376,7 @@ export function buildChartData(
     totalPoints,
     totalNumericPoints: totalNumeric,
     totalDroppedPoints: totalDropped,
+    totalRenderSentinels,
     totalNonNumericPoints: totalNonNumeric,
     valueKind,
     categories,
@@ -347,18 +389,34 @@ export function buildChartDataGroups(
   options: BuildChartOptions,
 ): ChartDataGroups {
   const summary = buildChartData(timeSeries, options);
-  const numericSeries = timeSeries.series.filter(
-    (_, index) => summary.series[index]?.valueKind === "numeric",
-  );
-  const textualSeries = timeSeries.series.filter(
-    (_, index) => summary.series[index]?.valueKind === "textual" || summary.series[index]?.valueKind === "categorical",
-  );
+  const hasStringSeries = summary.series.some((series) => series.dataType === "STRING");
+  const textualSeries = timeSeries.series.filter((_, index) => {
+    const chartSeries = summary.series[index];
+    if (!chartSeries) return false;
+    if (chartSeries.valueKind !== "textual" && chartSeries.valueKind !== "categorical") return false;
+    // STRING-typed series are rendered as categorical bands alongside numeric
+    // axes instead of being segregated into a standalone state chart.
+    if (chartSeries.dataType === "STRING") return false;
+    if (hasStringSeries && chartSeries.dataType === "DIGITAL") return false;
+    return true;
+  });
+
+  // Numeric group now also includes STRING series so they share the same X
+  // axis and zoom state with REAL/DIGITAL measurements.
+  const numericGroupSeries = timeSeries.series.filter((_, index) => {
+    const chartSeries = summary.series[index];
+    if (!chartSeries) return false;
+    if (chartSeries.valueKind === "numeric") return true;
+    if (chartSeries.dataType === "STRING" && (chartSeries.valueKind === "categorical" || chartSeries.valueKind === "textual")) return true;
+    if (hasStringSeries && chartSeries.dataType === "DIGITAL" && (chartSeries.valueKind === "categorical" || chartSeries.valueKind === "textual")) return true;
+    return false;
+  });
 
   return {
     summary,
     numeric:
-      numericSeries.length > 0
-        ? buildChartData({ ...timeSeries, series: numericSeries }, options)
+      numericGroupSeries.length > 0
+        ? buildChartData({ ...timeSeries, series: numericGroupSeries }, options)
         : null,
     textual: textualSeries.map((seriesEntry) =>
       buildChartData({ ...timeSeries, series: [seriesEntry] }, options),
@@ -389,10 +447,13 @@ export function resolveVisualization(
     visualization === "scatter" ||
     visualization === "bars"
   ) {
+    // STRING-typed series travel inside groups.numeric so they can share the
+    // time axis with REAL/DIGITAL measurements. Only non-STRING textual series
+    // remain incompatible with statistical charts.
     return {
       numeric: groups.numeric,
       textual: null,
-      incompatibleSeries: textualSeries,
+      incompatibleSeries: textualSeries.filter((series) => series.dataType !== "STRING"),
       excessTextualSeries: [],
     };
   }

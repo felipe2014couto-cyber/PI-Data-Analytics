@@ -26,7 +26,6 @@ class CepAnalysisRequest(BaseModel):
     section_id: int | None = None
     variable_ids: list[int] | None = None
     include_recorded: bool = False
-    interpolated_interval: Literal["1m", "2m", "5m", "10m", "15m", "30m", "1h"] = "5m"
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -195,7 +194,7 @@ class CepAnalysisResult(BaseModel):
 
 
 class CepVariableSeriesPoint(BaseModel):
-    """Interpolated point retained from one CEP execution."""
+    """Point retained from one CEP execution at a RECORDED timestamp."""
 
     timestamp: datetime
     value: float | None = None

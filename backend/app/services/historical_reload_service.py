@@ -13,7 +13,7 @@ from app.models.pi_tag import PiTag
 from app.models.postgres import PiBackfillJob, PiIngestionCoverage
 from app.models.cep_variable_tag_dependency import CepVariableTagDependency
 from app.schemas.historical_reload import HistoricalReloadRequest
-from app.services.coverage_service import CoverageService, normalize_mode
+from app.services.coverage_service import CoverageService
 
 
 def _one_year_later(value: datetime) -> datetime:
@@ -21,21 +21,6 @@ def _one_year_later(value: datetime) -> datetime:
         return value.replace(year=value.year + 1)
     except ValueError:
         return value.replace(year=value.year + 1, month=2, day=28)
-
-
-def _interval_seconds(interval: str | None) -> int | None:
-    if not interval:
-        return None
-    return int(interval[:-1]) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[interval[-1]]
-
-
-def _interval_label(seconds: int | None) -> str | None:
-    if seconds is None:
-        return None
-    for unit, size in (("h", 3600), ("m", 60), ("s", 1)):
-        if seconds % size == 0:
-            return f"{seconds // size}{unit}"
-    return f"{seconds}s"
 
 
 class HistoricalReloadService:
@@ -111,8 +96,9 @@ class HistoricalReloadService:
 
     def create(self, payload: HistoricalReloadRequest) -> list[PiBackfillJob]:
         self.validate_period(payload.start_time, payload.end_time)
-        seconds = _interval_seconds(payload.interval)
-        mode, seconds = normalize_mode(payload.mode, seconds)
+        if payload.mode != "recorded":
+            raise ValidationError("A recarga histórica aceita somente RECORDED.")
+        mode, seconds = "RECORDED", None
         tags = self._tags(payload)
         jobs: list[PiBackfillJob] = []
         for tag in tags:
@@ -205,22 +191,35 @@ class HistoricalReloadService:
         self.db.commit()
         return int(result.rowcount or 0)
 
+    def delete_terminal(self, job_id: int) -> None:
+        """Remove one finished reload record without touching samples or coverage."""
+        job = self.get(job_id)
+        if job.status in ("PENDING", "RUNNING"):
+            raise ConflictError("Uma recarga ativa não pode ser removida.")
+        self.db.delete(job)
+        self.db.commit()
+
     def coverage(self, tag_id: int, start: datetime, end: datetime, mode: str, interval: str | None) -> dict:
         self.validate_period(start, end)
-        seconds = _interval_seconds(interval)
-        normalized, seconds = normalize_mode(mode, seconds)
+        if mode.lower() != "recorded":
+            raise ValidationError("A cobertura histórica aceita somente RECORDED.")
+        normalized, seconds = "RECORDED", None
         tag = self.db.get(PiTag, tag_id)
         if tag is None:
             raise NotFoundError("Tag não encontrada.", details={"tag_id": tag_id})
         covered = CoverageService.get_coverage(self.db, tag_id, start, end, normalized, seconds)
         missing = CoverageService.get_missing_intervals(self.db, tag_id, start, end, normalized, seconds)
         encode = lambda rows: [{"start": a.isoformat(), "end": b.isoformat()} for a, b in rows]
-        return {"tag_id": tag_id, "mode": normalized, "interval": _interval_label(seconds), "complete": not missing, "covered": encode(covered), "missing": encode(missing)}
+        return {"tag_id": tag_id, "mode": normalized, "complete": not missing, "covered": encode(covered), "missing": encode(missing)}
 
     def summary(self) -> dict:
         active = list(self.db.scalars(select(PiTag).where(PiTag.active.is_(True))).all())
         tag_ids = [tag.id for tag in active]
         tags_with_data = set(self.db.scalars(select(PiIngestionCoverage.tag_id).where(PiIngestionCoverage.tag_id.in_(tag_ids), PiIngestionCoverage.status == "COMPLETE")).all()) if tag_ids else set()
         partial = set(self.db.scalars(select(PiIngestionCoverage.tag_id).where(PiIngestionCoverage.tag_id.in_(tag_ids), PiIngestionCoverage.status != "COMPLETE")).all()) if tag_ids else set()
-        modes = [dict(row) for row in self.db.execute(select(PiIngestionCoverage.mode, PiIngestionCoverage.interval_seconds, func.count().label("ranges")).group_by(PiIngestionCoverage.mode, PiIngestionCoverage.interval_seconds)).mappings().all()]
+        modes = [dict(row) for row in self.db.execute(
+            select(PiIngestionCoverage.mode, PiIngestionCoverage.interval_seconds, func.count().label("ranges"))
+            .where(PiIngestionCoverage.mode == "RECORDED")
+            .group_by(PiIngestionCoverage.mode, PiIngestionCoverage.interval_seconds)
+        ).mappings().all()]
         return {"total_active_tags": len(active), "tags_with_data": len(tags_with_data), "tags_without_data": len(set(tag_ids) - tags_with_data), "partial_tags": len(partial), "modes": modes}

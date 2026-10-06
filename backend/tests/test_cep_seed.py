@@ -2,6 +2,7 @@
 import importlib.util
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -35,9 +36,9 @@ class TestCepMigration:
         """Run alembic upgrade/downgrade against a temporary database."""
         env = os.environ.copy()
         env["DATABASE_URL"] = db_url
-        cmd = [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", direction, "head"]
+        cmd = [sys.executable, "-m", "alembic", direction, "head"]
         if direction == "downgrade":
-            cmd = [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "downgrade", "0004_visual_configurations"]
+            cmd = [sys.executable, "-m", "alembic", "downgrade", "0004_visual_configurations"]
         return subprocess.run(
             cmd, cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
         )
@@ -52,7 +53,7 @@ class TestCepMigration:
             env = os.environ.copy()
             env["DATABASE_URL"] = db_url
             subprocess.run(
-                [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "upgrade", "head"],
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
                 cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
             )
             # Verify cep_variables exists
@@ -92,12 +93,12 @@ class TestCepMigration:
             env["DATABASE_URL"] = db_url
             # Full upgrade
             subprocess.run(
-                [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "upgrade", "head"],
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
                 cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
             )
             # Downgrade
             result = subprocess.run(
-                [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "downgrade", "0004_visual_configurations"],
+                [sys.executable, "-m", "alembic", "downgrade", "0004_visual_configurations"],
                 cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
             )
             assert result.returncode == 0, f"Downgrade failed: {result.stderr}"
@@ -124,17 +125,17 @@ class TestCepMigration:
             env["DATABASE_URL"] = db_url
             # Upgrade
             subprocess.run(
-                [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "upgrade", "head"],
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
                 cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
             )
             # Downgrade
             subprocess.run(
-                [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "downgrade", "0004_visual_configurations"],
+                [sys.executable, "-m", "alembic", "downgrade", "0004_visual_configurations"],
                 cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
             )
             # Re-upgrade
             result = subprocess.run(
-                [str(ALEMBIC_INI.parent / ".venv" / "bin" / "python"), "-m", "alembic", "upgrade", "head"],
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
                 cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=30,
             )
             assert result.returncode == 0, f"Re-upgrade failed: {result.stderr}"

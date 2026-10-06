@@ -99,21 +99,21 @@ def _mode_for(tag: PiTag) -> tuple[str, str | None, int | None]:
 
 
 def _window_for(mode: str) -> timedelta:
-    if mode == "INTERPOLATED_10S":
-        return timedelta(hours=settings.ingestion_interpolated_10s_window_hours)
-    if mode == "INTERPOLATED_300S":
-        return timedelta(days=settings.ingestion_interpolated_300s_window_days)
+    if mode != "RECORDED":
+        raise ValueError(f"Modo de ingestão não suportado: {mode}")
     return timedelta(seconds=settings.ingestion_recorded_window_seconds)
 
 
 def _record(tag_id: int, point: Any, mode: str) -> dict[str, Any]:
+    if mode != "RECORDED":
+        raise ValueError(f"A ingestão histórica aceita somente RECORDED, recebido: {mode}")
     value_type = "boolean" if isinstance(point.value, bool) else "double" if isinstance(point.value, (int, float)) else "string"
     return {"tag_id": tag_id, "ts": point.timestamp.astimezone(timezone.utc), "value_type": value_type,
             "value_double": float(point.value) if value_type == "double" else None,
             "value_boolean": bool(point.value) if value_type == "boolean" else None,
             "value_text": str(point.value) if value_type == "string" and point.value is not None else None,
             "good": point.good, "questionable": point.questionable, "substituted": point.substituted,
-            "source_mode": mode}
+            "source_mode": "RECORDED"}
 
 
 def _safe_error(value: object, limit: int = 500) -> str:
@@ -316,7 +316,10 @@ async def _ingest_tag(
         if tag is None or not tag.active:
             return 0, 0
         web_id = tag.pi_web_id
-        modes = tuple(item for item in _modes_for(tag) if source_mode is None or item[0] == source_mode)
+        if source_mode not in (None, "RECORDED"):
+            logger.warning("ingestion_unsupported_mode tag_id=%s mode=%s", tag_id, source_mode)
+            return 0, 0
+        modes = _modes_for(tag)
         due = []
         for mode, interval, interval_seconds in modes:
             state = db.get(PiIngestionState, (tag.id, mode))
@@ -623,15 +626,10 @@ async def run_ingestion_loop(
       3. Processes catch-up from the watermark forward (bounded budget).
     """
     interval_seconds = interval_seconds or settings.ingestion_cycle_seconds
-    last_recorded_cycle: datetime | None = None
     while True:
         if stop_event is not None and stop_event.is_set():
             break
         cycle_started = datetime.now(timezone.utc); acquired = False
-        recorded_due = (
-            last_recorded_cycle is None
-            or (cycle_started - last_recorded_cycle).total_seconds()
-        )
         raw_lock_conn = None
         acquired = False
         try:
@@ -666,7 +664,7 @@ async def run_ingestion_loop(
                         tag_ids.update(filter(None, (tag.lower_limit_tag_id, tag.upper_limit_tag_id)))
                 # Session is closed: all HTTP calls happen with NO open DB session.
 
-                if recorded_due and tag_ids:
+                if tag_ids:
                     # Step 1: Recent-first — ingest the last completed
                     # minute so current data appears immediately.
                     recent_points = await _ingest_recent_minute(
@@ -684,7 +682,6 @@ async def run_ingestion_loop(
                         await _reconcile_recent(tag_ids, cycle_started)
 
                 # Step 3: Catch-up / normal ingestion from watermark.
-                selected_mode = None if recorded_due else "__INTERPOLATED_ONLY__"
                 semaphore = asyncio.Semaphore(settings.ingestion_tag_concurrency)
                 total_points = 0
                 tag_timeouts = 0
@@ -693,7 +690,7 @@ async def run_ingestion_loop(
                     nonlocal total_points, tag_timeouts
                     async with semaphore:
                         task = asyncio.create_task(
-                            _ingest_tag(tag_id, cycle_started, source_mode=selected_mode)
+                            _ingest_tag(tag_id, cycle_started)
                         )
                         try:
                             points, _ = await asyncio.wait_for(
@@ -732,8 +729,8 @@ async def run_ingestion_loop(
                 # The one-minute Recorded cadence advances on every
                 # executed cycle; individual tag retries are governed by
                 # each tag's next_attempt_at and pending watermark.
-                if recorded_due:
-                    last_recorded_cycle = cycle_started
+                # RECORDED is the only supported source. Every cycle can run
+                # recorded catch-up without alternate-source branches.
         except Exception:
             if once: raise
             logger.exception("ingestion_cycle_failed")

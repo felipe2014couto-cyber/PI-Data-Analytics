@@ -41,6 +41,7 @@ const chart = (series = [chartSeries("A-7")]): ChartBuildResult => ({
   totalPoints: 3 * series.length,
   totalNumericPoints: 3 * series.length,
   totalDroppedPoints: 0,
+  totalRenderSentinels: 0,
   totalNonNumericPoints: 0,
   valueKind: "numeric",
   categories: [],

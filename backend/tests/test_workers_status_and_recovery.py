@@ -665,7 +665,7 @@ def test_backoff_intermediate_success_resets_consecutive_failures(db_session):
                 start=start,
                 end=end,
                 mode="RECORDED",
-                interval_seconds=60,
+                interval_seconds=None,
                 t0=NOW - timedelta(days=1),
                 round_name="R1",
                 semaphore=semaphore,

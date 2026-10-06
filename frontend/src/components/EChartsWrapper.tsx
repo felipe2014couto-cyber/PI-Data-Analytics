@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts/core";
-import { BarChart, BoxplotChart, LineChart, ScatterChart } from "echarts/charts";
+import { BarChart, BoxplotChart, CustomChart, LineChart, ScatterChart } from "echarts/charts";
 import {
   GridComponent,
   TooltipComponent,
@@ -17,6 +17,7 @@ import type { EChartsOption, ECharts } from "echarts";
 
 echarts.use([
   LineChart,
+  CustomChart,
   BarChart,
   BoxplotChart,
   ScatterChart,

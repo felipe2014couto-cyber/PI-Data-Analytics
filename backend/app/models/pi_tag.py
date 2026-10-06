@@ -90,12 +90,6 @@ class PiTag(Base, TimestampMixin):
         default="ACTIVE",
         server_default="ACTIVE",
     )
-    sampling_mode: Mapped[str] = mapped_column(
-        String(20),
-        nullable=False,
-        default="INTERPOLATED_10S",
-        server_default="INTERPOLATED_10S",
-    )
     backfill_status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,

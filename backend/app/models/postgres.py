@@ -37,7 +37,7 @@ class PiIngestionCoverage(Base):
     tag_id = Column(Integer, ForeignKey("pi_tags.id", ondelete="CASCADE"), nullable=False)
     range_start = Column(DateTime(timezone=True), nullable=False)
     range_end = Column(DateTime(timezone=True), nullable=False)
-    mode = Column(String(50), nullable=False) # 'recorded', 'interpolated_10s' etc
+    mode = Column(String(50), nullable=False)
     interval_seconds = Column(Integer, nullable=True)
     status = Column(String(20), nullable=False, default="COMPLETE")
     pi_web_id = Column(String(255), nullable=True)
@@ -55,7 +55,6 @@ class PiIngestionState(Base):
     source_mode = Column(String(32), primary_key=True, default="RECORDED", server_default="RECORDED")
     last_source_ts = Column(DateTime(timezone=True), nullable=True)
     watermark_ts = Column(DateTime(timezone=True), nullable=True)
-    sampling_mode = Column(String(32), nullable=False, default="RECORDED")
     last_success_at = Column(DateTime(timezone=True), nullable=True)
     consecutive_failures = Column(Integer, default=0, nullable=False)
     next_attempt_at = Column(DateTime(timezone=True), nullable=True)

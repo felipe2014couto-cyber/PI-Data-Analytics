@@ -3,7 +3,8 @@ import { Alert, Button, Card, Col, Form, Row } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 
-import { equipmentsApi, piApi, piTagsApi, sectionsApi, sipApi, timeSeriesApi, variableTypesApi } from "../api";
+import { equipmentsApi, piApi, piTagsApi, productionUnitsApi, sectionsApi, sipApi, timeSeriesApi, variableTypesApi } from "../api";
+import type { ProductionUnitAnalysisResponse } from "../api";
 import { ApiError } from "../api/http";
 import type {
   DataFilterConfiguration,
@@ -73,6 +74,8 @@ import {
 import { calculateMetricResults } from "../utils/analysisMetrics";
 import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument, type PersistablePageState } from "../utils/visualConfiguration";
 import { applyTimeAnalysisRule } from "../utils/timeAnalysisRule";
+import { assignProductionUnitAxes, buildProductionUnitTimeSeries, isProductionUnitRule } from "../utils/productionUnitChart";
+import { resolveProductionUnitScope } from "../utils/productionUnitScope";
 import { buildNormLimitSeries, type NormLimitSeries } from "../utils/normLimitSeries";
 import { buildUmChartSeries, type UmChartSeries } from "../utils/umChartSeries";
 import { EMPTY_VISUAL_CONFIGURATION, defaultNormLimitConfig } from "../utils/visualRules";
@@ -144,6 +147,8 @@ function intervalToSeconds(value: string): number {
 
 interface QueryState {
   timeSeries: TimeSeries | null;
+  unitAnalysis?: ProductionUnitAnalysisResponse;
+  unitFiltersActive?: boolean;
   loading: boolean;
   errorMessage: string | null;
   partial: boolean;
@@ -424,6 +429,12 @@ export function DataVisualizationPage() {
 
   const sectionMap = useMemo(() => new Map(sections.map((s) => [s.id, s])), [sections]);
   const variableTypeMap = useMemo(() => new Map(variableTypes.map((v) => [v.id, v])), [variableTypes]);
+  const productionUnitScope = useMemo(
+    () => filters.equipmentId === null
+      ? { tagId: null, error: "Selecione uma máquina." }
+      : resolveProductionUnitScope(filters.equipmentId, filters.sectionId, sections, tags, variableTypes),
+    [filters.equipmentId, filters.sectionId, sections, tags, variableTypes],
+  );
 
   // As tags vinculadas à seção/equipamento são séries auxiliares: entram na
   // consulta para que os filtros de largura e espessura possam mascarar
@@ -728,14 +739,17 @@ export function DataVisualizationPage() {
 
   const orderedTimeSeries = useMemo(() => {
     if (!query.timeSeries) return null;
+    const source = query.unitAnalysis
+      ? buildProductionUnitTimeSeries(query.unitAnalysis, filters.timeAnalysisRule, selectedTagIds, zoomedRange)
+      : query.timeSeries;
     return {
-      ...query.timeSeries,
-      series: resolveSeriesOrder(query.timeSeries.series, seriesAssignments, (series) => series.tag_id, (series) => series.series_instance_id ?? undefined),
+      ...source,
+      series: resolveSeriesOrder(source.series, seriesAssignments, (series) => series.tag_id, (series) => series.series_instance_id ?? undefined),
     };
-  }, [query.timeSeries, seriesAssignments]);
+  }, [query.timeSeries, query.unitAnalysis, filters.timeAnalysisRule, selectedTagIds, zoomedRange, seriesAssignments]);
 
   const filterResult = useMemo(() => {
-    if (!filters.filtersEnabled || !orderedTimeSeries || !query.timeSeries) return null;
+    if (query.unitAnalysis || !filters.filtersEnabled || !orderedTimeSeries || !query.timeSeries) return null;
     const visibleSeriesKeys = new Set(
       orderedTimeSeries.series
         .filter((series) => !analysisHiddenTagIds.has(series.tag_id))
@@ -759,7 +773,7 @@ export function DataVisualizationPage() {
       crossSeriesRuleIds,
       seriesSectionMap,
     });
-  }, [analysisContextTagIds, analysisHiddenTagIds, filters.filtersEnabled, orderedTimeSeries, query.timeSeries, filters.filterConfiguration, piTagById]);
+  }, [analysisContextTagIds, analysisHiddenTagIds, filters.filtersEnabled, orderedTimeSeries, query.timeSeries, query.unitAnalysis, filters.filterConfiguration, piTagById]);
 
   const filteredTimeSeries: TimeSeries | null = useMemo(() => {
     const source = filterResult?.filteredTimeSeries ?? orderedTimeSeries;
@@ -802,11 +816,11 @@ export function DataVisualizationPage() {
       };
     }
     if (!baseSeries) return null;
-    if (filters.analysisModel === "cyclic") {
+    if (filters.analysisModel === "cyclic" || query.unitAnalysis) {
       return baseSeries;
     }
     return applyTimeAnalysisRule(baseSeries, filters.timeAnalysisRule);
-  }, [filterResult, filteredTimeSeries, orderedTimeSeries, filters.timeAnalysisRule, filters.analysisModel]);
+  }, [filterResult, filteredTimeSeries, orderedTimeSeries, filters.timeAnalysisRule, filters.analysisModel, query.unitAnalysis]);
 
   // Extrai a série da UM antes do agrupamento para que ela não seja classificada
   // como textual e renderizada em gráfico de estados separado. A UM é
@@ -827,13 +841,13 @@ export function DataVisualizationPage() {
   }, [chartTimeSeriesWithoutUm]);
   const chart = chartGroups?.summary ?? null;
   const visualizationPlan = useMemo(
-    () => (chartGroups ? resolveVisualization(chartGroups, filters.visualization) : null),
-    [chartGroups, filters.visualization],
+    () => (chartGroups ? resolveVisualization(chartGroups, (query.unitAnalysis) ? "line" : filters.visualization) : null),
+    [chartGroups, filters.visualization, query.unitAnalysis],
   );
   const numericChartRaw = visualizationPlan?.numeric ?? null;
   const numericChart = useMemo(
-    () => applyLineAssignments(numericChartRaw, seriesAssignments),
-    [numericChartRaw, seriesAssignments],
+    () => (query.unitAnalysis) ? assignProductionUnitAxes(numericChartRaw) : applyLineAssignments(numericChartRaw, seriesAssignments),
+    [numericChartRaw, seriesAssignments, query.unitAnalysis],
   );
   const textualChart = visualizationPlan?.textual ?? null;
   const incompatibleSeries = visualizationPlan?.incompatibleSeries ?? [];
@@ -872,12 +886,12 @@ export function DataVisualizationPage() {
   }, [filteredTimeSeries, actualNumericIds]);
 
   const metricNumericSeries = useMemo(
-    () => filteredTimeSeries?.series.filter((entry) =>
+    () => (query.unitAnalysis) ? [] : filteredTimeSeries?.series.filter((entry) =>
       entry.points.some((point) =>
         typeof point.value === "number" && Number.isFinite(point.value),
       ),
     ) ?? [],
-    [filteredTimeSeries],
+    [filteredTimeSeries, query.unitAnalysis],
   );
 
   const metricSeriesOptions = useMemo(() => {
@@ -1064,7 +1078,7 @@ export function DataVisualizationPage() {
     cancelledQueryIdsRef.current.add(qid);
     setCancelling(true);
     abortRef.current?.abort();
-    void Promise.resolve(timeSeriesApi.cancelQuery(qid)).catch(() => {});
+    if (filters.analysisModel !== "unit") void Promise.resolve(timeSeriesApi.cancelQuery(qid)).catch(() => {});
   };
 
   const handleAnalysisModelChange = (analysisModel: AnalysisModel) => {
@@ -1077,12 +1091,21 @@ export function DataVisualizationPage() {
       const qid = queryIdRef.current;
       if (!cancelledQueryIdsRef.current.has(qid)) {
         cancelledQueryIdsRef.current.add(qid);
-        void Promise.resolve(timeSeriesApi.cancelQuery(qid)).catch(() => {});
+        if (filters.analysisModel !== "unit") void Promise.resolve(timeSeriesApi.cancelQuery(qid)).catch(() => {});
       }
       queryIdRef.current = null;
     }
     requestSeqRef.current += 1;
     setCancelling(false);
+    zoomAbortRef.current?.abort();
+    zoomRequestSeqRef.current += 1;
+    zoomInFlightRef.current = null;
+    zoomCacheRef.current.clear();
+    zoomRejectedRef.current.clear();
+    initialQueryRef.current = null;
+    setQuery(INITIAL_QUERY);
+    setZoomQuery(INITIAL_ZOOM_QUERY);
+    setZoomedRange(null);
 
     setFilters((prev) => ({
       ...prev,
@@ -1090,7 +1113,7 @@ export function DataVisualizationPage() {
       timeAnalysisRule:
         analysisModel === "cyclic"
           ? "DEFAULT"
-          : prev.timeAnalysisRule === "DEFAULT"
+          : (prev.timeAnalysisRule === "DEFAULT")
           ? "MEDIA"
           : prev.timeAnalysisRule,
     }));
@@ -1131,7 +1154,7 @@ export function DataVisualizationPage() {
       start_time: period.start,
       end_time: period.end,
       mode: "recorded",
-      interval: details.resolution ?? (details.mode === "recorded" ? "10s" : "300s"),
+      interval: details.resolution ?? "recorded",
     });
     navigate(`/admin/recargas-historicas?${params.toString()}`);
   };
@@ -1180,6 +1203,12 @@ export function DataVisualizationPage() {
     if (filters.analysisModel !== "unit" && filters.analysisModel !== "cyclic") return "O modelo selecionado ainda não está disponível.";
     if (!filters.equipmentId) return "Selecione uma máquina.";
     if (!selectedTagIds.length) return "Selecione ao menos uma tag.";
+    if (filters.analysisModel === "unit") {
+      if (productionUnitScope.error) return productionUnitScope.error;
+      if (comparison.type !== "disabled") return "A comparação de contextos ainda não está disponível em Base Unidade.";
+      if (!isProductionUnitRule(filters.timeAnalysisRule)) return "Base Unidade oferece Média, Mínimo, Máximo e OOC. A regra selecionada não possui agregado por UM.";
+      if (filters.visualization !== "automatic" && filters.visualization !== "line") return "Selecione Linha temporal ou Automático para visualizar os segmentos de Base Unidade.";
+    }
     if (comparison.type === "periods") {
       if (!comparison.contextBStart || !comparison.contextBEnd) return "Informe as datas inicial e final do Contexto B.";
       if (new Date(comparison.contextBStart).getTime() >= new Date(comparison.contextBEnd).getTime()) return "O período do Contexto B é inválido.";
@@ -1189,16 +1218,7 @@ export function DataVisualizationPage() {
     if ((comparison.type === "equipments" || comparison.type === "categories") && !comparison.contextBTagIds.length) {
       return "Selecione ao menos uma tag no Contexto B.";
     }
-    if (selectedTagIds.some((id) => id < 0) && filters.mode !== "recorded") {
-      return "Consultas SIP aceitam somente o modo Recorded.";
-    }
-    if (filters.mode === "interpolated" && !filters.interval) {
-      return "Selecione um intervalo para valores interpolados.";
-    }
-    if (filters.mode === "interpolated" && intervalToSeconds(filters.interval) < 10) {
-      return "O intervalo mínimo para valores interpolados é de 10 segundos.";
-    }
-    if ((filters.visualization === "automatic" || filters.visualization === "line") && !assignmentValidation.validAxes) {
+    if (filters.analysisModel !== "unit" && (filters.visualization === "automatic" || filters.visualization === "line") && !assignmentValidation.validAxes) {
       return assignmentValidation.axisErrors[0];
     }
     return null;
@@ -1216,8 +1236,7 @@ export function DataVisualizationPage() {
           tag_ids: queryTagIds,
           start_time: period.startTime,
           end_time: period.endTime,
-          mode: filters.mode,
-          interval: filters.mode === "interpolated" ? filters.interval : undefined,
+          mode: "recorded",
           resolution_mode: filters.resolutionMode,
           target_points_per_tag: dynamicPointsPerTag,
           relative_period: zoomBasePeriod ? false : filters.timePeriod.kind !== "absolute",
@@ -1260,8 +1279,7 @@ export function DataVisualizationPage() {
           end_time: contextBEnd.toISOString(),
         },
       ],
-      mode: filters.mode,
-      interval: filters.mode === "interpolated" ? filters.interval : undefined,
+      mode: "recorded",
       resolution_mode: filters.resolutionMode,
       target_points_per_tag: dynamicPointsPerTag,
       query_id: qid,
@@ -1313,7 +1331,7 @@ export function DataVisualizationPage() {
       }));
       return;
     }
-    if (queryTagIds.some((id) => id > 0) && piHealth && piHealth.status !== "connected" && piHealth.status !== "unavailable") {
+    if (filters.analysisModel !== "unit" && queryTagIds.some((id) => id > 0) && piHealth && piHealth.status !== "connected" && piHealth.status !== "unavailable") {
       setQuery((prev) => ({
         ...prev,
         errorMessage: "PI Web API nao esta disponivel. Verifique a conexao.",
@@ -1351,12 +1369,29 @@ export function DataVisualizationPage() {
     });
 
     try {
-      const result = await fetchTimeSeriesPeriod(resolvedPeriod, qid, controller.signal);
+      const unitAnalysis = filters.analysisModel === "unit"
+        ? await productionUnitsApi.analyze({
+            section_id: filters.sectionId ?? undefined, equipment_id: filters.equipmentId!, tag_ids: selectedTagIds,
+            analysis_rule: filters.timeAnalysisRule === "OOC" ? "OOC" : undefined,
+            start_time: resolvedPeriod.startTime, end_time: resolvedPeriod.endTime,
+            filter_configuration: {
+              filtersEnabled: filters.filtersEnabled,
+              quality: filters.filterConfiguration.quality,
+              rules: filters.filtersEnabled ? filters.filterConfiguration.rules.filter((rule) => rule.enabled) : [],
+            },
+            analysis_filters: filters.filtersEnabled ? activeDynamicFilters : [],
+          }, controller.signal)
+        : undefined;
+      const result = unitAnalysis
+        ? buildProductionUnitTimeSeries(unitAnalysis, filters.timeAnalysisRule, selectedTagIds)
+        : await fetchTimeSeriesPeriod(resolvedPeriod, qid, controller.signal);
       if (mySeq !== requestSeqRef.current) return;
       queryIdRef.current = null;
       const finishedAt = Date.now();
       const initialQueryState: QueryState = {
         timeSeries: result,
+        unitAnalysis,
+        unitFiltersActive: unitAnalysis ? filters.filtersEnabled && (activeDynamicFilters.length > 0 || filters.filterConfiguration.rules.some((rule) => rule.enabled)) : undefined,
         loading: false,
         errorMessage: null,
         errorDetails: null,
@@ -1421,6 +1456,15 @@ export function DataVisualizationPage() {
     const effectiveEnd = visibleEnd;
     const key = zoomCacheKey(effectiveStart, effectiveEnd);
     const activeResult = activeQueryRef.current.timeSeries;
+
+    if (initial.unitAnalysis) {
+      // A visual crop preserves the backend statistic for the entire UM.
+      // No bucket/detail query is needed, even inside a long constant segment.
+      setZoomedRange({ start: effectiveStart, end: effectiveEnd });
+      setQuery(initial);
+      setZoomQuery(INITIAL_ZOOM_QUERY);
+      return Promise.resolve("applied");
+    }
 
     if (zoomRejectedRef.current.has(key)) {
       return Promise.resolve("rejected");
@@ -1631,13 +1675,14 @@ export function DataVisualizationPage() {
 
   // Constrói a série da UM a partir do chartTimeSeries original somente quando
   // a tag da UM estiver explicitamente marcada/selecionada pelo usuário em selectedTagIds.
+  const unitContext = query.unitAnalysis;
   const isUmSelected = useMemo(() => {
     if (analysisTagIds.um === null) return false;
     return selectedTagIds.includes(analysisTagIds.um);
   }, [analysisTagIds.um, selectedTagIds]);
 
   const umChartSeries: UmChartSeries | null = useMemo(() => {
-    if (!isUmSelected || !chartTimeSeries || analysisTagIds.um === null) return null;
+    if (query.unitAnalysis || filters.analysisModel === "unit" || !isUmSelected || !chartTimeSeries || analysisTagIds.um === null) return null;
     const umTimeSeries = chartTimeSeries.series.find((series) => series.tag_id === analysisTagIds.um);
     if (!umTimeSeries) return null;
     const color = "#0288d1";
@@ -1658,7 +1703,7 @@ export function DataVisualizationPage() {
       })),
       endTimeIso: endIso,
     });
-  }, [isUmSelected, chartTimeSeries, analysisTagIds.um, chartEnd]);
+  }, [isUmSelected, chartTimeSeries, analysisTagIds.um, chartEnd, query.unitAnalysis, filters.analysisModel]);
 
   const handleAddNormLimit = useCallback((seriesInstanceId: string) => {
     setVisualRules((current) => {
@@ -1701,8 +1746,8 @@ export function DataVisualizationPage() {
         key: "",
         startTimeIso: "",
         endTimeIso: "",
-        mode: filters.mode,
-        interval: filters.mode === "interpolated" ? filters.interval : undefined,
+        mode: "recorded" as const,
+        interval: undefined,
         items: [] as Array<{
           instanceId: string;
           tagId: number;
@@ -1714,7 +1759,7 @@ export function DataVisualizationPage() {
 
     const startTimeIso = chartStart.toISOString();
     const endTimeIso = chartEnd.toISOString();
-    const interval = filters.mode === "interpolated" ? filters.interval : undefined;
+    const interval = undefined;
     const sortedIds = effectiveNormEnabledKey.split(",").filter(Boolean);
 
     const items = sortedIds
@@ -1744,7 +1789,7 @@ export function DataVisualizationPage() {
       key,
       startTimeIso,
       endTimeIso,
-      mode: filters.mode,
+      mode: "recorded" as const,
       interval,
       items,
     };
@@ -1756,7 +1801,6 @@ export function DataVisualizationPage() {
     chartEnd,
     filters.analysisModel,
     filters.mode,
-    filters.interval,
   ]);
 
   useEffect(() => {
@@ -1966,8 +2010,7 @@ export function DataVisualizationPage() {
           tag_ids: selectedTagIds,
           start_time: query.resolvedPeriod.startTime,
           end_time: query.resolvedPeriod.endTime,
-          mode: filters.mode,
-          interval: filters.mode === "interpolated" ? filters.interval : undefined,
+          mode: "recorded",
         },
         controller.signal,
       );
@@ -1985,7 +2028,7 @@ export function DataVisualizationPage() {
     } finally {
       setCsvCompleteLoading(false);
     }
-  }, [query.resolvedPeriod, selectedTagIds, filters.mode, filters.interval]);
+  }, [query.resolvedPeriod, selectedTagIds]);
 
   const errorByTagId = useMemo(() => {
     const map = new Map<number, { code: string; message: string }>();
@@ -2058,7 +2101,8 @@ export function DataVisualizationPage() {
               variant="outline-primary"
               size="sm"
               onClick={() => query.timeSeries && downloadTimeSeriesCsv(query.timeSeries)}
-              disabled={!query.timeSeries || query.timeSeries.series.length === 0}
+              disabled={Boolean(query.unitAnalysis) || !query.timeSeries || query.timeSeries.series.length === 0}
+              title={query.unitAnalysis ? "Os segmentos agregados por UM não são medições PI originais." : undefined}
               data-testid="download-csv"
             >
               <i className="bi bi-filetype-csv me-1" /> Baixar CSV original
@@ -2073,7 +2117,7 @@ export function DataVisualizationPage() {
                   downloadBlob(blob, buildCsvFilename(filteredTimeSeries, "filtrado").replace("pi-analytics-data", "dados_pi_filtrados"));
                 }
               }}
-              disabled={!filteredTimeSeries || filteredTimeSeries.series.length === 0}
+              disabled={Boolean(query.unitAnalysis) || !filteredTimeSeries || filteredTimeSeries.series.length === 0}
               data-testid="download-csv-filtered"
             >
               <i className="bi bi-filetype-csv me-1" /> Baixar CSV filtrado
@@ -2113,7 +2157,19 @@ export function DataVisualizationPage() {
                 analysisModel={filters.analysisModel}
                 onAnalysisModelChange={handleAnalysisModelChange}
                 timeAnalysisRule={filters.timeAnalysisRule}
-                onTimeAnalysisRuleChange={(timeAnalysisRule) => setFilters((prev) => ({ ...prev, timeAnalysisRule }))}
+                onTimeAnalysisRuleChange={(timeAnalysisRule) => {
+                  if ((timeAnalysisRule === "OOC") !== (filters.timeAnalysisRule === "OOC")) {
+                    abortRef.current?.abort();
+                    zoomAbortRef.current?.abort();
+                    requestSeqRef.current += 1;
+                    zoomRequestSeqRef.current += 1;
+                    initialQueryRef.current = null;
+                    setQuery(INITIAL_QUERY);
+                    setZoomQuery(INITIAL_ZOOM_QUERY);
+                    setZoomedRange(null);
+                  }
+                  setFilters((prev) => ({ ...prev, timeAnalysisRule }));
+                }}
                 mode={filters.mode}
                 onModeChange={(mode) => setFilters((prev) => ({ ...prev, mode }))}
                 interval={filters.interval}
@@ -2136,8 +2192,9 @@ export function DataVisualizationPage() {
                     assignments={seriesAssignments}
                     tags={seriesConfigurationTags}
                     showScatter={filters.visualization === "scatter"}
+                    automaticUnitAxes={filters.analysisModel === "unit"}
                     errors={[
-                      ...(filters.visualization === "automatic" || filters.visualization === "line"
+                      ...(filters.analysisModel !== "unit" && (filters.visualization === "automatic" || filters.visualization === "line")
                         ? assignmentValidation.axisErrors : []),
                       ...(filters.visualization === "scatter" ? assignmentValidation.scatterErrors : []),
                     ]}
@@ -2173,6 +2230,7 @@ export function DataVisualizationPage() {
                   />
                 }
                 metricConfiguration={
+                  filters.analysisModel === "unit" ? <div className="small text-muted">As estatísticas por UM são apresentadas no gráfico. Para alterar os filtros, execute novamente a análise.</div> :
                   <MetricConfigurationPanel
                     configuration={metricConfiguration}
                     series={metricSeriesOptions}
@@ -2259,7 +2317,7 @@ export function DataVisualizationPage() {
               ) : null}
               {query.loading ? (
                 <div className="piad-loading" data-testid="chart-loading">
-                  <span className="spinner-border spinner-border-sm me-2" /> Carregando serie temporal...
+                  <span className="spinner-border spinner-border-sm me-2" /> {filters.analysisModel === "unit" ? "Calculando agregados por UM..." : "Carregando serie temporal..."}
                 </div>
               ) : query.errorMessage ? (
                 <Alert variant="danger" className="mb-0" data-testid="chart-error">
@@ -2306,12 +2364,18 @@ export function DataVisualizationPage() {
                 </div>
               ) : chartGroups ? (
                 <div data-testid="chart-groups" className="position-relative">
+                  {query.unitAnalysis && !isProductionUnitRule(filters.timeAnalysisRule) ? (
+                    <Alert variant="warning">Base Unidade oferece Média, Mínimo, Máximo e OOC. A regra selecionada não possui agregado por UM.</Alert>
+                  ) : null}
+                  {query.unitAnalysis?.segments.some((segment) => segment.variables.some((item) => selectedTagIds.includes(item.tag_id) && item.tag_id !== query.unitAnalysis?.um_tag_id && item.data_type !== "NUMERIC")) ? (
+                    <Alert variant="info">Média, Mínimo e Máximo são exibidos apenas para variáveis numéricas. Tags STRING e DIGITAL não possuem esses agregados numéricos.</Alert>
+                  ) : null}
                   {numericChart &&
-                  filters.visualization !== "histogram" &&
+                  (query.unitAnalysis || (filters.visualization !== "histogram" &&
                   filters.visualization !== "boxplot" &&
                   filters.visualization !== "scatter" &&
                   filters.visualization !== "bars" &&
-                  filters.visualization !== "singleValue" ? (
+                  filters.visualization !== "singleValue")) ? (
                     <div
                       className={showBothCharts ? "mb-4" : undefined}
                       data-testid="numeric-chart"
@@ -2339,13 +2403,14 @@ export function DataVisualizationPage() {
                         isZoomed={Boolean(zoomedRange)}
                         mode={filters.mode}
                         titleLabel={
-                          filters.visualization === "line" ? "Linha temporal" : undefined
+                          query.unitAnalysis && filters.timeAnalysisRule === "OOC" ? "Atendido (%) por UM" : query.unitAnalysis ? "Agregados por UM" : filters.visualization === "line" ? "Linha temporal" : undefined
                         }
-                        visualRules={visualRules}
-                        limitSeries={resolvedLimitSeries}
-                        normLimitSeries={displayedNormLimitSeries}
+                        visualRules={query.unitAnalysis && filters.timeAnalysisRule === "OOC" ? undefined : visualRules}
+                        limitSeries={query.unitAnalysis && filters.timeAnalysisRule === "OOC" ? [] : resolvedLimitSeries}
+                        normLimitSeries={query.unitAnalysis && filters.timeAnalysisRule === "OOC" ? [] : displayedNormLimitSeries}
                         hidePhysicalNormLimits={filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC"}
                         umSeries={umChartSeries}
+                        unitBands={unitContext && selectedTagIds.includes(unitContext.um_tag_id) ? unitContext.segments.map(segment => ({ start: Date.parse(segment.start_time), end: Date.parse(segment.end_time), label: segment.um_value ?? "Sem UM" })) : undefined}
                         syncGroup={TIME_CHART_SYNC_GROUP}
                         enableZoomKeyboardUndo
                         onVisibleWindowChange={handleVisibleWindowChange}
@@ -2353,7 +2418,7 @@ export function DataVisualizationPage() {
                       />
                     </div>
                   ) : null}
-                  {numericChart && filters.visualization === "histogram" ? (
+                  {!query.unitAnalysis && numericChart && filters.visualization === "histogram" ? (
                     <div data-testid="histogram-charts" className="d-flex flex-column gap-4">
                       {numericChart.series.map((series) => (
                         <div key={series.tagId} data-testid="histogram-chart">
@@ -2362,7 +2427,7 @@ export function DataVisualizationPage() {
                       ))}
                     </div>
                   ) : null}
-                  {numericChart && filters.visualization === "boxplot" ? (
+                  {!query.unitAnalysis && numericChart && filters.visualization === "boxplot" ? (
                     <div data-testid="boxplot-charts" className="d-flex flex-column gap-4">
                       {boxPlotGroups.map((group) => (
                         <div key={group.unit.toLocaleLowerCase("pt-BR")} data-testid="boxplot-chart">
@@ -2371,7 +2436,7 @@ export function DataVisualizationPage() {
                       ))}
                     </div>
                   ) : null}
-                  {filters.visualization === "scatter" &&
+                  {!query.unitAnalysis && filters.visualization === "scatter" &&
                   scatterXSeries && scatterYSeries &&
                   scatterPairs.length >= 2 ? (
                     <div data-testid="scatter-chart">
@@ -2382,7 +2447,7 @@ export function DataVisualizationPage() {
                       />
                     </div>
                   ) : null}
-                  {filters.visualization === "scatter" &&
+                  {!query.unitAnalysis && filters.visualization === "scatter" &&
                   (!scatterXSeries || !scatterYSeries) ? (
                     <Alert variant="info" className="mb-0" data-testid="scatter-series-guidance">
                       {originalNumericSeries.length === 0
@@ -2392,7 +2457,7 @@ export function DataVisualizationPage() {
                         : `Foram encontradas ${originalNumericSeries.length} séries numéricas; selecione explicitamente tags diferentes para os eixos X e Y.`}
                     </Alert>
                   ) : null}
-                  {filters.visualization === "scatter" &&
+                  {!query.unitAnalysis && filters.visualization === "scatter" &&
                   scatterXSeries && scatterYSeries &&
                   scatterPairs.length < 2 ? (
                     <Alert variant="info" className="mb-0" data-testid="scatter-pairs-guidance">
@@ -2409,7 +2474,7 @@ export function DataVisualizationPage() {
                       ))}
                     </div>
                   ) : null}
-                  {filters.visualization === "singleValue" ? (
+                  {!query.unitAnalysis && filters.visualization === "singleValue" ? (
                     <SingleValueCards
                       series={filteredTimeSeries?.series ?? []}
                       ignoreBadQuality={false}
@@ -2512,7 +2577,7 @@ export function DataVisualizationPage() {
               ) : null}
             </Card.Body>
           </Card>
-          {query.timeSeries ? <MetricResults results={metricResults} series={metricNumericSeries} /> : null}
+          {query.timeSeries && !query.unitAnalysis ? <MetricResults results={metricResults} series={metricNumericSeries} /> : null}
           {query.timeSeries ? (
             <div className="mb-3">
               <QuerySummary
@@ -2526,7 +2591,7 @@ export function DataVisualizationPage() {
                 partial={query.partial}
                 mode={filters.mode}
                 filterSummary={filterResult?.summary ?? null}
-                queryExecution={query.timeSeries?.query_execution ?? null}
+                queryExecution={filteredTimeSeries?.query_execution ?? query.timeSeries?.query_execution ?? null}
                 seriesMeta={filteredTimeSeries?.series ?? []}
               />
             </div>

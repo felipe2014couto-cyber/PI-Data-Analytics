@@ -145,53 +145,6 @@ def compute_automatic_interval(
     return seconds_to_interval(int(math.ceil(clamped)))
 
 
-def compute_interpolated_chunks(
-    start_time: datetime,
-    end_time: datetime,
-    interval: str,
-    chunk_days: Optional[int] = None,
-) -> List[TimeChunk]:
-    if chunk_days is None:
-        chunk_days = settings.pi_query_initial_chunk_days
-    interval_secs = interval_to_seconds(interval)
-    chunk_max_points = settings.pi_query_chunk_max_points
-
-    max_duration_per_chunk = chunk_max_points * interval_secs
-    max_chunk_days_duration = timedelta(days=chunk_days)
-    chunk_duration = timedelta(seconds=min(
-        max_duration_per_chunk,
-        int(max_chunk_days_duration.total_seconds()),
-    ))
-
-    chunks: List[TimeChunk] = []
-    current = start_time
-    index = 0
-    while current < end_time:
-        chunk_end = min(current + chunk_duration, end_time)
-        chunks.append(TimeChunk(
-            start_time=current,
-            end_time=chunk_end,
-            index=index,
-        ))
-        current = chunk_end
-        index += 1
-        if index > settings.pi_query_max_chunks:
-            raise ValueError("Too many interpolated chunks")
-    return chunks
-
-
-def estimate_interpolated_points(
-    start_time: datetime,
-    end_time: datetime,
-    interval: str,
-) -> int:
-    interval_secs = interval_to_seconds(interval)
-    if interval_secs <= 0:
-        return 0
-    duration_secs = (end_time - start_time).total_seconds()
-    return int(duration_secs / interval_secs) + 1
-
-
 def estimate_recorded_points(
     chunks: List[TimeChunk],
     points_per_chunk: int,
@@ -250,29 +203,13 @@ def build_plan_for_visual(
     plan = QueryPlan()
     plan.resolution_mode = resolution_mode
 
-    if mode == "interpolated":
-        if resolution_mode == "automatic":
-            eff_interval = compute_automatic_interval(
-                start_time, end_time, effective_per_tag
-            )
-        else:
-            eff_interval = interval or "1m"
-
-        plan.effective_interval = eff_interval
-        plan.chunks = compute_interpolated_chunks(
-            start_time, end_time, eff_interval
-        )
-        plan.estimated_points_per_chunk = estimate_interpolated_points(
-            start_time, end_time, eff_interval
-        )
-    else:
-        plan.effective_interval = None
-        plan.chunks = split_period_into_chunks(
-            start_time,
-            end_time,
-            settings.pi_query_initial_chunk_days,
-        )
-        plan.estimated_points_per_chunk = settings.pi_query_chunk_max_points
+    plan.effective_interval = None
+    plan.chunks = split_period_into_chunks(
+        start_time,
+        end_time,
+        settings.pi_query_initial_chunk_days,
+    )
+    plan.estimated_points_per_chunk = settings.pi_query_chunk_max_points
 
     plan.total_chunks = len(plan.chunks)
     plan.total_estimated_points = plan.total_chunks * plan.estimated_points_per_chunk

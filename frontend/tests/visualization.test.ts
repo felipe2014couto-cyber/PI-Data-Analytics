@@ -21,6 +21,7 @@ import {
   type PeriodPreset,
 } from "../src/utils/period";
 import type { TimeSeries } from "../src/types";
+import { resolveNumericCursorValue } from "../src/utils/cursorValue";
 
 describe("PI Plot vertices", () => {
   it("renders first, extrema and last in their real temporal order", () => {
@@ -334,7 +335,7 @@ describe("chart data builder", () => {
     const chart = buildChartData(textual, { ignoreBadQuality: false });
 
     expect(chart.categories).toEqual(["B", "A"]);
-    expect(chart.series[0].stateValues).toEqual(["B", "A", "A"]);
+    expect(chart.series[0].stateValues).toEqual(["B", "A"]);
   });
 
   it("keeps filtered timestamps as gaps in textual state charts", () => {
@@ -829,5 +830,382 @@ describe("CSV exporter", () => {
   it("builds safe filenames", () => {
     const filename = buildCsvFilename(sampleTimeSeries, "fallback");
     expect(filename).toMatch(/^pi-analytics-data_RB3_\d{8}_\d{6}\.csv$/);
+  });
+});
+
+
+describe("numeric value preservation", () => {
+  it("preserves zero and negative measurements on the numeric series", () => {
+    const start = "2026-07-15T00:00:00Z";
+    const next = "2026-07-15T00:01:00Z";
+    const chart = buildChartData({
+      ...sampleTimeSeries,
+      series: [{
+        ...sampleTimeSeries.series[0],
+        points: [
+          { timestamp: start, value: 0, good: true, questionable: false, substituted: false },
+          { timestamp: next, value: -12.5, good: true, questionable: false, substituted: false },
+        ],
+      }],
+    }, { ignoreBadQuality: false });
+    expect(chart.series[0].points).toEqual([[Date.parse(start), 0], [Date.parse(next), -12.5]]);
+  });
+});
+
+describe("render-only discontinuity sentinels", () => {
+  it("breaks the line without being counted as bad or good measurement quality", () => {
+    const start = "2026-07-15T00:00:00Z";
+    const gap = "2026-07-15T00:01:00Z";
+    const end = "2026-07-15T00:02:00Z";
+    const chart = buildChartData(
+      {
+        ...sampleTimeSeries,
+        series: [{
+          ...sampleTimeSeries.series[0],
+          points: [
+            { timestamp: start, value: 25, good: true, questionable: false, substituted: false },
+            { timestamp: gap, value: null, good: false, questionable: false, substituted: false, is_gapfilled: false, is_render_sentinel: true },
+            { timestamp: end, value: 0, good: true, questionable: false, substituted: false },
+          ],
+        }],
+      },
+      { ignoreBadQuality: true },
+    );
+    const series = chart.series[0];
+
+    expect(series.points).toEqual([
+      [Date.parse(start), 25],
+      [Date.parse(gap), null],
+      [Date.parse(end), 0],
+    ]);
+    expect(series.qualitySeries).toEqual([
+      [Date.parse(start), 0],
+      [Date.parse(end), 0],
+    ]);
+    expect(series.numeric).toBe(2);
+    expect(series.dropped).toBe(0);
+    expect(chart.totalDroppedPoints).toBe(0);
+  });
+
+  it("orders a coverage sentinel among expanded CAGG event vertices", () => {
+    const chart = buildChartData(
+      {
+        ...sampleTimeSeries,
+        series: [{
+          ...sampleTimeSeries.series[0],
+          points: [
+            {
+              timestamp: "2026-07-15T09:00:00Z",
+              value: 3,
+              plot_first: 1,
+              plot_first_ts: "2026-07-15T09:01:00Z",
+              plot_min: 1,
+              plot_min_ts: "2026-07-15T09:01:00Z",
+              plot_max: 5,
+              plot_max_ts: "2026-07-15T09:40:00Z",
+              plot_last: 4,
+              plot_last_ts: "2026-07-15T09:59:00Z",
+              plot_sample_count: 4,
+              good: true,
+              questionable: false,
+              substituted: false,
+            },
+            {
+              timestamp: "2026-07-15T09:35:00Z",
+              value: null,
+              good: false,
+              questionable: false,
+              substituted: false,
+              is_render_sentinel: true,
+            },
+          ],
+        }],
+      },
+      { ignoreBadQuality: false },
+    );
+
+    expect(chart.series[0].points).toEqual([
+      [Date.parse("2026-07-15T09:01:00Z"), 1],
+      [Date.parse("2026-07-15T09:35:00Z"), null],
+      [Date.parse("2026-07-15T09:40:00Z"), 5],
+      [Date.parse("2026-07-15T09:59:00Z"), 4],
+    ]);
+    expect(chart.totalDroppedPoints).toBe(0);
+    expect(chart.totalRenderSentinels).toBe(1);
+  });
+});
+
+describe("RECORDED cursor semantics", () => {
+  const t0 = Date.parse("2026-09-29T09:00:21.753005Z");
+  const t1 = Date.parse("2026-09-29T13:44:08.291Z");
+  const points: Array<[number, number | null]> = [[t0, 0.05000014], [t1, 0.153280631]];
+  const quality: Array<[number, number]> = [[t0, 0], [t1, 0]];
+
+  it("shows the exact RECORDED value at an event timestamp", () => {
+    expect(resolveNumericCursorValue(points, t0, false, quality)).toEqual({ value: 0.05000014, source: "RECORDED" });
+  });
+
+  it("derives a display-only linear value between Good events when Step=false", () => {
+    const cursor = Date.parse("2026-09-29T10:24:00Z");
+    const result = resolveNumericCursorValue(points, cursor, false, quality);
+    expect(result.source).toBe("LINEAR_BETWEEN_RECORDED");
+    expect(result.value).toBeCloseTo(0.08044, 4);
+  });
+
+  it("uses carry-forward for Step=true and never linear interpolation", () => {
+    expect(resolveNumericCursorValue(points, t0 + (t1 - t0) / 2, true, quality)).toEqual({
+      value: 0.05000014,
+      source: "STEP_STATE",
+    });
+  });
+
+  it("returns no value across a real null gap and when Step metadata is unknown", () => {
+    const gapPoints: Array<[number, number | null]> = [[t0, 1], [t0 + 1, null], [t1, 2]];
+    expect(resolveNumericCursorValue(gapPoints, (t0 + t1) / 2, false)).toEqual({ value: null, source: "GAP" });
+    expect(resolveNumericCursorValue(points, t0 + (t1 - t0) / 2, null)).toEqual({ value: null, source: null });
+  });
+});
+
+describe("STRING tag visualization", () => {
+  const stringSeries = {
+    tag_id: 100,
+    tag_name: "LFI_RB1_STATUS",
+    display_name: "Status RB1",
+    equipment: "RB1",
+    section: "LFI",
+    variable_type: null,
+    unit: null,
+    data_type: "STRING" as const,
+    points: [
+      { timestamp: "2026-07-15T00:00:00Z", value: "RUN", good: true, questionable: false, substituted: false },
+      { timestamp: "2026-07-15T00:30:00Z", value: "STOP", good: true, questionable: false, substituted: false },
+      { timestamp: "2026-07-15T01:00:00Z", value: "RUN", good: true, questionable: false, substituted: false },
+    ],
+  };
+
+  it("routes STRING series into the numeric group for combined charts", () => {
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [stringSeries],
+    };
+    const groups = buildChartDataGroups(ts, { ignoreBadQuality: false });
+    expect(groups.numeric).not.toBeNull();
+    expect(groups.numeric!.series).toHaveLength(1);
+    expect(groups.numeric!.series[0].dataType).toBe("STRING");
+    expect(groups.textual).toHaveLength(0);
+  });
+
+  it("builds categorical state points with indices instead of float conversion", () => {
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [stringSeries],
+    };
+    const chart = buildChartData(ts, { ignoreBadQuality: false });
+    const series = chart.series[0];
+    expect(series.dataType).toBe("STRING");
+    // stateValues is the per-series category dictionary; statePoints keep transitions.
+    expect(series.stateValues).toEqual(["RUN", "STOP"]);
+    expect(series.statePoints).toEqual([
+      [Date.parse("2026-07-15T00:00:00Z"), 0],
+      [Date.parse("2026-07-15T00:30:00Z"), 1],
+      [Date.parse("2026-07-15T01:00:00Z"), 0],
+    ]);
+    expect(series.numeric).toBe(0);
+    expect(series.nonNumeric).toBe(3);
+  });
+
+  it("combines STRING and REAL series in a single chart sharing the X axis", () => {
+    const realSeries = {
+      ...sampleTimeSeries.series[0],
+      tag_id: 200,
+      tag_name: "LFI_RB1_TEMP",
+      display_name: "Temp RB1",
+      data_type: "REAL" as const,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: 10, good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T01:00:00Z", value: 20, good: true, questionable: false, substituted: false },
+      ],
+    };
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [realSeries, stringSeries],
+    };
+    const groups = buildChartDataGroups(ts, { ignoreBadQuality: false });
+    expect(groups.numeric).not.toBeNull();
+    expect(groups.numeric!.series).toHaveLength(2);
+    const kinds = groups.numeric!.series.map((s) => s.dataType);
+    expect(kinds).toContain("REAL");
+    expect(kinds).toContain("STRING");
+  });
+
+  it("renders mixed STRING/REAL data on a shared time axis and reserves separate state lanes per tag", () => {
+    const secondString = {
+      ...stringSeries,
+      tag_id: 101,
+      tag_name: "LFI_RB1_MODE",
+      display_name: "Mode RB1",
+      points: [{ timestamp: "2026-07-15T00:00:00Z", value: "RUN", good: true, questionable: false, substituted: false }],
+    };
+    const realSeries = {
+      ...sampleTimeSeries.series[0],
+      tag_id: 200,
+      tag_name: "LFI_RB1_SPEED",
+      display_name: "Speed RB1",
+      data_type: "REAL" as const,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: 10, good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T01:00:00Z", value: 20, good: true, questionable: false, substituted: false },
+      ],
+    };
+    const digitalSeries = {
+      ...realSeries,
+      tag_id: 201,
+      tag_name: "LFI_RB1_RUNNING",
+      display_name: "Ligado RB1",
+      data_type: "DIGITAL" as const,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: true, good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:30:00Z", value: false, good: true, questionable: false, substituted: false },
+      ],
+    };
+    const chart = buildChartData({ ...sampleTimeSeries, series: [realSeries, digitalSeries, stringSeries, secondString] }, { ignoreBadQuality: false });
+    const option = buildTimeSeriesChartOption({
+      chart,
+      equipment: "RB1",
+      start: new Date(sampleTimeSeries.start_time),
+      end: new Date(sampleTimeSeries.end_time),
+      mode: "recorded",
+    });
+    const axes = option.yAxis as Array<{ type?: string; data?: string[] }>;
+    const rendered = option.series as Array<{ name?: string; step?: string; data?: Array<[number, number | null]> }>;
+    const stringAxis = axes.find((axis) => axis.type === "category");
+    expect(option.xAxis).toMatchObject({ type: "time" });
+    expect(option.dataZoom).toEqual(expect.arrayContaining([expect.objectContaining({ type: "inside", xAxisIndex: 0 })]));
+    expect(stringAxis?.data).toContain("Status RB1 (LFI_RB1_STATUS): RUN");
+    expect(stringAxis?.data).toContain("Mode RB1 (LFI_RB1_MODE): RUN");
+    expect(stringAxis?.data).toContain("Ligado RB1 (LFI_RB1_RUNNING): true");
+    expect(rendered.find((series) => series.name === "Status RB1")?.step).toBe("end");
+    expect(rendered.find((series) => series.name === "Mode RB1")?.step).toBe("end");
+    expect(rendered.find((series) => series.name === "Ligado RB1")?.step).toBe("end");
+  });
+
+  it("distinguishes multiple STRING series with separate colors and state values", () => {
+    const secondString = {
+      ...stringSeries,
+      tag_id: 101,
+      tag_name: "LFI_RB1_MODE",
+      display_name: "Mode RB1",
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: "AUTO", good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:45:00Z", value: "MANUAL", good: true, questionable: false, substituted: false },
+      ],
+    };
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [stringSeries, secondString],
+    };
+    const chart = buildChartData(ts, { ignoreBadQuality: false });
+    expect(chart.series).toHaveLength(2);
+    expect(chart.series[0].stateValues).toEqual(["RUN", "STOP"]);
+    expect(chart.series[1].stateValues).toEqual(["AUTO", "MANUAL"]);
+    expect(chart.series[0].color).not.toBe(chart.series[1].color);
+  });
+
+  it("preserves empty string values as distinct from null or gaps", () => {
+    const emptyStringSeries = {
+      ...stringSeries,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: "", good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:30:00Z", value: "ACTIVE", good: true, questionable: false, substituted: false },
+      ],
+    };
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [emptyStringSeries],
+    };
+    const chart = buildChartData(ts, { ignoreBadQuality: false });
+    const series = chart.series[0];
+    expect(series.stateValues).toContain("");
+    expect(series.statePoints[0][1]).toBe(series.stateValues.indexOf(""));
+    expect(series.nonNumeric).toBe(2);
+  });
+
+  it("handles bad quality STRING points without dropping them", () => {
+    const badQualityString = {
+      ...stringSeries,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: "OK", good: false, questionable: true, substituted: false },
+        { timestamp: "2026-07-15T00:30:00Z", value: "FAIL", good: true, questionable: false, substituted: false },
+      ],
+    };
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [badQualityString],
+    };
+    const chart = buildChartData(ts, { ignoreBadQuality: false });
+    const series = chart.series[0];
+    expect(series.nonNumeric).toBe(2);
+    expect(series.dropped).toBe(0);
+    // 2 transitions + 1 closing sentinel appended by buildChartData
+    expect(series.statePoints).toHaveLength(3);
+  });
+
+  it("breaks STRING state display at explicit null events instead of carrying the state across the gap", () => {
+    const withGap = {
+      ...stringSeries,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: "RUN", good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:30:00Z", value: null, good: false, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T01:00:00Z", value: "STOP", good: true, questionable: false, substituted: false },
+      ],
+    };
+    const chart = buildChartData({ ...sampleTimeSeries, series: [withGap] }, { ignoreBadQuality: false });
+    expect(chart.series[0].statePoints).toContainEqual([Date.parse("2026-07-15T00:30:00Z"), null]);
+    expect(chart.series[0].statePoints[chart.series[0].statePoints.length - 1]?.[0]).toBe(Date.parse("2026-07-15T01:00:00Z"));
+  });
+
+  it("does not regress numeric series when STRING series are absent", () => {
+    const chart = buildChartData(sampleTimeSeries, { ignoreBadQuality: false });
+    // sampleTimeSeries may contain mixed values; verify no STRING-typed series are introduced
+    expect(chart.series.every((s) => !s.dataType || s.dataType !== "STRING")).toBe(true);
+    expect(chart.series[0].numeric).toBeGreaterThan(0);
+    expect(chart.totalNumericPoints).toBeGreaterThan(0);
+  });
+
+  it("keeps STRING series in line visualization plan instead of marking incompatible", () => {
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [stringSeries],
+    };
+    const groups = buildChartDataGroups(ts, { ignoreBadQuality: false });
+    const plan = resolveVisualization(groups, "line");
+    expect(plan.numeric).not.toBeNull();
+    expect(plan.incompatibleSeries).toHaveLength(0);
+  });
+
+  it("preserves transition ordering in state points", () => {
+    const transitions = {
+      ...stringSeries,
+      points: [
+        { timestamp: "2026-07-15T00:00:00Z", value: "A", good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:10:00Z", value: "B", good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:20:00Z", value: "A", good: true, questionable: false, substituted: false },
+        { timestamp: "2026-07-15T00:30:00Z", value: "C", good: true, questionable: false, substituted: false },
+      ],
+    };
+    const ts: TimeSeries = {
+      ...sampleTimeSeries,
+      series: [transitions],
+    };
+    const chart = buildChartData(ts, { ignoreBadQuality: false });
+    const series = chart.series[0];
+    expect(series.stateValues).toEqual(["A", "B", "C"]);
+    expect(series.statePoints).toEqual([
+      [Date.parse("2026-07-15T00:00:00Z"), 0],
+      [Date.parse("2026-07-15T00:10:00Z"), 1],
+      [Date.parse("2026-07-15T00:20:00Z"), 0],
+      [Date.parse("2026-07-15T00:30:00Z"), 2],
+      [Date.parse(sampleTimeSeries.end_time), 2],
+    ]);
   });
 });

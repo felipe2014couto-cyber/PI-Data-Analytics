@@ -1,4 +1,8 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
 
 from app.models.postgres import PiBackfillJob
 from app.workers import backfill_worker
@@ -71,3 +75,43 @@ def test_explicit_claim_can_adopt_reviewed_legacy_job(db_session, monkeypatch) -
     assert claimed.lease_expires_at is not None
     db_session.delete(claimed)
     db_session.commit()
+
+
+def test_legacy_interpolated_backfill_job_is_ignored_without_mutation(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(backfill_worker, "SessionLocal", TestingSessionLocal)
+    legacy = _job(
+        db_session,
+        mode="INTERPOLATED_10S",
+        interval_seconds=10,
+        status="PENDING",
+        stage="PENDING",
+        round_name=None,
+        checkpoint_start=datetime.now(UTC) - timedelta(days=1),
+    )
+
+    assert legacy.id not in backfill_worker._active_job_ids(rounds=False)
+    assert asyncio.run(backfill_worker._resume_job_by_id(
+        legacy.id, asyncio.Semaphore(1), explicit=True,
+    )) is False
+
+    db_session.expire_all()
+    unchanged = db_session.get(PiBackfillJob, legacy.id)
+    assert unchanged is not None
+    assert unchanged.mode == "INTERPOLATED_10S"
+    assert unchanged.status == "PENDING"
+    assert unchanged.attempts == 1
+    db_session.delete(unchanged)
+    db_session.commit()
+
+
+def test_backfill_recorded_record_preserves_quality_and_legacy_mode_cannot_be_stamped() -> None:
+    point = SimpleNamespace(
+        timestamp=datetime(2026, 9, 21, tzinfo=UTC), value=-3.5,
+        good=False, questionable=True, substituted=True,
+    )
+    row = backfill_worker._record(20, point, "RECORDED")
+    assert row["source_mode"] == "RECORDED"
+    assert row["value_double"] == -3.5
+    assert (row["good"], row["questionable"], row["substituted"]) == (False, True, True)
+    with pytest.raises(ValueError, match="somente RECORDED"):
+        backfill_worker._record(20, point, "INTERPOLATED_300S")

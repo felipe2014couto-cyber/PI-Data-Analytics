@@ -28,7 +28,6 @@ from app.integrations.pi.errors import (
 from app.core.exceptions import QueryCancelledError
 from app.integrations.pi.provider import (
     PiDataProvider,
-    PiInterpolatedValues,
     PiPoint,
     PiRecordedValues,
     PiValue,
@@ -605,11 +604,24 @@ class PiWebApiDataProvider(PiDataProvider):
             raw=payload,
         )
 
+    async def get_point_step(self, web_id: str) -> Optional[bool]:
+        """Read the PI Point Step attribute; this is metadata, not history."""
+        response = await self._safe_request(
+            "GET", f"/points/{web_id}/attributes/Step",
+        )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PiInvalidResponseError("Resposta nao-JSON ao consultar PI Point Step.") from exc
+        if not isinstance(payload, dict):
+            raise PiInvalidResponseError("Resposta inesperada ao consultar PI Point Step.")
+        value = payload.get("Value")
+        if isinstance(value, dict):
+            value = value.get("Value")
+        return value if isinstance(value, bool) else None
+
     def _values_endpoint(self, web_id: str) -> str:
         return f"/streams/{web_id}/recorded"
-
-    def _interpolated_endpoint(self, web_id: str) -> str:
-        return f"/streams/{web_id}/interpolated"
 
     def _parse_values(self, payload: Any) -> List[PiValue]:
         """Parse flat stream and nested StreamSet responses."""
@@ -707,53 +719,6 @@ class PiWebApiDataProvider(PiDataProvider):
         values = self._parse_values(payload)
 
         return PiRecordedValues(
-            web_id=web_id,
-            values=values,
-        )
-
-    async def get_interpolated_values(
-        self,
-        web_id: str,
-        start_time: datetime,
-        end_time: datetime,
-        interval: str,
-        max_count: Optional[int] = None,
-    ) -> PiInterpolatedValues:
-        if not web_id:
-            raise PiInvalidResponseError(
-                "WebId vazio ao consultar valores interpolados."
-            )
-
-        if not interval:
-            raise PiInvalidResponseError(
-                "Intervalo obrigatorio para valores interpolados."
-            )
-
-        params: Dict[str, Any] = {
-            "startTime": self._format_timestamp(start_time),
-            "endTime": self._format_timestamp(end_time),
-            "interval": interval,
-        }
-
-        if max_count is not None:
-            params["maxCount"] = int(max_count)
-
-        response = await self._safe_request(
-            "GET",
-            self._interpolated_endpoint(web_id),
-            params=params,
-        )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise PiInvalidResponseError(
-                "Resposta nao-JSON do PI Web API."
-            ) from exc
-
-        values = self._parse_values(payload)
-
-        return PiInterpolatedValues(
             web_id=web_id,
             values=values,
         )

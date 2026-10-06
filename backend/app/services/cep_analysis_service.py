@@ -4,8 +4,8 @@ This service coordinates:
 1. Loading materialized data (already done by endpoint)
 2. Deduplicating PI tags
 3. Resolving WebIds
-4. Fetching Interpolated 5m (for compliance calculation)
-5. Fetching Recorded (optional, for API response)
+4. Fetching RECORDED events (for compliance calculation)
+5. Reusing or including RECORDED events for API response
 6. Calculating compliance via cep_calculator
 7. Building the final result
 8. Transitions to terminal state
@@ -87,21 +87,20 @@ class CepAnalysisService:
             web_ids, acquisition_diagnostics = await self._resolve_web_ids(unique_tags)
             await store.set_progress(query_id, 0, completed_work_units=1)
 
-            # 5. Fetch Interpolated at the requested interval
-            interpolated_data, interpolated_diagnostics = await self._fetch_interpolated(
+            # 5. Fetch actual RECORDED events; no time grid or synthetic values.
+            recorded_data, recorded_diagnostics = await self._fetch_recorded_for_analysis(
                 web_ids, materialized_data.request.start_time,
                 materialized_data.request.end_time,
-                materialized_data.request.interpolated_interval,
             )
-            acquisition_diagnostics.extend(interpolated_diagnostics)
+            acquisition_diagnostics.extend(recorded_diagnostics)
             await store.set_progress(query_id, 0, completed_work_units=2)
 
             # 6. Calculate compliance for each variable
             variable_results = []
             non_conforming_points: dict[int, list[CepNonConformingPoint]] = {}
-            # Keep the original Interpolated response for the expandable chart,
-            # but exclude machine-stopped samples from the CEP population.
-            calculation_data = self._exclude_machine_stopped(interpolated_data)
+            # Exclude machine-stopped events from the CEP population, while
+            # retaining the original RECORDED timestamps for chart output.
+            calculation_data = self._exclude_machine_stopped(recorded_data)
             for var in materialized_data.variables:
                 # The calculator is deliberately pure and bounded by the CEP
                 # request limits.  Keep it on the event loop instead of using
@@ -141,13 +140,13 @@ class CepAnalysisService:
             analysis_result = self._build_result(
                 query_id, materialized_data, variable_results,
                 recorded_series, recorded_metadata, acquisition_diagnostics,
-                interpolated_data, len(web_ids), analysis_started_at,
+                recorded_data, len(web_ids), analysis_started_at,
             )
 
             variable_series = self._build_variable_series(
                 materialized_data.variables,
                 materialized_data.unique_tags,
-                interpolated_data,
+                recorded_data,
                 non_conforming_points,
             )
 
@@ -235,35 +234,33 @@ class CepAnalysisService:
             result[tag.id] = point.web_id
         return result, diagnostics
 
-    # -- Interpolated fetch --
+    # -- RECORDED fetch --
 
-    async def _fetch_interpolated(
+    async def _fetch_recorded_for_analysis(
         self,
         web_ids: dict[int, str],
         start_time: datetime,
         end_time: datetime,
-        interval: str,
     ) -> tuple[dict[str, list[PiValue]], list[CepDiagnostic]]:
-        """Fetch Interpolated data at the requested interval."""
+        """Fetch RECORDED events in the exact requested time range."""
         if not web_ids:
             return {}, []
 
         try:
-            responses = await self._provider.get_interpolated_values_batch(
+            responses = await self._provider.get_recorded_values_batch(
                 web_ids=list(web_ids.values()),
                 start_time=start_time,
                 end_time=end_time,
-                interval=interval,
             )
         except PiIntegrationError as exc:
-            logger.warning("Interpolated batch fetch failed: %s", exc)
+            logger.warning("RECORDED batch fetch failed: %s", exc)
             return {}, [
                 CepDiagnostic(
                     tag_id=tag_id,
                     tag_name="",
                     variable_ids=[],
-                    error_code="PI_INTERPOLATED_FAILED",
-                    message="Falha ao adquirir amostras Interpolated no PI Web API.",
+                    error_code="PI_RECORDED_FAILED",
+                    message="Falha ao adquirir eventos RECORDED no PI Web API.",
                 )
                 for tag_id in web_ids
             ]
@@ -289,12 +286,12 @@ class CepAnalysisService:
         return mapped, diagnostics
 
     def _exclude_machine_stopped(
-        self, interpolated_data: dict[str, list[PiValue]]
+        self, recorded_data: dict[str, list[PiValue]]
     ) -> dict[str, list[PiValue]]:
         """Remove -999 samples before any CEP calculation or imputation."""
         return {
             tag_id: [point for point in points if not self._is_machine_stopped(point)]
-            for tag_id, points in interpolated_data.items()
+            for tag_id, points in recorded_data.items()
         }
 
     @staticmethod
@@ -417,14 +414,14 @@ class CepAnalysisService:
     def _calculate_variable_compliance(
         self,
         var: MaterializedVariable,
-        interpolated_data: dict[str, list[PiValue]],
+        recorded_data: dict[str, list[PiValue]],
         tag_variable_map: dict[int, list[int]],
     ) -> tuple[CepVariableResult, list[CepNonConformingPoint]]:
         """Calculate compliance for a single variable."""
-        reading_values = interpolated_data.get(str(var.reading_tag_id), [])
-        lower_values = interpolated_data.get(str(var.lower_limit_tag_id), [])
-        upper_values = interpolated_data.get(str(var.upper_limit_tag_id), [])
-        target_values = interpolated_data.get(str(var.target_tag_id), []) if var.target_tag_id else []
+        reading_values = recorded_data.get(str(var.reading_tag_id), [])
+        lower_values = recorded_data.get(str(var.lower_limit_tag_id), [])
+        upper_values = recorded_data.get(str(var.upper_limit_tag_id), [])
+        target_values = recorded_data.get(str(var.target_tag_id), []) if var.target_tag_id else []
 
         # Convert to CepSample
         reading_samples = [pi_value_to_cep_sample(v) for v in reading_values]
@@ -496,16 +493,16 @@ class CepAnalysisService:
         self,
         variables: list[MaterializedVariable],
         tags: list[MaterializedTag],
-        interpolated_data: dict[str, list[PiValue]],
+        recorded_data: dict[str, list[PiValue]],
         non_conforming_points: dict[int, list[CepNonConformingPoint]],
     ) -> dict[int, CepVariableSeries]:
-        """Build chart data from the exact Interpolated batch response."""
+        """Build chart data from the RECORDED events at their original timestamps."""
         tag_names = {tag.id: tag.pi_tag_name for tag in tags}
         series_by_variable: dict[int, CepVariableSeries] = {}
         for var in variables:
-            reading = interpolated_data.get(str(var.reading_tag_id), [])
-            lower = {point.timestamp: point for point in interpolated_data.get(str(var.lower_limit_tag_id), [])}
-            upper = {point.timestamp: point for point in interpolated_data.get(str(var.upper_limit_tag_id), [])}
+            reading = recorded_data.get(str(var.reading_tag_id), [])
+            lower = {point.timestamp: point for point in recorded_data.get(str(var.lower_limit_tag_id), [])}
+            upper = {point.timestamp: point for point in recorded_data.get(str(var.upper_limit_tag_id), [])}
             # The calculator evaluates each reading timestamp against the exact
             # matching limit timestamps; do not add limit-only points to the chart.
             timestamps = sorted({p.timestamp for p in reading})
@@ -549,7 +546,7 @@ class CepAnalysisService:
         recorded_series: list[CepRecordedSeries],
         recorded_metadata: dict[str, object],
         acquisition_diagnostics: list[CepDiagnostic],
-        interpolated_data: dict[str, list[PiValue]],
+        recorded_data: dict[str, list[PiValue]],
         resolved_webid_count: int,
         analysis_started_at: datetime,
     ) -> CepAnalysisResult:
@@ -606,13 +603,13 @@ class CepAnalysisService:
 
         metadata = CepAnalysisMetadata(
             pi_request_count=resolved_webid_count,
-            pi_points_received=sum(len(points) for points in interpolated_data.values()),
+            pi_points_received=sum(len(points) for points in recorded_data.values()),
             points_returned=sum(v.total_points for v in variable_results),
             tags_processed=resolved_webid_count,
             tags_failed=sum(
                 1
                 for d in diagnostics
-                if d.error_code in {"TAG_NOT_FOUND", "WEBID_RESOLUTION_FAILED", "PI_INTERPOLATED_FAILED"}
+                if d.error_code in {"TAG_NOT_FOUND", "WEBID_RESOLUTION_FAILED", "PI_RECORDED_FAILED"}
             ),
             webid_resolved=resolved_webid_count,
             duration_ms=int((datetime.now(UTC) - analysis_started_at).total_seconds() * 1000),

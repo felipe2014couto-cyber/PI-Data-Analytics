@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
@@ -11,7 +12,7 @@ from app.schemas.historical_reload import (
     HistoricalReloadRequest,
     HistoricalReloadSummaryResponse,
 )
-from app.services.historical_reload_service import HistoricalReloadService, _interval_label
+from app.services.historical_reload_service import HistoricalReloadService
 
 router = APIRouter(
     prefix="/admin/historical-reloads",
@@ -29,8 +30,7 @@ def _job_response(job) -> HistoricalReloadJobResponse:
         progress = min(100.0, max(0.0, elapsed / duration * 100))
     return HistoricalReloadJobResponse(
         id=job.id, tag_id=job.tag_id,
-        mode="interpolated" if job.mode.startswith("INTERPOLATED") else "recorded",
-        interval=_interval_label(job.interval_seconds), target_start=job.target_start,
+        mode="recorded", target_start=job.target_start,
         target_end=job.target_end, next_start=job.next_start, status=job.status,
         stage=job.stage, progress_percent=progress,
         attempts=job.attempts or 0, error_message=job.error_message,
@@ -63,6 +63,12 @@ def clear_terminal_reloads(db: Session = Depends(get_db_session)):
     return {"deleted": HistoricalReloadService(db).clear_terminal()}
 
 
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_reload(job_id: int, db: Session = Depends(get_db_session)):
+    """Remove one finished reload record, preserving historical samples and coverage."""
+    HistoricalReloadService(db).delete_terminal(job_id)
+
+
 @router.post("/cancel-batch", response_model=list[HistoricalReloadJobResponse])
 def cancel_batch(payload: HistoricalReloadBatchCancelRequest, db: Session = Depends(get_db_session)):
     return [_job_response(job) for job in HistoricalReloadService(db).cancel_many(payload.job_ids)]
@@ -73,11 +79,10 @@ def reload_coverage(
     tag_id: int,
     start_time: datetime,
     end_time: datetime,
-    mode: str = "recorded",
-    interval: str | None = None,
+    mode: Literal["recorded"] = "recorded",
     db: Session = Depends(get_db_session),
 ):
-    return HistoricalReloadService(db).coverage(tag_id, start_time, end_time, mode, interval)
+    return HistoricalReloadService(db).coverage(tag_id, start_time, end_time, mode)
 
 
 @router.get("/{job_id}", response_model=HistoricalReloadJobResponse)

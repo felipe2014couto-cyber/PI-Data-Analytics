@@ -336,6 +336,13 @@ export function applyDataFilters(
 
     for (const point of series.points) {
       if (countsForSummary) totalReceived += 1;
+      if (point.is_render_sentinel) {
+        // A render-only null marks a proven discontinuity, not a rejected PI
+        // measurement and not a filter candidate.
+        newPoints.push(point);
+        if (countsForSummary) totalRemaining += 1;
+        continue;
+      }
       let removed = false;
 
       if (quality.excludeBad && !point.good) {

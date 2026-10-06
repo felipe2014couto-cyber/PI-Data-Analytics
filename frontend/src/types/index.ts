@@ -1,12 +1,12 @@
 export type PiTagDataType = "NUMERIC" | "NON_NUMERIC";
 
-export type HistoricalReloadMode = "recorded" | "interpolated";
+export type HistoricalReloadMode = "recorded";
+export type HistoricalReloadJobMode = "recorded";
 
 export interface HistoricalReloadRequest {
   start_time: string;
   end_time: string;
   mode: HistoricalReloadMode;
-  interval?: string;
   tag_id?: number;
   variable_id?: number;
   equipment_id?: number;
@@ -17,8 +17,7 @@ export interface HistoricalReloadRequest {
 export interface HistoricalReloadJob {
   id: number;
   tag_id: number;
-  mode: HistoricalReloadMode;
-  interval: string | null;
+  mode: HistoricalReloadJobMode;
   target_start: string;
   target_end: string;
   next_start: string | null;
@@ -371,7 +370,7 @@ export interface PiTagValidationBatchResponse {
   results: PiTagValidationResult[];
 }
 
-export type TimeSeriesMode = "recorded" | "interpolated";
+export type TimeSeriesMode = "recorded";
 export type TimeAnalysisRule = "DEFAULT" | "MEDIA" | "MAXIMO" | "MIN" | "OOC";
 export type ComparisonType = "periods" | "equipments" | "categories";
 
@@ -558,6 +557,26 @@ export type MetricResult = MetricResultBase & (
   | { status: Exclude<MetricResultStatus, "ok">; value: null }
 );
 
+export type ProductionUnitRule = "MEDIA" | "MIN" | "MAXIMO" | "OOC";
+
+/** Visual aggregate intervals, not PI measurements. The end is exclusive. */
+export interface ProductionUnitAggregateInterval {
+  eligibleSampleCount?: number;
+  attendedSampleCount?: number;
+  start: number;
+  end: number;
+  um: string | null;
+  value: number | null;
+  rawSampleCount: number;
+  filteredSampleCount: number;
+  sampleCount: number;
+}
+
+export interface ProductionUnitAggregation {
+  rule: ProductionUnitRule;
+  segments: ProductionUnitAggregateInterval[];
+}
+
 export interface TimeSeriesPoint {
   timestamp: string;
   value: number | string | boolean | null;
@@ -572,6 +591,8 @@ export interface TimeSeriesPoint {
   plot_last_ts?: string | null;
   plot_sample_count?: number | null;
   is_gapfilled?: boolean;
+  is_render_sentinel?: boolean;
+  is_boundary_seed?: boolean;
   has_previous_value?: boolean | null;
   good: boolean;
   questionable: boolean;
@@ -579,6 +600,8 @@ export interface TimeSeriesPoint {
   elapsed_ms?: number | null;
   filtered_out?: boolean;
 }
+
+export type TimeSeriesDataType = "REAL" | "DIGITAL" | "STRING";
 
 export interface TimeSeriesSeries {
   tag_id: number;
@@ -588,6 +611,10 @@ export interface TimeSeriesSeries {
   section: string | null;
   variable_type: string | null;
   unit: string | null;
+  data_type?: TimeSeriesDataType | null;
+  /** PI Point Step metadata; null means the source has not supplied it. */
+  step?: boolean | null;
+  unit_aggregation?: ProductionUnitAggregation;
   points: TimeSeriesPoint[];
   source_point_count?: number | null;
   returned_point_count?: number | null;
@@ -605,6 +632,7 @@ export interface TimeSeriesSeries {
 }
 
 export interface QueryExecutionMetadata {
+  production_unit_segment_count?: number;
   source?: "timescaledb" | "pi_web_api" | "hybrid" | "sip" | null;
   effective_source_mode?: string | null;
   strategy?: string | null;
@@ -859,7 +887,6 @@ export interface CepAnalysisRequest {
   section_id?: number | null;
   variable_ids?: number[] | null;
   include_recorded?: boolean;
-  interpolated_interval?: "1m" | "2m" | "5m" | "10m" | "15m" | "30m" | "1h";
 }
 
 export interface CepAnalysisAccepted {

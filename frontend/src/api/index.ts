@@ -27,6 +27,7 @@ import type {
   TimeSeriesComparisonRequest,
   TimeSeriesMode,
   DynamicAnalysisFilter,
+  DataFilterConfiguration,
   VariableType,
   VariableTypeCreate,
   VariableTypeUpdate,
@@ -71,6 +72,7 @@ export const historicalReloadApi = {
   cancelBatch(jobIds: number[]) {
     return httpClient.post<HistoricalReloadJob[]>("/admin/historical-reloads/cancel-batch", { job_ids: jobIds });
   },
+  deleteJob(id: number) { return httpClient.delete<void>(`/admin/historical-reloads/${id}`); },
   clearTerminal() { return httpClient.delete<{ deleted: number }>("/admin/historical-reloads/terminal"); },
 };
 
@@ -181,6 +183,27 @@ export interface PiTagCsvRowPreview { row: number; values: Record<string, string
 export interface PiTagCsvValidationResponse { valid: boolean; total_rows: number; valid_count: number; invalid_count: number; ignored_example_rows: number; detected_encoding?: string | null; detected_delimiter?: string | null; had_bom?: boolean | null; errors: PiTagCsvRowError[]; preview: PiTagCsvRowPreview[]; }
 export interface PiTagCsvImportResponse { imported_count: number; message: string; }
 
+export interface ProductionUnitVariable {
+  tag_id: number; tag_name: string; display_name: string; data_type: string; unit: string | null;
+  sample_count: number; raw_sample_count: number; filtered_sample_count: number; excluded_quality_count: number;
+  eligible_sample_count?: number | null; attended_sample_count?: number | null; attended_percent?: number | null;
+  average: number | null; minimum: number | null;
+  maximum: number | null; first_timestamp: string | null; last_timestamp: string | null;
+  first_value: string | null; last_value: string | null;
+}
+export interface ProductionUnitSegment {
+  segment_id: string; um_value: string | null; status: "ASSIGNED" | "UNASSIGNED";
+  start_time: string; end_time: string; duration_seconds: number;
+  start_reason: "QUERY_START" | "UM_TRANSITION" | "STATE_RECOVERED" | "UNKNOWN_STATE";
+  end_reason: "NEXT_UM" | "QUERY_END" | "INVALID_UM_STATE";
+  state_source_timestamp: string | null; variables: ProductionUnitVariable[];
+}
+export interface ProductionUnitAnalysisResponse {
+  section_id: number | null; equipment_id: number; um_tag_id: number; um_tag_name: string; start_time: string; end_time: string;
+  segments: ProductionUnitSegment[];
+  strategy?: string; precomputed_segments?: number; runtime_segments?: number;
+}
+
 async function uploadPiTagCsv(path: string, file: File) {
   const form = new FormData(); form.append("file", file);
   const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pads_csrf="))?.split("=").slice(1).join("=");
@@ -244,6 +267,14 @@ export const piTagsApi = {
   },
   getDistinctValues(id: number, limit: number = 200, signal?: AbortSignal) {
     return httpClient.get<string[]>(`/pi-tags/${id}/distinct-values`, { limit }, signal);
+  },
+};
+
+export const productionUnitsApi = {
+  analyze(payload: { analysis_rule?: "OOC"; section_id?: number | null; equipment_id?: number; tag_ids: number[]; start_time: string; end_time: string;
+    filter_configuration: DataFilterConfiguration & { filtersEnabled: boolean };
+    analysis_filters: DynamicAnalysisFilter[] }, signal?: AbortSignal) {
+    return httpClient.post<ProductionUnitAnalysisResponse>("/production-analysis/units", payload, signal);
   },
 };
 

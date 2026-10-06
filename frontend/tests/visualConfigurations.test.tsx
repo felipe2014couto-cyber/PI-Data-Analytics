@@ -6,7 +6,7 @@ import { VisualConfigurationsPanel } from "../src/components/VisualConfiguration
 
 const rules = { enabled: false, selectedSeriesInstanceId: null, bySeries: {} };
 const saved = { id: "c1", name: "Teste", description: null, current_version: 1, created_at: "2026-01-01", updated_at: "2026-01-01", document: { schema_version: 1 as const, visual_rules: rules } };
-const panel = (onOpen = vi.fn(), mode: "recorded" | "interpolated" = "interpolated") =>
+const panel = (onOpen = vi.fn(), mode: "recorded" = "recorded") =>
   <VisualConfigurationsPanel document={{ schema_version: 1, visual_rules: { ...rules, queryMode: mode } }} onOpen={onOpen} />;
 const chooseAction = (label: string) => {
   fireEvent.click(screen.getByRole("button", { name: "Ações da configuração" }));
@@ -19,7 +19,7 @@ describe("persistência visual", () => {
     apiMock.visualConfigCreate.mockResolvedValue(saved); render(panel());
     chooseAction("Salvar nova");
     fireEvent.change(screen.getByTestId("visual-config-name"), { target: { value: "Teste" } }); fireEvent.click(within(screen.getByRole("dialog")).getByText("Salvar nova"));
-    await waitFor(() => expect(apiMock.visualConfigCreate).toHaveBeenCalledWith("Teste", { schema_version: 1, visual_rules: { ...rules, queryMode: "interpolated" } }));
+    await waitFor(() => expect(apiMock.visualConfigCreate).toHaveBeenCalledWith("Teste", { schema_version: 1, visual_rules: { ...rules, queryMode: "recorded" } }));
     expect(apiMock.timeSeriesQuery).not.toHaveBeenCalled(); expect(apiMock.cancelQuery).not.toHaveBeenCalled();
   });
   it("abre uma configuração sem perder o estado antes da resposta", async () => {

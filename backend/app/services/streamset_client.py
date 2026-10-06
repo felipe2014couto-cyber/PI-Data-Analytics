@@ -46,43 +46,30 @@ class StreamSetCapability(Enum):
 @dataclass
 class StreamSetState:
     recorded: StreamSetCapability = StreamSetCapability.UNKNOWN
-    interpolated: StreamSetCapability = StreamSetCapability.UNKNOWN
     checked_at_recorded: float = 0.0
-    checked_at_interpolated: float = 0.0
 
     RETRY_TTL: float = 600.0  # 10 minutes
 
     def __post_init__(self) -> None:
         self._lock = asyncio.Lock()
 
-    async def is_supported(self, mode: str) -> bool:
+    async def is_supported(self) -> bool:
         async with self._lock:
-            cap = self.recorded if mode == "recorded" else self.interpolated
-            if cap == StreamSetCapability.SUPPORTED:
+            if self.recorded == StreamSetCapability.SUPPORTED:
                 return True
-            if cap == StreamSetCapability.UNKNOWN:
+            if self.recorded == StreamSetCapability.UNKNOWN:
                 return True
-            checked = self.checked_at_recorded if mode == "recorded" else self.checked_at_interpolated
-            return (time.monotonic() - checked) >= self.RETRY_TTL
+            return (time.monotonic() - self.checked_at_recorded) >= self.RETRY_TTL
 
-    async def mark_unsupported(self, mode: str) -> None:
+    async def mark_unsupported(self) -> None:
         async with self._lock:
-            if mode == "recorded":
-                self.recorded = StreamSetCapability.UNSUPPORTED
-                self.checked_at_recorded = time.monotonic()
-            else:
-                self.interpolated = StreamSetCapability.UNSUPPORTED
-                self.checked_at_interpolated = time.monotonic()
+            self.recorded = StreamSetCapability.UNSUPPORTED
+            self.checked_at_recorded = time.monotonic()
 
-    async def mark_supported(self, mode: str) -> None:
+    async def mark_supported(self) -> None:
         async with self._lock:
-            if mode == "recorded":
-                self.recorded = StreamSetCapability.SUPPORTED
-                self.checked_at_recorded = time.monotonic()
-            else:
-                self.interpolated = StreamSetCapability.SUPPORTED
-                self.checked_at_interpolated = time.monotonic()
-
+            self.recorded = StreamSetCapability.SUPPORTED
+            self.checked_at_recorded = time.monotonic()
 
 _CAPABILITY = StreamSetState()
 
@@ -267,251 +254,6 @@ def _parse_streamset_response(
         results.setdefault(str_wid, []).extend(values)
 
     return results
-
-
-_WINDOW_MAX_DAYS = 30
-
-
-def _deduplicate_values(values: List[PiValue]) -> List[PiValue]:
-    """Remove duplicate points by timestamp within a single series."""
-    if len(values) <= 1:
-        return values
-    seen: set = set()
-    result: List[PiValue] = []
-    for v in sorted(values, key=lambda x: x.timestamp):
-        if v.timestamp not in seen:
-            seen.add(v.timestamp)
-            result.append(v)
-    return result
-
-
-def _safe_window_str(start: datetime, end: datetime) -> str:
-    """Safe time-window representation for logging."""
-    return f"{start.strftime('%Y-%m-%d')}..{end.strftime('%Y-%m-%d')}"
-
-
-async def _recover_failed_series(
-    failed_web_ids: List[str],
-    start_time: datetime,
-    end_time: datetime,
-    interval: str,
-    max_count: Optional[int],
-    provider,
-    semaphore: asyncio.Semaphore,
-) -> Tuple[Dict[str, List[PiValue]], Dict[str, List[str]]]:
-    """Recover series that returned only PI error entries using 30-day windows.
-
-    Each affected WebId is fetched individually via the interpolated endpoint
-    with non-overlapping windows.  Partial results are kept when some windows
-    succeed and others fail.  Returns ``(recovered_values, window_errors)``.
-    """
-    recovered: Dict[str, List[PiValue]] = {}
-    window_errors: Dict[str, List[str]] = {}
-    window = timedelta(days=_WINDOW_MAX_DAYS)
-
-    for web_id in failed_web_ids:
-        series_values: List[PiValue] = []
-        current_start = start_time
-        errors_for_web: List[str] = []
-
-        while current_start < end_time:
-            current_end = min(current_start + window, end_time)
-
-            async with semaphore:
-                try:
-                    response = await provider.get_interpolated_values(
-                        web_id,
-                        current_start,
-                        current_end,
-                        interval=interval,
-                        max_count=max_count,
-                    )
-                    series_values.extend(response.values)
-                except PiIntegrationError as exc:
-                    window_label = _safe_window_str(current_start, current_end)
-                    errors_for_web.append(f"{window_label}: {exc.safe_message}")
-                    logger.warning(
-                        "Windowed recovery failed for %s window %s: %s",
-                        _safe_mask_webid(web_id),
-                        window_label,
-                        exc.safe_message,
-                    )
-
-            current_start = current_end
-
-        deduped = _deduplicate_values(series_values)
-
-        if deduped:
-            recovered[web_id] = deduped
-            if errors_for_web:
-                window_errors[web_id] = errors_for_web
-                logger.info(
-                    "Partial recovery for %s: %d points, %d failed windows",
-                    _safe_mask_webid(web_id),
-                    len(deduped),
-                    len(errors_for_web),
-                )
-        else:
-            window_errors[web_id] = errors_for_web or ["No data returned"]
-
-    return recovered, window_errors
-
-
-def _is_streamset_unsupported_error(exc: PiIntegrationError) -> bool:
-    return hasattr(exc, "status_code") and exc.status_code in _UNSUPPORTED_CODES
-
-
-def _should_not_fallback(exc: PiIntegrationError) -> bool:
-    return isinstance(exc, (PiAuthError, PiRateLimitedError, PiTimeoutError, PiUnavailableError))
-
-
-async def _individual_fetch(
-    web_id: str,
-    start_time: datetime,
-    end_time: datetime,
-    mode: str,
-    interval: Optional[str],
-    max_count: Optional[int],
-    provider,
-    semaphore: asyncio.Semaphore,
-) -> Tuple[str, List[PiValue], int]:
-    """Fetch values for a single WebId via individual endpoint.
-
-    Returns (web_id, values, retry_count).
-    """
-    retries = 0
-    async with semaphore:
-        try:
-            if mode == "recorded":
-                response = await provider.get_recorded_values(
-                    web_id, start_time, end_time, max_count=max_count
-                )
-            else:
-                response = await provider.get_interpolated_values(
-                    web_id, start_time, end_time, interval=interval or "1m", max_count=max_count
-                )
-        except PiIntegrationError:
-            raise
-        return web_id, response.values, retries
-
-
-async def fetch_streamset_batch(
-    web_ids: List[str],
-    start_time: datetime,
-    end_time: datetime,
-    mode: str,
-    interval: Optional[str],
-    max_count: Optional[int],
-    provider,
-) -> Tuple[Dict[str, List[PiValue]], int, bool]:
-    """Fetch values for multiple WebIds in a single StreamSet call.
-
-    Returns (results_by_web_id, request_count, used_streamset).
-    """
-    if not web_ids:
-        return {}, 0, False
-
-    if not await _CAPABILITY.is_supported(mode):
-        return {}, 0, False
-
-    semaphore = get_global_semaphore()
-    batch_size = _STREAMSET_BATCH_SIZE
-    all_results: Dict[str, List[PiValue]] = {}
-    total_requests = 0
-    used_streamset = False
-    error_info: Dict[str, List[dict]] = {}
-
-    for i in range(0, len(web_ids), batch_size):
-        batch = web_ids[i : i + batch_size]
-        params: List[Tuple[str, Any]] = [
-            ("webId", wid) for wid in batch
-        ]
-        params.append(("startTime", start_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")))
-        params.append(("endTime", end_time.strftime("%Y-%m-%dT%H:%M:%S.%fZ")))
-        if interval and mode == "interpolated":
-            params.append(("interval", interval))
-        if max_count is not None:
-            params.append(("maxCount", int(max_count)))
-
-        streamset_path = f"/streamsets/{mode}"
-
-        async with semaphore:
-            total_requests += 1
-            try:
-                response = await provider._safe_request(
-                    "GET", streamset_path, params=params
-                )
-                payload = response.json()
-                if logger.isEnabledFor(logging.DEBUG):
-                    try:
-                        struct_lines = _dump_payload_structure(payload, max_depth=4)
-                        logger.debug(
-                            "StreamSet %s payload structure (%d lines):",
-                            mode, len(struct_lines),
-                        )
-                        for line in struct_lines:
-                            logger.debug("  SS_STRUCT %s", line)
-                    except Exception as diag_exc:
-                        logger.debug("STREAMSET_DIAG_FAILED: %s", diag_exc)
-                batch_results = _parse_streamset_response(
-                    payload, error_collector=error_info,
-                )
-                all_results.update(batch_results)
-                await _CAPABILITY.mark_supported(mode)
-                used_streamset = True
-                logger.info(
-                    "StreamSet %s batch of %d tags: %d results (points=%d)",
-                    mode, len(batch), len(batch_results),
-                    sum(len(v) for v in batch_results.values()),
-                )
-            except PiIntegrationError as exc:
-                if _is_streamset_unsupported_error(exc):
-                    logger.warning(
-                        "StreamSet %s not supported (code=%s), falling back to individual",
-                        mode, exc.code if hasattr(exc, "code") else "unknown"
-                    )
-                    await _CAPABILITY.mark_unsupported(mode)
-                    return {}, total_requests, False
-                if _should_not_fallback(exc):
-                    raise
-                logger.warning(
-                    "StreamSet %s transient error (code=%s), falling back to individual",
-                    mode, exc.code if hasattr(exc, "code") else "unknown"
-                )
-                return {}, total_requests, False
-
-    if mode == "interpolated" and interval and error_info:
-        failed_web_ids = [
-            wid for wid in web_ids
-            if wid in error_info and not all_results.get(wid)
-        ]
-        if failed_web_ids:
-            logger.info(
-                "Attempting windowed recovery for %d failed series (30d windows)",
-                len(failed_web_ids),
-            )
-            recovered, recovery_errors = await _recover_failed_series(
-                failed_web_ids,
-                start_time,
-                end_time,
-                interval,
-                max_count,
-                provider,
-                semaphore,
-            )
-            all_results.update(recovered)
-            days_span = max(1, (end_time - start_time).days)
-            windows_per_series = max(1, (days_span + _WINDOW_MAX_DAYS - 1) // _WINDOW_MAX_DAYS)
-            total_requests += len(failed_web_ids) * windows_per_series
-            for wid, errs in recovery_errors.items():
-                if wid not in recovered:
-                    logger.warning(
-                        "Recovery fully failed for %s: %s",
-                        _safe_mask_webid(wid),
-                        "; ".join(errs),
-                    )
-
-    return all_results, total_requests, used_streamset
 
 
 def build_web_ids_version(web_ids: Sequence[Optional[str]]) -> str:
@@ -728,7 +470,7 @@ async def fetch_recorded_streamsets_batch(
         provider.base_url, web_ids, start_time, end_time, max_count
     )
     metrics.streamset_group_count = len(groups)
-    supported = await _CAPABILITY.is_supported("recorded")
+    supported = await _CAPABILITY.is_supported()
     work: List[_RecordedWork] = []
     for group_index, group in enumerate(groups):
         if supported:
@@ -816,7 +558,7 @@ async def fetch_recorded_streamsets_batch(
                         metrics.partial = True
                     continue
                 if not item.fallback and status in _UNSUPPORTED_CODES:
-                    await _CAPABILITY.mark_unsupported("recorded")
+                    await _CAPABILITY.mark_unsupported()
                     for series_index, wid in enumerate(item.web_ids):
                         metrics.individual_fallback_requests += 1
                         next_wave.append(_RecordedWork(f"{item.key}-fallback-{series_index:03d}", (wid,), item.start_time, item.end_time, fallback=True))
@@ -837,7 +579,7 @@ async def fetch_recorded_streamsets_batch(
                 else:
                     parsed = _parse_streamset_response(content)
                     metrics.streamset_used = True
-                    await _CAPABILITY.mark_supported("recorded")
+                    await _CAPABILITY.mark_supported()
 
                 missing = detect_missing_series(item.web_ids, parsed)
                 for missing_index, wid in enumerate(missing):

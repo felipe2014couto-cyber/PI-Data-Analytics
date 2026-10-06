@@ -4,14 +4,13 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-ReloadMode = Literal["recorded", "interpolated"]
+ReloadMode = Literal["recorded"]
 
 
 class HistoricalReloadRequest(BaseModel):
     start_time: datetime
     end_time: datetime
-    mode: ReloadMode = "recorded"
-    interval: str | None = Field(default=None, pattern=r"^\d+[smhd]$", max_length=8)
+    mode: Literal["recorded"] = "recorded"
     tag_id: int | None = Field(default=None, gt=0)
     section_id: int | None = Field(default=None, gt=0)
     equipment_id: int | None = Field(default=None, gt=0)
@@ -36,10 +35,6 @@ class HistoricalReloadRequest(BaseModel):
             raise ValueError("A data final não pode ser no futuro.")
         if self.start_time >= self.end_time:
             raise ValueError("O início deve ser anterior ao fim.")
-        if self.mode == "interpolated" and not self.interval:
-            raise ValueError("A resolução é obrigatória no modo interpolated.")
-        if self.mode == "recorded" and self.interval:
-            raise ValueError("Recorded não aceita resolução.")
         if sum(bool(value) for value in (self.tag_id, self.section_id, self.equipment_id, self.variable_id, self.all_active)) != 1:
             raise ValueError("Informe tag_id, section_id, equipment_id, variable_id ou all_active.")
         return self
@@ -61,7 +56,6 @@ class HistoricalReloadJobResponse(BaseModel):
     id: int
     tag_id: int
     mode: ReloadMode
-    interval: str | None = None
     target_start: datetime
     target_end: datetime
     next_start: datetime | None = None
@@ -82,8 +76,7 @@ class HistoricalReloadJobResponse(BaseModel):
 
 class HistoricalReloadCoverageResponse(BaseModel):
     tag_id: int
-    mode: str
-    interval: str | None
+    mode: Literal["recorded"]
     complete: bool
     covered: list[dict]
     missing: list[dict]

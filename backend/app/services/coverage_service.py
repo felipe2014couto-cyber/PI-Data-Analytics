@@ -9,9 +9,6 @@ from sqlalchemy.orm import Session
 from app.models.postgres import PiIngestionCoverage
 
 Interval = Tuple[datetime, datetime]
-MIN_INTERPOLATION_SECONDS = 10
-
-
 def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -19,21 +16,12 @@ def _utc(value: datetime) -> datetime:
 
 
 def normalize_mode(mode: str, interval_seconds: Optional[int] = None) -> tuple[str, Optional[int]]:
-    normalized = mode.upper()
-    if normalized == "RECORDED":
-        return "RECORDED", None
-    if normalized == "INTERPOLATED":
-        if not interval_seconds:
-            raise ValueError("INTERPOLATED exige interval_seconds")
-        if interval_seconds < MIN_INTERPOLATION_SECONDS:
-            raise ValueError("INTERPOLATED exige intervalo minimo de 10s")
-        return f"INTERPOLATED_{interval_seconds}S", interval_seconds
-    if normalized.startswith("INTERPOLATED_") and normalized.endswith("S"):
-        seconds = int(normalized.removeprefix("INTERPOLATED_").removesuffix("S"))
-        if seconds < MIN_INTERPOLATION_SECONDS:
-            raise ValueError("INTERPOLATED exige intervalo minimo de 10s")
-        return normalized, seconds
-    raise ValueError(f"Modo de cobertura invalido: {mode}")
+    normalized = (mode or "").upper()
+    if normalized != "RECORDED":
+        raise ValueError(f"A cobertura histórica aceita somente RECORDED, recebido: {mode}")
+    if interval_seconds is not None:
+        raise ValueError("Cobertura RECORDED não aceita interval_seconds")
+    return "RECORDED", None
 
 class CoverageService:
     @staticmethod

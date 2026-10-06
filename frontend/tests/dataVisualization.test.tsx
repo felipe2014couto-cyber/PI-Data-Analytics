@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import {
@@ -105,6 +106,38 @@ describe("Data visualization page", () => {
     expect(apiMock.listVariableTypes).toHaveBeenCalled();
     expect(apiMock.listPiTags).toHaveBeenCalled();
     expect(screen.getByTestId("data-filters-panel")).toBeInTheDocument();
+  });
+
+  it("allows selecting a non-numeric PI tag and sends it in the temporal query", async () => {
+    const stringTag: PiTag = {
+      ...piTagFixture,
+      id: 55,
+      pi_tag_name: "RB3.STATUS_TEXT",
+      display_name: "Estado textual",
+      data_type: "NON_NUMERIC",
+    };
+    apiMock.listPiTags.mockResolvedValue(paginated([stringTag]));
+    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
+    apiMock.timeSeriesQuery.mockResolvedValue({
+      ...TIME_SERIES,
+      series: [{ ...TEXTUAL_SERIES, tag_id: 55, tag_name: stringTag.pi_tag_name, display_name: stringTag.display_name, data_type: "STRING" }],
+    });
+    renderAt("/analises/visualizacao");
+    const user = userEvent.setup();
+    const equipmentSelect = await screen.findByTestId("equipment-select");
+    await user.selectOptions(equipmentSelect, "1");
+    await waitFor(() => expect(equipmentSelect).toHaveValue("1"));
+    const tagList = await screen.findByTestId("tag-multi-select");
+    const option = await within(tagList).findByTestId("tag-option-55");
+    expect(within(option).getByText("STRING")).toBeInTheDocument();
+    await user.click(option);
+    await waitFor(() => expect(option).toHaveAttribute("data-selected", "true"));
+    const submit = screen.getByTestId("filters-submit");
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ tag_ids: [55] }), expect.anything(),
+    ), { timeout: 15_000 });
   });
 
   it("restaura configuração completa sem efeitos dependentes apagarem as tags", async () => {
@@ -511,7 +544,7 @@ describe("Data visualization page", () => {
     expect(screen.getByTestId("scatter-series-guidance")).toHaveTextContent("Foram encontradas 3");
   });
 
-  it("recommends interpolated mode when two series have insufficient matching timestamps", async () => {
+  it("explains that scatter series need matching timestamps without recommending interpolation", async () => {
     const tag = { ...piTagFixture, validation_status: "VALID" as const };
     apiMock.listPiTags.mockResolvedValue(paginated([tag]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);

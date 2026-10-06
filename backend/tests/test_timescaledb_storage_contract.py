@@ -7,7 +7,7 @@ from app.models.equipment import Equipment
 from app.models.pi_tag import PiTag, PiTagDataType
 from app.models.section import Section
 from app.models.variable_type import VariableType
-from app.models.postgres import PiSample
+from app.models.postgres import PiIngestionCoverage, PiSample
 from app.core.exceptions import HistoricalDataNotLoadedError
 from app.services.coverage_service import CoverageService
 from app.services.database_time_series_service import DatabaseTimeSeriesService
@@ -40,7 +40,7 @@ def _tag(db_session):
     return tag
 
 
-def test_coverage_is_semi_open_mode_specific_and_consolidated(db_session):
+def test_coverage_is_recorded_only_semi_open_and_consolidated(db_session):
     tag = _tag(db_session)
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     middle = start + timedelta(hours=1)
@@ -48,13 +48,27 @@ def test_coverage_is_semi_open_mode_specific_and_consolidated(db_session):
 
     CoverageService.record_coverage(db_session, tag.id, start, middle, "RECORDED")
     CoverageService.record_coverage(db_session, tag.id, middle, end, "RECORDED")
-    CoverageService.record_coverage(db_session, tag.id, start, end, "INTERPOLATED", 10)
+    db_session.add(PiIngestionCoverage(
+        tag_id=tag.id, range_start=start, range_end=end,
+        mode="INTERPOLATED_10S", interval_seconds=10, status="COMPLETE",
+    ))
     db_session.commit()
 
     assert CoverageService.get_coverage(db_session, tag.id, start, end, "RECORDED") == [(start, end)]
-    assert CoverageService.get_coverage(db_session, tag.id, start, end, "INTERPOLATED", 10) == [(start, end)]
-    with pytest.raises(ValueError, match="10s"):
-        CoverageService.get_coverage(db_session, tag.id, start, end, "INTERPOLATED", 1)
+    with pytest.raises(ValueError, match="somente RECORDED"):
+        CoverageService.get_coverage(db_session, tag.id, start, end, "INTERPOLATED_10S", 10)
+    assert CoverageService.get_missing_intervals(db_session, tag.id, start, end, "RECORDED") == []
+
+
+def test_empty_confirmed_is_complete_coverage_without_samples(db_session):
+    tag = _tag(db_session)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(hours=1)
+    CoverageService.record_coverage(
+        db_session, tag.id, start, end, "RECORDED", status="EMPTY_CONFIRMED",
+    )
+    db_session.commit()
+    assert db_session.query(PiSample).filter(PiSample.tag_id == tag.id).count() == 0
     assert CoverageService.get_missing_intervals(db_session, tag.id, start, end, "RECORDED") == []
 
 

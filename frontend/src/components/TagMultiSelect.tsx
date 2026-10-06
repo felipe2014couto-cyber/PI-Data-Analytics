@@ -14,6 +14,7 @@ export interface TagOption {
   unit: string | null;
   validationStatus: PiTagValidationStatus;
   active: boolean;
+  dataType?: "NUMERIC" | "NON_NUMERIC";
 }
 
 interface TagMultiSelectProps {
@@ -42,6 +43,7 @@ export function buildTagOption(
     unit: tag.engineering_unit,
     validationStatus: tag.validation_status,
     active: tag.active,
+    dataType: tag.data_type,
   };
 }
 
@@ -101,6 +103,7 @@ export function TagMultiSelect({
                       <div className="d-flex align-items-center gap-2">
                         <span className="fw-semibold">{option.displayName}</span>
                         <StatusBadge status={option.validationStatus} />
+                        {option.dataType === "NON_NUMERIC" ? <Badge bg="info">STRING</Badge> : null}
                         {!option.active ? <Badge bg="secondary">Inativo</Badge> : null}
                       </div>
                       <span className="text-muted small">

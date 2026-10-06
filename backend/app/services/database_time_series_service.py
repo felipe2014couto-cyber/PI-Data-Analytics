@@ -21,9 +21,18 @@ from app.models.postgres import PiIngestionState, PiSample
 from app.models.section_analysis_tag import SectionAnalysisTag
 from app.models.variable_type import VariableFilterDataType
 from app.repositories.pi_tag_repository import PiTagRepository
-from app.schemas.pi import AnalysisFilterRequest, QueryExecutionMetadata, TimeSeries, TimeSeriesPoint, TimeSeriesRequest, TimeSeriesSeries
+from app.schemas.pi import (
+    AnalysisFilterRequest,
+    QueryExecutionMetadata,
+    TimeSeries,
+    TimeSeriesPoint,
+    TimeSeriesRequest,
+    TimeSeriesSeries,
+    determine_series_data_type,
+    is_string_tag,
+)
 from app.services.cache import LruCache
-from app.services.coverage_service import CoverageService, normalize_mode
+from app.services.coverage_service import CoverageService
 from app.services.string_filter_parser import ExactMatch, RangeMatch, WildcardMatch, parse_string_filter
 from app.services.sip_oracle_service import SipOracleService
 
@@ -61,6 +70,7 @@ _timescaledb_query_cache = LruCache[tuple[Any, ...], TimeSeries](
     max_size=settings.timescaledb_query_cache_max_entries,
     default_ttl_seconds=settings.timescaledb_query_cache_ttl_seconds,
 )
+_point_step_cache = LruCache[str, bool](max_size=10_000, default_ttl_seconds=900)
 
 
 def invalidate_time_series_cache(tag_ids: list[int], start: datetime, end: datetime) -> int:
@@ -163,6 +173,9 @@ class DatabaseTimeSeriesService:
     def __init__(self, db: Session, pi_service: Optional[object] = None):
         self.db = db
         self.repo = PiTagRepository(db)
+        # This provider is used only for PI Point metadata (Step), never for
+        # historical values. History continues to come exclusively from the DB.
+        self.pi_provider = pi_service
 
     async def _fetch_with_sip(self, request: TimeSeriesRequest, **kwargs: Any) -> TimeSeries:
         from app.core.exceptions import NotFoundError
@@ -206,6 +219,7 @@ class DatabaseTimeSeriesService:
                 tag_id=tag_id,
                 tag_name=f"SIP:{source.id}",
                 display_name=source.name,
+                data_type="REAL",
                 points=[TimeSeriesPoint(timestamp=timestamp, value=value) for timestamp, value in rows],
                 source_point_count=len(rows),
                 returned_point_count=len(rows),
@@ -245,6 +259,8 @@ class DatabaseTimeSeriesService:
         return tuple(entry for entry in _PLOT_AGGREGATES if entry[1] in names)
 
     async def fetch_time_series(self, request: TimeSeriesRequest, **_kwargs: Any) -> TimeSeries:
+        if request.mode != "recorded":
+            raise ValidationError("/api/time-series aceita somente eventos RECORDED.")
         if any(tag_id < 0 for tag_id in request.tag_ids):
             return await self._fetch_with_sip(request, **_kwargs)
         if request.start_time >= request.end_time:
@@ -278,53 +294,10 @@ class DatabaseTimeSeriesService:
             plot_aggregate = (replacement[1], replacement[2]) if replacement else None
         dynamic_requested = postgres and request.target_points_per_tag is not None and not active_filters
 
-        # Plot aggregates are the only visual read path. RECORDED remains the
-        # internal source populated by the ingestion worker.
-        if plot_aggregate:
-            requested_mode, interval_seconds = "RECORDED", None
-        elif request.mode == "recorded":
-            requested_mode, interval_seconds = "RECORDED", None
-        else:
-            try:
-                requested_interval = _interval_seconds(request.interval)
-                if requested_interval is not None and requested_interval < 10:
-                    raise QueryLimitExceededError("O intervalo mínimo para interpolação é de 10 segundos.")
-                # API clients that omit resolution_mode retain the historical
-                # exact-interval contract; the UI sends "automatic" explicitly.
-                resolution_mode = (request.resolution_mode or "manual").lower()
-                if resolution_mode == "automatic":
-                    # The frontend used to send 1m for automatic requests.
-                    # Ignore that hint and choose only persisted canonical
-                    # resolutions.  A candidate is usable only when every tag
-                    # has complete coverage for the whole period.
-                    target = request.target_points_per_tag or settings.pi_query_visual_default_points_per_tag
-                    required_seconds = max(1, int(math.ceil(
-                        (request.end_time - request.start_time).total_seconds() / target
-                    )))
-                    candidates = [seconds for seconds in (10, 300) if seconds >= required_seconds]
-                    if not candidates:
-                        candidates = [300]
-                    requested_mode, interval_seconds = "", None
-                    for candidate in candidates:
-                        candidate_mode = f"INTERPOLATED_{candidate}S"
-                        if all(not CoverageService.get_missing_intervals(
-                            self.db, tag.id, request.start_time, request.end_time,
-                            candidate_mode, candidate,
-                        ) for tag in tags):
-                            requested_mode, interval_seconds = candidate_mode, candidate
-                            break
-                    if not requested_mode:
-                        # Use the coarsest canonical resolution in the error so
-                        # the administrative reload has an actionable target.
-                        interval_seconds = candidates[-1]
-                        requested_mode = f"INTERPOLATED_{interval_seconds}S"
-                else:
-                    requested_mode, interval_seconds = normalize_mode("INTERPOLATED", requested_interval)
-            except (ValueError, KeyError, TypeError) as exc:
-                raise ValidationError(
-                    "Modo ou resolução de série inválidos.",
-                    details={"mode": request.mode, "interval": request.interval},
-                ) from exc
+        # Historical queries always read RECORDED samples. Visual CAGGs are
+        # derived from this same source; request interval cannot select legacy
+        # Any returned coverage is RECORDED; legacy modes are never consulted.
+        requested_mode, interval_seconds = "RECORDED", None
 
         effective_end = request.end_time
         freshness_metadata: dict[str, Any] = {}
@@ -363,7 +336,7 @@ class DatabaseTimeSeriesService:
                 max(1, settings.pi_query_visual_max_total_points // len(tags)),
             )
             cache_key = (
-                "timescaledb-dynamic-v2",
+                "timescaledb-dynamic-v3",
                 tuple(sorted(request.tag_ids)),
                 request.start_time.astimezone(timezone.utc),
                 effective_end.astimezone(timezone.utc),
@@ -384,19 +357,34 @@ class DatabaseTimeSeriesService:
 
             # Resolution is planned independently PER TAG so adding tags never degrades another tag's detail
             for tag in tags:
-                tag_raw_count = self._count_qualified_raw_points(
-                    [tag.id],
-                    request.start_time,
-                    effective_end,
-                    settings.timescaledb_dynamic_raw_point_limit,
-                )
-                plan = _dynamic_plot_plan(
-                    effective_end - request.start_time,
-                    effective_target_points,
-                    tag_raw_count,
-                    settings.timescaledb_dynamic_raw_point_limit,
-                    available_plot_aggregates,
-                )
+                if is_string_tag(tag):
+                    tag_raw_count = self._count_string_raw_points(
+                        tag.id,
+                        request.start_time,
+                        effective_end,
+                        settings.timescaledb_dynamic_raw_point_limit,
+                    )
+                    plan = DynamicPlotPlan(
+                        use_raw=True,
+                        view_name=None,
+                        source_bucket_seconds=None,
+                        display_bucket_seconds=None,
+                        raw_point_count=tag_raw_count,
+                    )
+                else:
+                    tag_raw_count = self._count_qualified_raw_points(
+                        [tag.id],
+                        request.start_time,
+                        effective_end,
+                        settings.timescaledb_dynamic_raw_point_limit,
+                    )
+                    plan = _dynamic_plot_plan(
+                        effective_end - request.start_time,
+                        effective_target_points,
+                        tag_raw_count,
+                        settings.timescaledb_dynamic_raw_point_limit,
+                        available_plot_aggregates,
+                    )
                 tag_plans[tag.id] = plan
                 raw_point_count_by_tag[tag.pi_tag_name] = tag_raw_count
                 source_aggregate_by_tag[tag.pi_tag_name] = plan.view_name if not plan.use_raw else "pi_samples_timescale"
@@ -418,7 +406,7 @@ class DatabaseTimeSeriesService:
         effective_interval = (
             "recorded" if raw_visual
             else plot_aggregate[1] if plot_aggregate
-            else _format_interval(interval_seconds)
+            else "recorded"
         )
 
         series: list[TimeSeriesSeries] = []
@@ -431,7 +419,24 @@ class DatabaseTimeSeriesService:
 
         for tag in tags:
             tag_plan = tag_plans.get(tag.id)
-            if dynamic_requested and tag_plan is not None:
+            if is_string_tag(tag):
+                missing = CoverageService.get_missing_intervals(
+                    self.db, tag.id, request.start_time, effective_end,
+                    "RECORDED", None,
+                )
+                if missing:
+                    missing_details.append({
+                        "tag_id": tag.id,
+                        "tag_name": tag.pi_tag_name,
+                        "intervals": [
+                            {"start": start.astimezone(timezone.utc).isoformat(), "end": end.astimezone(timezone.utc).isoformat()}
+                            for start, end in missing
+                        ],
+                    })
+                    continue
+                points = self._get_string_raw_points(tag.id, request.start_time, effective_end)
+                returned_points_by_tag[tag.pi_tag_name] = len(points)
+            elif dynamic_requested and tag_plan is not None:
                 if tag_plan.use_raw:
                     missing = CoverageService.get_missing_intervals(
                         self.db, tag.id, request.start_time, effective_end,
@@ -544,14 +549,16 @@ class DatabaseTimeSeriesService:
                 )
             series.append(self._build_series(tag, points))
 
+        await self._attach_point_step_metadata(tags, series)
+
         if missing_details:
             raise HistoricalDataNotLoadedError(details={
                 "affected_tags": missing_details,
                 "mode": request.mode,
                 "resolution": effective_interval,
-                "requested_resolution": request.interval if request.mode == "interpolated" else "10s",
+                "requested_resolution": "recorded",
                 "effective_resolution": effective_interval,
-                "canonical_resolutions": ["10s", "5m"] if request.mode == "interpolated" and (request.resolution_mode or "").lower() == "automatic" else None,
+                "canonical_resolutions": None,
                 "requested_period": {
                     "start": request.start_time.astimezone(timezone.utc).isoformat(),
                     "end": request.end_time.astimezone(timezone.utc).isoformat(),
@@ -1167,26 +1174,154 @@ class DatabaseTimeSeriesService:
         collected = list({point.timestamp: (point, bucket) for point, bucket in collected}.values())
         collected.sort(key=lambda item: item[0].timestamp)
         uncovered: list[dict[str, Any]] = []
-        if not collected:
-            uncovered.append({"tag_id": tag_id, "start": start, "end": end, "reason": "no_materialized_buckets"})
-            return PlotReadResult([], segments, uncovered)
-        if collected[0][0].timestamp > start:
-            uncovered.append({"tag_id": tag_id, "start": start, "end": collected[0][0].timestamp, "reason": "no_confirmed_source"})
-        if collected[-1][0].timestamp + timedelta(seconds=collected[-1][1]) < end:
-            uncovered.append({"tag_id": tag_id, "start": collected[-1][0].timestamp + timedelta(seconds=collected[-1][1]), "end": end, "reason": "no_confirmed_source"})
+        # CAGG bucket bounds describe materialized events, not acquisition
+        # coverage. In particular, a COMPLETE or EMPTY_CONFIRMED interval may
+        # contain no buckets and is still fully trustworthy.
+        coverage_missing = CoverageService.get_missing_intervals(
+            self.db, tag_id, start, end, "RECORDED", None
+        )
+        uncovered = [
+            {"tag_id": tag_id, "start": missing_start, "end": missing_end, "reason": "uncovered_coverage"}
+            for missing_start, missing_end in coverage_missing
+        ]
 
-        # One null marker per discontinuity is enough for ECharts to break the
-        # line. Do not materialize every empty display bucket.
-        with_markers: list[TimeSeriesPoint] = []
-        previous_bucket: Optional[int] = None
-        for point, bucket_seconds in collected:
-            threshold = max(previous_bucket or bucket_seconds, bucket_seconds) * 1.5
-            if with_markers and (point.timestamp - with_markers[-1].timestamp).total_seconds() > threshold:
-                marker_ts = with_markers[-1].timestamp + timedelta(microseconds=1)
-                with_markers.append(TimeSeriesPoint(timestamp=marker_ts, value=None, good=False))
-            with_markers.append(point)
-            previous_bucket = bucket_seconds
-        return PlotReadResult(with_markers, segments, uncovered)
+        if not collected:
+            return PlotReadResult([], segments, uncovered)
+
+        collected.sort(key=lambda item: item[0].timestamp)
+        points = [point for point, _ in collected]
+        points = self._insert_coverage_sentinels(points, coverage_missing)
+
+        # A zoom may begin in a confirmed event-free interval. Include the
+        # preceding real sample as render context, without persisting it.
+        if not any(point.timestamp <= start for point in points):
+            seed = self._get_recorded_boundary_seed(tag_id, start)
+            if seed is not None and not CoverageService.get_missing_intervals(
+                self.db, tag_id, seed.timestamp, start, "RECORDED", None
+            ):
+                seed.is_boundary_seed = True
+                points.insert(0, seed)
+
+        return PlotReadResult(points, segments, uncovered)
+
+    @staticmethod
+    def _plot_event_bounds(point: TimeSeriesPoint) -> tuple[datetime, datetime]:
+        """Return real event bounds represented by a raw point or Plot bucket."""
+        timestamps = [
+            value
+            for value in (point.plot_first_ts, point.plot_min_ts, point.plot_max_ts, point.plot_last_ts)
+            if value is not None
+        ]
+        if not timestamps:
+            timestamps = [point.timestamp]
+        return min(timestamps), max(timestamps)
+
+    @classmethod
+    def _insert_coverage_sentinels(
+        cls,
+        points: list[TimeSeriesPoint],
+        uncovered: list[tuple[datetime, datetime]],
+    ) -> list[TimeSeriesPoint]:
+        """Break only where an explicit uncovered interval lies between events."""
+        if len(points) < 2 or not uncovered:
+            return points
+        result: list[TimeSeriesPoint] = []
+        for index, point in enumerate(points):
+            result.append(point)
+            if index + 1 >= len(points):
+                continue
+            _, left_end = cls._plot_event_bounds(point)
+            right_start, _ = cls._plot_event_bounds(points[index + 1])
+            if right_start <= left_end:
+                continue
+            gap = next(
+                (
+                    (gap_start, gap_end)
+                    for gap_start, gap_end in uncovered
+                    if gap_start < right_start and gap_end > left_end
+                ),
+                None,
+            )
+            if gap is None:
+                continue
+            gap_start, _ = gap
+            marker_ts = max(left_end + timedelta(microseconds=1), gap_start)
+            if marker_ts >= right_start:
+                marker_ts = left_end + (right_start - left_end) / 2
+            if not left_end < marker_ts < right_start:
+                continue
+            result.append(TimeSeriesPoint(
+                timestamp=marker_ts,
+                value=None,
+                good=False,
+                is_gapfilled=False,
+                is_render_sentinel=True,
+            ))
+        return result
+
+    def _get_recorded_boundary_seed(self, tag_id: int, start: datetime) -> Optional[TimeSeriesPoint]:
+        row = self.db.execute(text("""
+            SELECT ts, value_double, value_boolean, value_text, value_type,
+                   good, questionable, substituted
+            FROM pi_samples_timescale
+            WHERE tag_id = :tag_id
+              AND ts < :start
+              AND source_mode = 'RECORDED'
+            ORDER BY ts DESC
+            LIMIT 1
+        """), {"tag_id": tag_id, "start": start}).first()
+        if row is None:
+            return None
+        return TimeSeriesPoint(
+            timestamp=row[0],
+            value=self._value(row[1], row[2], row[3], row[4]),
+            good=bool(row[5]),
+            questionable=bool(row[6]),
+            substituted=bool(row[7]),
+            is_boundary_seed=True,
+        )
+
+    async def _attach_point_step_metadata(
+        self,
+        tags: list[PiTag],
+        series: list[TimeSeriesSeries],
+    ) -> None:
+        provider = getattr(self, "pi_provider", None)
+        getter = getattr(provider, "get_point_step", None)
+        if not callable(getter):
+            return
+        tag_by_id = {tag.id: tag for tag in tags}
+        semaphore = asyncio.Semaphore(8)
+
+        async def read_step(tag_id: int) -> tuple[int, Optional[bool]]:
+            tag = tag_by_id[tag_id]
+            web_id = getattr(tag, "pi_web_id", None)
+            if not web_id:
+                return tag_id, None
+            cached = _point_step_cache.get(web_id)
+            if cached is not None:
+                return tag_id, cached
+            try:
+                async with semaphore:
+                    value = await getter(web_id)
+                if isinstance(value, bool):
+                    _point_step_cache.set(web_id, value)
+                    return tag_id, value
+            except Exception:
+                logger.warning("Não foi possível resolver o atributo PI Point Step para tag_id=%s", tag_id, exc_info=True)
+            return tag_id, None
+
+        eligible = [
+            item.tag_id for item in series
+            if item.data_type == "REAL" and tag_by_id[item.tag_id].pi_web_id
+        ]
+        if not eligible:
+            return
+        results = await asyncio.gather(*(read_step(tag_id) for tag_id in eligible))
+        by_tag = dict(results)
+        for item in series:
+            if item.tag_id in by_tag:
+                item.step = by_tag[item.tag_id]
 
     def _get_from_raw_plot(
         self, tag_id: int, start: datetime, end: datetime, bucket_seconds: int
@@ -1289,16 +1424,76 @@ class DatabaseTimeSeriesService:
             "source_mode": mode,
         }
 
+    def _count_string_raw_points(
+        self,
+        tag_id: int,
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> int:
+        """Count raw string points up to probe limit."""
+        return int(self.db.execute(text("""
+            SELECT count(*)
+            FROM (
+                SELECT 1
+                FROM pi_samples_timescale
+                WHERE tag_id = :tag_id
+                  AND ts >= :start
+                  AND ts < :end
+                  AND source_mode = 'RECORDED'
+                LIMIT :probe_limit
+            ) AS probe
+        """), {
+            "tag_id": tag_id,
+            "start": start,
+            "end": end,
+            "probe_limit": limit + 1,
+        }).scalar_one())
+
+    def _get_string_raw_points(
+        self,
+        tag_id: int,
+        start: datetime,
+        end: datetime,
+    ) -> list[TimeSeriesPoint]:
+        """Fetch all recorded points for a string tag, preserving exact text, empty strings, duplicates, quality and order."""
+        rows = self.db.execute(text("""
+            SELECT ts, value_double, value_boolean, value_text, value_type,
+                   good, questionable, substituted
+            FROM pi_samples_timescale
+            WHERE tag_id = :tag_id
+              AND ts >= :start
+              AND ts < :end
+              AND source_mode = 'RECORDED'
+            ORDER BY ts ASC
+        """), {"tag_id": tag_id, "start": start, "end": end}).fetchall()
+        return [
+            TimeSeriesPoint(
+                timestamp=row[0],
+                value=self._value(row[1], row[2], row[3], row[4]),
+                good=bool(row[5]),
+                questionable=bool(row[6]),
+                substituted=bool(row[7]),
+            )
+            for row in rows
+        ]
+
     @staticmethod
     def _build_series(tag: PiTag, points: list[TimeSeriesPoint]) -> TimeSeriesSeries:
+        eq_code = tag.equipment.code if getattr(tag, "equipment", None) and hasattr(tag.equipment, "code") and isinstance(tag.equipment.code, str) else None
+        sec_code = tag.section.code if getattr(tag, "section", None) and hasattr(tag.section, "code") and isinstance(tag.section.code, str) else None
+        vt_code = tag.variable_type.code if getattr(tag, "variable_type", None) and hasattr(tag.variable_type, "code") and isinstance(tag.variable_type.code, str) else None
+        meta_unit = getattr(tag, "_meta_unit", None)
+        unit = meta_unit if isinstance(meta_unit, str) else (tag.engineering_unit if isinstance(getattr(tag, "engineering_unit", None), str) else None)
         return TimeSeriesSeries(
             tag_id=tag.id,
             tag_name=tag.pi_tag_name,
             display_name=tag.display_name,
-            equipment=tag.equipment.code if tag.equipment else None,
-            section=tag.section.code if tag.section else None,
-            variable_type=tag.variable_type.code if tag.variable_type else None,
-            unit=getattr(tag, "_meta_unit", None) or tag.engineering_unit,
+            equipment=eq_code,
+            section=sec_code,
+            variable_type=vt_code,
+            unit=unit,
+            data_type=determine_series_data_type(tag),
             points=points,
             source_point_count=len(points),
             returned_point_count=len(points),

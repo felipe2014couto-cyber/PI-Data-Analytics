@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { QuerySummary } from "../src/components/QuerySummary";
 
-describe("QuerySummary recorded 10s", () => {
+describe("QuerySummary recorded", () => {
   const metadata = {
     resolution_mode: "manual",
     sampled: false,
@@ -37,7 +37,7 @@ describe("QuerySummary recorded 10s", () => {
     expect(screen.getByTestId("metric-batch-subrequests")).toHaveTextContent("7");
     expect(screen.getByTestId("metric-window-splits")).toHaveTextContent("3");
     expect(screen.getByTestId("metric-status")).toHaveTextContent("Completo");
-    expect(screen.getByTestId("recorded-10s-info")).toHaveTextContent("série interpolada de 10 segundos");
+    expect(screen.getByTestId("recorded-source-info")).toHaveTextContent("Histórico PI RECORDED");
     expect(screen.getByTestId("recorded-volume-warning")).toBeInTheDocument();
   });
 
@@ -56,6 +56,29 @@ describe("QuerySummary recorded 10s", () => {
     );
     expect(screen.getByTestId("metric-status")).toHaveTextContent("Parcial");
     expect(screen.getByTestId("truncated-warning")).toHaveTextContent("pode não conter todos os eventos");
+  });
+
+  it("separa sentinelas de renderização de medições descartadas", () => {
+    render(
+      <QuerySummary
+        chart={{
+          series: [], units: [], yAxisLabels: [], totalSeries: 1, totalPoints: 1370,
+          totalNumericPoints: 1366, totalDroppedPoints: 0, totalRenderSentinels: 4,
+          totalNonNumericPoints: 0, valueKind: "numeric", categories: [], comparisonType: null,
+        }}
+        startLocal="2026-09-29"
+        endLocal="2026-09-30"
+        durationMs={100}
+        seriesCount={1}
+        partial={false}
+        mode="recorded"
+        queryExecution={metadata}
+      />,
+    );
+    expect(screen.getByTestId("metric-points")).toHaveTextContent("1370");
+    expect(screen.getByTestId("metric-numeric")).toHaveTextContent("1366");
+    expect(screen.getByTestId("metric-dropped")).toHaveTextContent("0");
+    expect(screen.getByTestId("metric-render-gaps")).toHaveTextContent("4");
   });
 
   it("exibe TimescaleDB como fonte e TimescaleDB Direto como estrategia", () => {

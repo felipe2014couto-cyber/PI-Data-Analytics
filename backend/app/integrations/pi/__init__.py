@@ -1,5 +1,5 @@
 """PI Web API integration subpackage."""
-from app.integrations.pi.provider import PiDataProvider, PiPoint, PiValue, PiRecordedValues, PiInterpolatedValues
+from app.integrations.pi.provider import PiDataProvider, PiPoint, PiValue, PiRecordedValues
 from app.integrations.pi.webapi_provider import PiWebApiDataProvider
 from app.integrations.pi.errors import (
     PiIntegrationError,
@@ -20,7 +20,6 @@ __all__ = [
     "PiPoint",
     "PiValue",
     "PiRecordedValues",
-    "PiInterpolatedValues",
     "PiWebApiDataProvider",
     "PiIntegrationError",
     "PiNotConfiguredIntegrationError",

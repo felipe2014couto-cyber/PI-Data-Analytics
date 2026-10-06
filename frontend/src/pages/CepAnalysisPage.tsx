@@ -44,10 +44,8 @@ export function toIsoUtc(dateStr: string): string {
   return new Date(dateStr).toISOString();
 }
 
-export function relativeCepPeriod(now: Date, hours: number, interval: string): { start: string; end: string } {
-  const match = /^(\d+)([smh])$/.exec(interval);
-  const unitSeconds = match?.[2] === "h" ? 3600 : match?.[2] === "m" ? 60 : 1;
-  const intervalMs = Number(match?.[1] ?? 300) * unitSeconds * 1000;
+export function relativeCepPeriod(now: Date, hours: number): { start: string; end: string } {
+  const intervalMs = 60 * 1000;
   // Coverage is only complete after the ingestion worker persists a finished interval.
   const endMs = Math.floor(now.getTime() / intervalMs) * intervalMs - intervalMs;
   return {
@@ -163,7 +161,7 @@ function CepVariableSeriesPanel({
         <div><strong>Limite inferior:</strong> {lower} | <strong>Limite superior:</strong> {upper}</div>
       </div>
       {series.points.length === 0 ? (
-        <Alert variant="secondary" className="mb-0">A tag não possui pontos Interpolated no período.</Alert>
+        <Alert variant="secondary" className="mb-0">A tag não possui eventos RECORDED no período.</Alert>
       ) : (
         seriesChartOption ? <EChartsWrapper option={seriesChartOption} height={360} /> : null
       )}
@@ -289,7 +287,6 @@ export function CepAnalysisPage() {
   const [includeRecorded, setIncludeRecorded] = useState(false);
   const [periodMode, setPeriodMode] = useState<"relative" | "custom">("relative");
   const [relativePeriod, setRelativePeriod] = useState("24h");
-  const [interpolatedInterval, setInterpolatedInterval] = useState<CepAnalysisRequest["interpolated_interval"]>("5m");
 
   // Operation state
   const [queryId, setQueryId] = useState<string | null>(null);
@@ -393,7 +390,7 @@ export function CepAnalysisPage() {
         setError("Período relativo inválido.");
         return;
       }
-      const period = relativeCepPeriod(new Date(), hours, interpolatedInterval ?? "5m");
+      const period = relativeCepPeriod(new Date(), hours);
       startIso = period.start;
       endIso = period.end;
     } else {
@@ -414,7 +411,6 @@ export function CepAnalysisPage() {
       start_time: startIso,
       end_time: endIso,
       include_recorded: includeRecorded,
-      interpolated_interval: interpolatedInterval,
     };
     if (equipmentId !== "") payload.equipment_id = Number(equipmentId);
     if (sectionId !== "") payload.section_id = Number(sectionId);
@@ -546,20 +542,6 @@ export function CepAnalysisPage() {
                   <Form.Select value={periodMode} onChange={(e) => setPeriodMode(e.target.value as "relative" | "custom")}>
                     <option value="relative">Relativo</option>
                     <option value="custom">Personalizado</option>
-                  </Form.Select>
-                </Form.Group>
-              </Col>
-              <Col md={4}>
-                <Form.Group className="mb-3">
-                  <Form.Label>Intervalo Interpolated</Form.Label>
-                  <Form.Select value={interpolatedInterval} onChange={(e) => setInterpolatedInterval(e.target.value as CepAnalysisRequest["interpolated_interval"])}>
-                    <option value="1m">1 minuto</option>
-                    <option value="2m">2 minutos</option>
-                    <option value="5m">5 minutos</option>
-                    <option value="10m">10 minutos</option>
-                    <option value="15m">15 minutos</option>
-                    <option value="30m">30 minutos</option>
-                    <option value="1h">1 hora</option>
                   </Form.Select>
                 </Form.Group>
               </Col>

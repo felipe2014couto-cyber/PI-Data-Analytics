@@ -16,6 +16,7 @@ interface SeriesAssignmentsPanelProps {
   assignments: SeriesAssignment[];
   tags: SeriesConfigurationTag[];
   showScatter: boolean;
+  automaticUnitAxes?: boolean;
   errors: string[];
   onMove: (seriesId: string | number, direction: "up" | "down") => void;
   onLineAxisChange: (seriesId: string | number, axis: SeriesAxis) => void;
@@ -26,6 +27,7 @@ export function SeriesAssignmentsPanel({
   assignments,
   tags,
   showScatter,
+  automaticUnitAxes = false,
   errors,
   onMove,
   onLineAxisChange,
@@ -67,7 +69,7 @@ export function SeriesAssignmentsPanel({
                       onClick={() => onMove(controlId, "down")}><i className="bi bi-arrow-down" /></Button>
                   </div>
                 </div>
-                {tag.numeric ? (
+                {tag.numeric && automaticUnitAxes ? <div className="small text-muted">Escala por unidade: {tag.unit?.trim() || "Sem unidade"}.</div> : tag.numeric ? (
                   <Form.Group controlId={`line-axis-${assignment.tagId}`}>
                     <Form.Label className="small mb-1">Eixo da linha</Form.Label>
                     <Form.Select size="sm" value={assignment.lineAxis}

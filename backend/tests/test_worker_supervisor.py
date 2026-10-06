@@ -30,6 +30,15 @@ def _stub_recent_features(monkeypatch):
     monkeypatch.setattr(iw, "_ingest_recent_minute", AsyncMock(return_value=0))
     monkeypatch.setattr(iw, "_reconcile_recent", AsyncMock(return_value=0))
 
+    # Supervisor.start() also schedules the SIP reload worker. Keep tests focused
+    # on the worker under test instead of launching its real to_thread DB cycle.
+    from app.workers import sip_reload_worker
+
+    async def fake_sip_reload_loop(stop_event):
+        await stop_event.wait()
+
+    monkeypatch.setattr(sip_reload_worker, "run_sip_reload_loop", fake_sip_reload_loop)
+
 # ==============================================================
 # Helpers
 # ==============================================================
@@ -175,6 +184,7 @@ def test_lifespan_starts_supervisor():
             # Mock the loop functions to just set events.
             ingestion_started = asyncio.Event()
             backfill_started = asyncio.Event()
+            sip_reload_started = asyncio.Event()
 
             async def fake_ingestion(*a, **k):
                 ingestion_started.set()
@@ -188,13 +198,19 @@ def test_lifespan_starts_supervisor():
                 if stop:
                     await stop.wait()
 
+            async def fake_sip_reload(stop_event):
+                sip_reload_started.set()
+                await stop_event.wait()
+
             with patch("app.workers.ingestion_worker.run_ingestion_loop", fake_ingestion), \
-                 patch("app.workers.backfill_worker.run_backfill_loop", fake_backfill):
+                 patch("app.workers.backfill_worker.run_backfill_loop", fake_backfill), \
+                 patch("app.workers.sip_reload_worker.run_sip_reload_loop", fake_sip_reload):
                 await supervisor.start()
                 started = True
                 # Wait for both workers to start.
                 await asyncio.wait_for(ingestion_started.wait(), timeout=5)
                 await asyncio.wait_for(backfill_started.wait(), timeout=5)
+                await asyncio.wait_for(sip_reload_started.wait(), timeout=5)
                 await supervisor.stop()
                 stopped = True
 

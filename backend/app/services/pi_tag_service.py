@@ -49,12 +49,14 @@ class PiTagService:
         page: int,
         page_size: int,
         tag_kind=None,
+        data_type: Optional[PiTagDataType] = None,
     ):
         return self.repo.list(
             search=search,
             equipment_id=equipment_id,
             section_id=section_id,
             variable_type_id=variable_type_id,
+            data_type=data_type,
             active=active,
             validation_status=validation_status,
             tag_kind=tag_kind,
@@ -305,4 +307,3 @@ class PiTagService:
             .all()
         )
         return [row[0] for row in rows if row[0] is not None]
-

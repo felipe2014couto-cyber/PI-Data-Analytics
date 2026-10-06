@@ -273,7 +273,7 @@ class TestVisualCache:
         return TimeSeries(
             start_time=_utc(2026, 7, 1),
             end_time=_utc(2026, 7, 2),
-            mode="interpolated",
+            mode="recorded",
             series=[series],
             errors=[],
             query_execution=QueryExecutionMetadata(),
@@ -288,7 +288,7 @@ class TestVisualCache:
             web_ids_version="W1",
             start_time=_utc(2026, 7, 1),
             end_time=end_time,
-            mode="interpolated",
+            mode="recorded",
             interval="1m",
             resolution_mode="manual",
             target_points_per_tag=10000,
@@ -345,7 +345,7 @@ class TestVisualCache:
                 web_ids_version=f"W{i}",
                 start_time=_utc(2026, 7, 1),
                 end_time=_utc(2026, 7, 2),
-                mode="interpolated",
+                mode="recorded",
                 interval="1m",
                 resolution_mode="manual",
                 target_points_per_tag=10000,
@@ -363,7 +363,7 @@ class TestVisualCache:
                 web_ids_version=f"W{i}",
                 start_time=_utc(2026, 7, 1),
                 end_time=_utc(2026, 7, 2),
-                mode="interpolated",
+                mode="recorded",
                 interval="1m",
                 resolution_mode="manual",
                 target_points_per_tag=10000,
@@ -486,11 +486,11 @@ class TestVisualCache:
 
         async def checker():
             for _ in range(50):
-                supported = await state.is_supported("recorded")
+                supported = await state.is_supported()
                 if supported:
-                    await state.mark_unsupported("recorded")
+                    await state.mark_unsupported()
                 else:
-                    await state.mark_supported("recorded")
+                    await state.mark_supported()
                 results.append(supported)
 
         async def run():

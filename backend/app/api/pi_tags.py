@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db_session, get_norm_limits_service, get_pi_service
 from app.api.pagination import build_paginated_response
 from app.api.query_params import pagination_params
-from app.models.pi_tag import PiTagKind, PiTagValidationStatus
+from app.models.pi_tag import PiTagDataType, PiTagKind, PiTagValidationStatus
 from app.schemas.pi import (
     PiTagNormLimitsResponse,
     PiTagValidationBatchRequest,
@@ -42,6 +42,7 @@ def list_pi_tags(
     equipment_id: Optional[int] = None,
     section_id: Optional[int] = None,
     variable_type_id: Optional[int] = None,
+    data_type: Optional[PiTagDataType] = None,
     active: Optional[bool] = None,
     validation_status: Optional[PiTagValidationStatus] = None,
     include_dependencies: bool = False,
@@ -54,6 +55,7 @@ def list_pi_tags(
         equipment_id=equipment_id,
         section_id=section_id,
         variable_type_id=variable_type_id,
+        data_type=data_type,
         active=active,
         validation_status=validation_status,
         tag_kind=None if include_dependencies else PiTagKind.PRIMARY,
@@ -168,8 +170,8 @@ async def get_norm_limits(
     pi_tag_id: int,
     start_time: str = Query(..., description="Inicio do periodo (ISO 8601)."),
     end_time: str = Query(..., description="Fim do periodo (ISO 8601)."),
-    mode: TimeSeriesMode = Query("recorded", description="Tipo de consulta."),
-    interval: Optional[str] = Query(None, description="Intervalo (obrigatorio para interpolated)."),
+    mode: TimeSeriesMode = Query("recorded", description="Normas históricas consultadas com eventos RECORDED."),
+    interval: Optional[str] = Query(None, description="Parâmetro legado; a consulta usa somente RECORDED."),
     max_count: Optional[int] = Query(None, ge=1, le=1_000_000),
     service: PiNormLimitsService = Depends(get_norm_limits_service),
 ) -> PiTagNormLimitsResponse:
@@ -203,4 +205,3 @@ def get_distinct_values(
 ) -> List[str]:
     service = PiTagService(db)
     return service.get_distinct_values(pi_tag_id=pi_tag_id, limit=limit)
-

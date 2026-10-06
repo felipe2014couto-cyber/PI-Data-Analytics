@@ -1,6 +1,7 @@
 import { Card, Col, Row } from "react-bootstrap";
 import type { ChartBuildResult } from "../utils/chartData";
 import type { FilterApplicationSummary, QueryExecutionMetadata, TimeSeriesSeries } from "../types";
+import type { TimeSeriesMode } from "../types";
 
 interface QuerySummaryProps {
   chart: ChartBuildResult | null;
@@ -11,7 +12,7 @@ interface QuerySummaryProps {
   durationMs: number | null;
   seriesCount: number;
   partial: boolean;
-  mode: "recorded" | "interpolated";
+  mode: TimeSeriesMode;
   filterSummary?: FilterApplicationSummary | null;
   queryExecution?: QueryExecutionMetadata | null;
   seriesMeta?: TimeSeriesSeries[];
@@ -46,6 +47,7 @@ export function QuerySummary({
   const totalPoints = filterSummary?.receivedPoints ?? chart?.totalPoints ?? 0;
   const numericPoints = chart?.totalNumericPoints ?? 0;
   const droppedPoints = (chart?.totalDroppedPoints ?? 0) + (filterSummary?.removedPoints ?? 0);
+  const renderGaps = chart?.totalRenderSentinels ?? 0;
   const nonNumericPoints = chart?.totalNonNumericPoints ?? 0;
   const duration = durationMs === null ? "-" : durationMs + " ms";
 
@@ -70,7 +72,7 @@ export function QuerySummary({
   const windowSplits = queryExecution?.window_split_count;
   const pointsReceived = queryExecution?.pi_points_received;
   const pointsReturned = queryExecution?.points_returned;
-  const recordedTenSecond = mode === "recorded";
+  const recordedMode = mode === "recorded";
   const source = queryExecution?.source;
   const isPostgres = source === "timescaledb" || source === "hybrid" || strategy?.startsWith("postgresql") || strategy?.startsWith("timescaledb");
   const strategyLabel = strategy === "timescaledb_direct"
@@ -97,6 +99,27 @@ export function QuerySummary({
     ? "StreamSet"
     : "PI Web API";
 
+  if ((strategy?.startsWith("production_unit_"))) {
+    return (
+      <div data-testid="query-summary">
+        <Row className="g-2">
+          <Col xs={6} md={3}><Metric label="Séries agregadas" value={String(totalSeries)} testId="metric-series" /></Col>
+          <Col xs={6} md={3}><Metric label="Segmentos de UM" value={String(queryExecution?.production_unit_segment_count ?? 0)} testId="metric-unit-segments" /></Col>
+          <Col xs={6} md={3}><Metric label="Pontos de renderização" value={String(totalPoints)} testId="metric-points" /></Col>
+          <Col xs={6} md={3}><Metric label="Modo" value="recorded" testId="metric-mode" /></Col>
+          <Col xs={12} md={6}><Metric label="Estratégia" value={strategy} testId="metric-strategy" /></Col>
+          <Col xs={6} md={3}><Metric label="Fonte" value="Agregados por UM sobre RECORDED" testId="metric-source" /></Col>
+          <Col xs={6} md={3}><Metric label="Duração" value={duration} testId="metric-duration" /></Col>
+          <Col xs={12} md={6}><Metric label="Período" value={startLocal + " -> " + endLocal} testId="metric-period" /></Col>
+          {zoomedStartLocal && zoomedEndLocal ? <Col xs={12} md={6}><Metric label="Janela zoom" value={zoomedStartLocal + " -> " + zoomedEndLocal} testId="metric-zoomed-period" /></Col> : null}
+        </Row>
+        <div className="mt-2 p-2 border rounded bg-success bg-opacity-10 small" data-testid="unit-source-info">
+          Estatísticas por UM calculadas no servidor após os filtros por amostra. Cada valor é constante em [início, fim); os pontos desenhados são fronteiras visuais do agregado.
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div data-testid="query-summary">
       <Row className="g-2">
@@ -111,6 +134,9 @@ export function QuerySummary({
         </Col>
         <Col xs={6} md={4} lg={2}>
           <Metric label="Descartados" value={String(droppedPoints)} testId="metric-dropped" />
+        </Col>
+        <Col xs={6} md={4} lg={2}>
+          <Metric label="Lacunas de renderização" value={String(renderGaps)} testId="metric-render-gaps" />
         </Col>
         <Col xs={6} md={4} lg={2}>
           <Metric label="Nao numericos" value={String(nonNumericPoints)} testId="metric-nonnumeric" />
@@ -129,7 +155,7 @@ export function QuerySummary({
         <Col xs={6} md={4} lg={2}>
           <Metric label="Modo" value={mode} testId="metric-mode" />
         </Col>
-        {recordedTenSecond ? (
+        {strategy ? (
           <Col xs={12} md={8} lg={4}>
             <Metric label="Estratégia" value={strategyLabel} testId="metric-strategy" />
           </Col>
@@ -220,9 +246,9 @@ export function QuerySummary({
           </Col>
         ) : null}
       </Row>
-      {recordedTenSecond ? (
-        <div className="mt-2 p-2 border rounded bg-success bg-opacity-10 small" data-testid="recorded-10s-info">
-          Histórico 10s — base cíclica. O modo recorded é servido pela série interpolada de 10 segundos no TimescaleDB.
+      {recordedMode ? (
+        <div className="mt-2 p-2 border rounded bg-success bg-opacity-10 small" data-testid="recorded-source-info">
+          Histórico PI RECORDED. Em janelas amplas, o servidor pode usar CAGGs derivadas exclusivamente desses eventos.
         </div>
       ) : anySampled ? (
         <div className="mt-2 p-2 border rounded bg-warning bg-opacity-10 small" data-testid="sampling-warning">
@@ -245,9 +271,9 @@ export function QuerySummary({
           A consulta atingiu o limite de segurança e pode não conter todos os eventos.
         </div>
       ) : null}
-      {recordedTenSecond && ((pointsReceived ?? 0) >= 10000 || (windowSplits ?? 0) > 0) ? (
+      {recordedMode && ((pointsReceived ?? 0) >= 10000 || (windowSplits ?? 0) > 0) ? (
         <div className="mt-1 p-2 border rounded bg-warning bg-opacity-10 small" data-testid="recorded-volume-warning">
-          A consulta contém muitos pontos da série interpolada de 10 segundos e pode demorar.
+          A consulta contém muitos eventos RECORDED e pode demorar.
         </div>
       ) : null}
     </div>

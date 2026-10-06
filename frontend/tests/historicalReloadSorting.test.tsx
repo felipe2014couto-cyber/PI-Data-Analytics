@@ -20,6 +20,7 @@ vi.mock("../src/api", () => ({
     summary: vi.fn(),
     create: vi.fn(),
     cancelBatch: vi.fn(),
+    deleteJob: vi.fn(),
     clearTerminal: vi.fn(),
   },
 }));
@@ -135,7 +136,6 @@ describe("HistoricalReloadPage Sorting", () => {
         target_start: "2026-09-01T00:00:00Z",
         target_end: "2026-09-02T00:00:00Z",
         mode: "recorded",
-        interval: null,
         created_at: "2026-09-01T00:00:00Z",
         updated_at: "2026-09-01T00:00:00Z",
         heartbeat_at: "2026-09-01T00:01:00Z",
@@ -155,7 +155,6 @@ describe("HistoricalReloadPage Sorting", () => {
         target_start: "2026-09-10T00:00:00Z",
         target_end: "2026-09-11T00:00:00Z",
         mode: "recorded",
-        interval: null,
         created_at: "2026-09-10T00:00:00Z",
         updated_at: "2026-09-10T00:00:00Z",
         heartbeat_at: null,
@@ -322,6 +321,52 @@ describe("HistoricalReloadPage Sorting", () => {
     expect(rows[2]).toHaveTextContent("#102");
   });
 
+  it("removes an individual failed thickness reload record", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.mocked(historicalReloadApi.deleteJob).mockResolvedValue(undefined);
+    vi.mocked(historicalReloadApi.list).mockResolvedValue([{
+      id: 19287,
+      tag_id: 10,
+      status: "FAILED",
+      stage: "FAILED",
+      next_start: null,
+      attempts: 1,
+      lease_owner: null,
+      lease_expires_at: null,
+      next_attempt_at: null,
+      progress_percent: 0,
+      target_start: "2026-01-01T00:00:00Z",
+      target_end: "2026-09-30T17:07:00Z",
+      mode: "recorded",
+      created_at: "2026-09-30T20:08:06Z",
+      updated_at: "2026-09-30T20:08:06Z",
+      heartbeat_at: null,
+      error_message: "Tag sem pi_web_id.",
+    }]);
+    vi.mocked(piTagsApi.list).mockResolvedValue({
+      items: [{
+        id: 10, equipment_id: 2, section_id: 1, variable_type_id: 1,
+        pi_server: "PIMS", pi_tag_name: "LFI_RB3_FORNO_ESP", pi_web_id: null,
+        display_name: "Espessura", description: null, engineering_unit: "mm",
+        data_type: "NUMERIC", active: true, validation_status: "INVALID",
+        validation_message: "Tag sem pi_web_id.", validated_at: null,
+        created_at: "", updated_at: "",
+      }],
+      page: 1, page_size: 200, total: 1, pages: 1,
+    });
+
+    render(<MemoryRouter><HistoricalReloadPage /></MemoryRouter>);
+
+    expect(await screen.findByText("Espessura (LFI_RB3_FORNO_ESP)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remover job #19287" }));
+
+    await waitFor(() => {
+      expect(historicalReloadApi.deleteJob).toHaveBeenCalledWith(19287);
+      expect(screen.queryByText("#19287")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/Amostras históricas e cobertura foram preservadas/)).toBeInTheDocument();
+  });
+
   it("submits reload by equipment", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(historicalReloadApi.create).mockResolvedValue([]);
@@ -410,4 +455,3 @@ describe("HistoricalReloadPage Sorting", () => {
     });
   });
 });
-

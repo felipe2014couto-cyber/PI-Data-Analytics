@@ -1,0 +1,99 @@
+<svg width="1400" height="520" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 1400 520">
+<rect width="1400" height="520" x="0" y="0" fill="none"></rect>
+<path d="M45 464.5L1376 464.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<path d="M45 404.5L1376 404.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<path d="M45 344.5L1376 344.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<path d="M45 285.5L1376 285.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<path d="M45 225.5L1376 225.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<path d="M45 165.5L1376 165.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<path d="M45 106.5L1376 106.5" fill="transparent" stroke="#E0E6F1" class="zr3-cls-21"></path>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;" xml:space="preserve" x="12" y="-6" transform="translate(45 91)" fill="#6E7079">Sem unidade</text>
+<path d="M45 464.5L1376 464.5" fill="transparent" stroke="#6E7079" stroke-linecap="round" class="zr3-cls-21"></path>
+<path d="M204.5 464L204.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<path d="M398.5 464L398.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<path d="M593.5 464L593.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<path d="M787.5 464L787.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<path d="M982.5 464L982.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<path d="M1176.5 464L1176.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<path d="M1371.5 464L1371.5 469" fill="transparent" stroke="#6E7079" class="zr3-cls-21"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 464)" fill="#6E7079">0</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 404.3333)" fill="#6E7079">200</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 344.6667)" fill="#6E7079">400</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 285)" fill="#6E7079">600</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 225.3333)" fill="#6E7079">800</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 165.6667)" fill="#6E7079">1,000</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(37 106)" fill="#6E7079">1,200</text>
+<text dominant-baseline="central" text-anchor="middle" style="font: normal normal 12px sans-serif" y="6" transform="translate(203.8641 472)" fill="#1f2d3d">18:45</text>
+<text dominant-baseline="central" text-anchor="middle" style="font: normal normal 12px sans-serif" y="6" transform="translate(592.919 472)" fill="#1f2d3d">19:15</text>
+<text dominant-baseline="central" text-anchor="middle" style="font: normal normal 12px sans-serif" y="6" transform="translate(787.4464 472)" fill="#1f2d3d">19:30</text>
+<text dominant-baseline="central" text-anchor="middle" style="font: normal normal 12px sans-serif" y="6" transform="translate(981.9739 472)" fill="#1f2d3d">19:45</text>
+<text dominant-baseline="central" text-anchor="middle" style="font: normal normal 12px sans-serif" y="6" transform="translate(1371.0287 472)" fill="#1f2d3d">20:15</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;font-weight:bold;" y="6" transform="translate(398.3915 472)" fill="#1f2d3d">19:00</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;font-weight:bold;" y="6" transform="translate(1176.5013 472)" fill="#1f2d3d">20:00</text>
+<path d="M45 74l688.4 0l0 26l-688.4 0Z" fill="#eaf3fa" stroke="#6e9ab7" ecmeta_series_index="2" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr3-cls-22"></path>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:11px;font-family:sans-serif;" x="389.2055050432682" y="87" fill="#174c70">600515A3000B</text>
+<path d="M733.4 74l642.6 0l0 26l-642.6 0Z" fill="#d8e9f6" stroke="#6e9ab7" ecmeta_series_index="2" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr3-cls-23"></path>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:11px;font-family:sans-serif;" x="1054.7055050432682" y="87" fill="#174c70">600436J8000B</text>
+<g clip-path="url(#zr3-c0)">
+<path d="M45 452.7L733.4 452.7L1376 452.7" fill="transparent" stroke="#1976d2" stroke-width="2" stroke-linejoin="bevel" class="zr3-cls-25"></path>
+</g>
+<g clip-path="url(#zr3-c1)">
+<path d="M45 167.9L733.4 167.9L733.4 165.3L1376 165.3" fill="transparent" stroke="#d32f2f" stroke-width="2" stroke-linejoin="bevel" class="zr3-cls-25"></path>
+</g>
+<path d="M-5 -6.5l185.9 0l0 25l-185.9 0Z" transform="translate(612.04 477.5)" fill="rgb(0,0,0)" fill-opacity="0" stroke="#ccc" stroke-width="0" class="zr3-cls-21"></path>
+<path d="M0 7L25 7" transform="translate(613.04 476.5)" fill="#000" stroke="#1976d2" stroke-width="2" stroke-linecap="butt" stroke-miterlimit="10" class="zr3-cls-21"></path>
+<path d="M18.1 7A5.6 5.6 0 1 1 18.1 6.4A5.6 5.6 0 0 1 18.1 7" transform="translate(613.04 476.5)" fill="#1976d2" class="zr3-cls-21"></path>
+<text dominant-baseline="central" text-anchor="start" style="font-size:12px;font-family:sans-serif;" x="30" y="7" transform="translate(613.04 476.5)" fill="#333">Velocidade</text>
+<path d="M-1 1l90.6 0l0 12l-90.6 0Z" transform="translate(613.04 476.5)" fill="transparent" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="legend" class="zr3-cls-26"></path>
+<path d="M0 7L25 7" transform="translate(713.68 476.5)" fill="#000" stroke="#d32f2f" stroke-width="2" stroke-linecap="butt" stroke-miterlimit="10" class="zr3-cls-21"></path>
+<path d="M18.1 7A5.6 5.6 0 1 1 18.1 6.4A5.6 5.6 0 0 1 18.1 7" transform="translate(713.68 476.5)" fill="#d32f2f" class="zr3-cls-21"></path>
+<text dominant-baseline="central" text-anchor="start" style="font-size:12px;font-family:sans-serif;" xml:space="preserve" x="30" y="7" transform="translate(713.68 476.5)" fill="#333">Zona 03</text>
+<path d="M-1 1l75.3 0l0 12l-75.3 0Z" transform="translate(713.68 476.5)" fill="transparent" ecmeta_series_index="1" ecmeta_data_index="1" ecmeta_ssr_type="legend" class="zr3-cls-26"></path>
+<path d="M-15 -15l108.8 0l0 30l-108.8 0Z" transform="translate(1290.2224 15)" fill="transparent" stroke="#ccc" stroke-width="0" class="zr3-cls-21"></path>
+<path d="M-7.5 -4L-0.5 -4M-4 -0.5L-4 -7.5M0.8 -4L7.5 -4L7.5 7.5L-4 7.5L-4 0.8" transform="translate(1290.2224 15)" fill="transparent" stroke="#666" class="zr3-cls-27"></path>
+<path d="M-2.8 -7.5L-6 -4.3L-2.7 -1M-5.8 -4.3L6 -4.3L6 7.5L-5.8 7.5L-5.8 0.6" transform="translate(1316.6748 15)" fill="transparent" stroke="#666" class="zr3-cls-27"></path>
+<path d="M-7 0.9M4.5 -3L7.2 -3L7.2 -5.7M7 -2.6C5.9 -5.6 2.8 -7.9 -0.9 -7.5C-4.6 -7 -7.6 -3.7 -7.5 0.2M-4.5 3L-7.2 3L-7.2 5.7M-7 2.6C-5.9 5.6 -2.8 7.9 0.9 7.5C4.6 7 7.6 3.7 7.5 -0.2" transform="translate(1343.0851 15)" fill="transparent" stroke="#666" class="zr3-cls-27"></path>
+<path d="M-6.5 -1.6L-0.1 4.3L6.5 -1.4M-6.5 3.8L-6.5 7.5L6.2 7.5L6.2 3.8M-0.1 4.2L-0.1 -7.5" transform="translate(1370.0216 15)" fill="transparent" stroke="#666" class="zr3-cls-27"></path>
+<path d="M-131 -5l262 0l0 50l-262 0Z" transform="translate(700 5)" fill="rgb(0,0,0)" fill-opacity="0" stroke="#ccc" stroke-width="0" class="zr3-cls-21"></path>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:18px;font-family:sans-serif;font-weight:bold;" xml:space="preserve" y="9" transform="translate(700 5)" fill="#464646">RB1 | Histórico PI Recorded</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;" xml:space="preserve" y="34" transform="translate(700 5)" fill="#6E7079">01/10/2026, 18:32:45 ate 01/10/2026, 20:15:23</text>
+<defs >
+<clipPath id="zr3-c0">
+<path d="M44 105l1333 0l0 360l-1333 0Z" fill="#000" class="zr3-cls-24"></path>
+</clipPath>
+<clipPath id="zr3-c1">
+<path d="M44 105l1333 0l0 360l-1333 0Z" fill="#000" class="zr3-cls-24"></path>
+</clipPath>
+</defs>
+<style ><![CDATA[
+.zr3-cls-21:hover {
+pointer-events:none;
+}
+.zr3-cls-22:hover {
+cursor:pointer;
+fill:rgba(255,255,255,1);
+}
+.zr3-cls-23:hover {
+cursor:pointer;
+fill:rgba(237,255,255,1);
+}
+.zr3-cls-24:hover {
+cursor:pointer;
+fill:rgba(0,0,0,1);
+}
+.zr3-cls-25:hover {
+cursor:pointer;
+}
+.zr3-cls-26:hover {
+cursor:pointer;
+fill:rgba(0,0,0,0);
+}
+.zr3-cls-27:hover {
+cursor:pointer;
+stroke:#3E98C5;
+}
+
+]]>
+
+</style>
+</svg>

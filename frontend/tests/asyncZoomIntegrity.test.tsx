@@ -68,6 +68,7 @@ function mockChart(points: Array<[number, number]>, _tagId = 7, instanceId = "1"
     totalPoints: points.length,
     totalNumericPoints: points.length,
     totalDroppedPoints: 0,
+    totalRenderSentinels: 0,
     totalNonNumericPoints: 0,
     valueKind: "numeric",
     categories: [],

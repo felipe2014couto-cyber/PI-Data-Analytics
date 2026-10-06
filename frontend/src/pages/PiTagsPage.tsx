@@ -23,6 +23,7 @@ import { ErrorAlert } from "../components/ErrorAlert";
 import { FeedbackAlert } from "../components/FeedbackAlert";
 import { LoadingState } from "../components/LoadingState";
 import { PageHeader } from "../components/PageHeader";
+import { PiTagCsvImportModal } from "../components/PiTagCsvImportModal";
 import { Pagination } from "../components/Pagination";
 import {
   PiConnectionStatusBadge,
@@ -98,6 +99,7 @@ export function PiTagsPage() {
   const [variableTypes, setVariableTypes] = useState<VariableType[]>([]);
 
   const [showFormModal, setShowFormModal] = useState(false);
+  const [showCsvImport, setShowCsvImport] = useState(false);
   const [editing, setEditing] = useState<PiTag | null>(null);
   const [editingSip, setEditingSip] = useState<SipSource | null>(null);
   const [sipColumns, setSipColumns] = useState<string[]>([]);
@@ -570,6 +572,9 @@ export function PiTagsPage() {
             <Button variant="outline-primary" onClick={() => openCreate("SIP")}>
               <i className="bi bi-database me-1" /> Nova consulta SIP
             </Button>
+            <Button variant="outline-primary" onClick={() => setShowCsvImport(true)}>
+              <i className="bi bi-upload me-1" /> Importar CSV
+            </Button>
             <Button variant="primary" className="btn-piad-primary" onClick={() => openCreate("PI")}>
               <i className="bi bi-plus-lg me-1" /> Nova tag PI
             </Button>
@@ -594,6 +599,16 @@ export function PiTagsPage() {
       </div>
 
       <FeedbackAlert variant="success" message={successMessage} />
+
+      <PiTagCsvImportModal
+        show={showCsvImport}
+        onHide={() => setShowCsvImport(false)}
+        onSuccess={(message) => {
+          setSuccessMessage(message);
+          if (page === 1) void loadList();
+          else setPage(1);
+        }}
+      />
 
       <div className="piad-filter-bar">
         <div style={{ minWidth: 150 }}>
@@ -761,6 +776,8 @@ export function PiTagsPage() {
                   <th>Tipo de variavel</th>
                   <th>Tag PI</th>
                   <th>Nome amigavel</th>
+                  <th>Validacao PI</th>
+                  <th>WebId</th>
                   <th>Servidor</th>
                   <th className="text-end">Acoes</th>
                 </tr>
@@ -781,6 +798,8 @@ export function PiTagsPage() {
                     <td>{variableTypeMap.get(item.variable_type_id)?.code ?? item.variable_type_id}</td>
                     <td className="fw-semibold">{item.pi_tag_name}</td>
                     <td>{item.display_name}</td>
+                    <td><StatusBadge status={item.validation_status} /></td>
+                    <td><WebIdDisplay webId={item.pi_web_id} /></td>
                     <td>PIMS</td>
                     <td>
                       <div className="piad-table-actions">

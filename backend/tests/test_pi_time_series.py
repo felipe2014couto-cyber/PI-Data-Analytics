@@ -9,6 +9,7 @@ from app.integrations.pi.provider import PiValue
 from app.models.equipment import Equipment
 from app.models.pi_tag import PiTag, PiTagDataType
 from app.models.postgres import PiSample
+from app.models.postgres import PiIngestionCoverage
 from app.models.section import Section
 from app.models.variable_type import VariableType
 from app.schemas.pi import TimeSeriesPoint
@@ -60,19 +61,27 @@ def test_recorded_reads_timescaledb_and_reports_source(client: TestClient, db_se
     body = response.json(); assert body["query_execution"]["source"] == "timescaledb"
     # SQLite exercises the raw RECORDED fallback; PostgreSQL routes the same
     # request through the 10-second continuous aggregate.
-    assert body["query_execution"]["effective_interval"] is None
+    assert body["query_execution"]["effective_interval"] == "recorded"
     assert len(body["series"][0]["points"]) == 2
     assert client.fake_provider.recorded_calls == []  # type: ignore[attr-defined]
 
 
-def test_interpolated_uses_exact_resolution(client: TestClient, db_session: Session) -> None:
+def test_interpolated_mode_is_rejected_even_when_legacy_rows_exist(client: TestClient, db_session: Session) -> None:
     start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
     tag = _make_tag(db_session, "INTERP")
-    _seed(db_session, tag, start, end, [(start, 1.0)], "INTERPOLATED_60S", 60)
+    db_session.add(PiSample(tag_id=tag.id, ts=start, value_type="double", value_double=1.0, source_mode="INTERPOLATED_10S"))
+    db_session.add(PiIngestionCoverage(
+        tag_id=tag.id, range_start=start, range_end=end, mode="INTERPOLATED_10S",
+        interval_seconds=10, status="COMPLETE",
+    ))
+    db_session.commit()
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "interpolated", "interval": "1m"})
-    assert response.status_code == 200, response.text
-    assert response.json()["query_execution"]["source"] == "timescaledb"
-    assert client.fake_provider.interpolated_calls == []  # type: ignore[attr-defined]
+    assert response.status_code == 422
+    assert not hasattr(client.fake_provider, "get_interpolated_values")
+
+    recorded_response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
+    assert recorded_response.status_code == 409, recorded_response.text
+    assert client.fake_provider.recorded_calls == []  # type: ignore[attr-defined]
 
 
 def test_missing_coverage_is_structured_409_and_pi_free(client: TestClient, db_session: Session) -> None:
@@ -85,14 +94,14 @@ def test_missing_coverage_is_structured_409_and_pi_free(client: TestClient, db_s
     assert client.fake_provider.recorded_calls == []  # type: ignore[attr-defined]
 
 
-def test_invalid_range_and_interpolated_interval(client: TestClient, db_session: Session) -> None:
+def test_invalid_range_and_interpolated_mode(client: TestClient, db_session: Session) -> None:
     tag = _make_tag(db_session, "VALIDATION")
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": "2026-07-01T02:00:00Z", "end_time": "2026-07-01T01:00:00Z", "mode": "recorded"})
     assert response.status_code == 400
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": "2026-07-01T00:00:00Z", "end_time": "2026-07-01T01:00:00Z", "mode": "interpolated"})
     assert response.status_code == 422
     response = client.get("/api/time-series", params={"tag_ids": [tag.id], "start_time": "2026-07-01T00:00:00Z", "end_time": "2026-07-01T01:00:00Z", "mode": "interpolated", "interval": "1s"})
-    assert response.status_code == 400
+    assert response.status_code == 422
 
 
 def test_limit_inactive_and_unknown_tag_contracts(client: TestClient, db_session: Session) -> None:

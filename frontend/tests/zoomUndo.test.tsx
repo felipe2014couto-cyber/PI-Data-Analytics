@@ -65,6 +65,7 @@ function mockChart(): ChartBuildResult {
     totalPoints: 6,
     totalNumericPoints: 6,
     totalDroppedPoints: 0,
+    totalRenderSentinels: 0,
     totalNonNumericPoints: 0,
     valueKind: "numeric",
     categories: [],

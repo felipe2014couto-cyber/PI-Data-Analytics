@@ -214,77 +214,31 @@ def _is_bad_value(value: Optional[float], quality: PointQuality) -> Tuple[bool, 
 
 
 # ---------------------------------------------------------------------------
-# Imputation (neighbor mean)
+# RECORDED quality handling
 # ---------------------------------------------------------------------------
 
-def _apply_imputation(
+def _validate_recorded_samples(
     samples: List[CepSample],
 ) -> List[RecoveredValue]:
-    """Validate each point and recover bad points using neighbor mean.
+    """Preserve valid archive values and leave bad RECORDED values unusable.
 
-    Recovered points use original valid neighbors only.
-    A recovered point cannot serve as neighbor for another recovery.
+    No synthetic replacement is created for a bad value or a missing archive
+    event. The historical field names remain for stored-result compatibility;
+    ``imputed`` is always false.
     """
-    n = len(samples)
-    results: List[Optional[RecoveredValue]] = [None] * n
-
-    # First pass: validate each point
-    raw_valid: List[bool] = [False] * n
-    for i, s in enumerate(samples):
-        is_bad, _reason = _is_bad_value(s.value, s.quality)
-        raw_valid[i] = not is_bad
-
-    # Second pass: impute bad points using original valid neighbors
-    for i, s in enumerate(samples):
+    results: List[RecoveredValue] = []
+    for s in samples:
         is_bad, reason = _is_bad_value(s.value, s.quality)
-        if not is_bad:
-            results[i] = RecoveredValue(
-                timestamp=s.timestamp,
-                raw_value=s.value,
-                effective_value=s.value,
-                is_valid=True,
-                source_substituted=s.quality.substituted,
-                imputed=False,
-            )
-            continue
-
-        # Find previous valid (original) point
-        prev_idx: Optional[int] = None
-        for j in range(i - 1, -1, -1):
-            if raw_valid[j]:
-                prev_idx = j
-                break
-
-        # Find next valid (original) point
-        next_idx: Optional[int] = None
-        for j in range(i + 1, n):
-            if raw_valid[j]:
-                next_idx = j
-                break
-
-        if prev_idx is not None and next_idx is not None:
-            mean_val = (samples[prev_idx].value + samples[next_idx].value) / 2.0
-            results[i] = RecoveredValue(
-                timestamp=s.timestamp,
-                raw_value=s.value,
-                effective_value=mean_val,
-                is_valid=True,
-                source_substituted=s.quality.substituted,
-                imputed=True,
-                imputation_method=ImputationMethod.NEIGHBOR_MEAN,
-            )
-        else:
-            results[i] = RecoveredValue(
-                timestamp=s.timestamp,
-                raw_value=s.value,
-                effective_value=None,
-                is_valid=False,
-                source_substituted=s.quality.substituted,
-                imputed=False,
-                sem_dados_reason=reason or "no valid neighbors for imputation",
-            )
-
-    return [r for r in results if r is not None]
+        results.append(RecoveredValue(
+            timestamp=s.timestamp,
+            raw_value=s.value,
+            effective_value=None if is_bad else s.value,
+            is_valid=not is_bad,
+            source_substituted=s.quality.substituted,
+            imputed=False,
+            sem_dados_reason=reason,
+        ))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +284,7 @@ def calculate_compliance(
 
     Alignment strategy: the reading series is the main timeline.
     For each reading timestamp, find the EXACT same timestamp in lower,
-    upper, and target series. No interpolation, no nearest-prior.
+    upper, and target series. No synthetic values or nearest-prior match.
 
     Input rules:
     - All timestamps within a series must be unique.
@@ -356,10 +310,10 @@ def calculate_compliance(
     target_sorted = _sort_samples(target_samples) if target_samples else []
 
     # --- Validate and recover each series independently ---
-    reading_recovered = _apply_imputation(reading_sorted)
-    lower_recovered = _apply_imputation(lower_sorted)
-    upper_recovered = _apply_imputation(upper_sorted)
-    target_recovered = _apply_imputation(target_sorted) if target_sorted else []
+    reading_recovered = _validate_recorded_samples(reading_sorted)
+    lower_recovered = _validate_recorded_samples(lower_sorted)
+    upper_recovered = _validate_recorded_samples(upper_sorted)
+    target_recovered = _validate_recorded_samples(target_sorted) if target_sorted else []
 
     # --- Build timestamp → RecoveredValue maps ---
     reading_map: Dict[datetime, RecoveredValue] = {r.timestamp: r for r in reading_recovered}

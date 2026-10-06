@@ -2,12 +2,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.core.exceptions import ValidationError
+from app.core.exceptions import ConflictError, ValidationError
 from app.models.equipment import Equipment
 from app.models.section import Section
 from app.models.variable_type import VariableType
 from app.models.pi_tag import PiTag, PiTagDataType
-from app.models.postgres import PiBackfillJob
+from app.models.postgres import PiBackfillJob, PiIngestionCoverage, PiSample
 from app.services.historical_reload_service import HistoricalReloadService
 from app.schemas.historical_reload import HistoricalReloadRequest
 
@@ -123,3 +123,48 @@ def test_reload_by_equipment_and_section(db_session):
     assert len(sec_jobs) == 1
     assert sec_jobs[0].tag_id == tag.id
 
+
+def test_delete_one_failed_reload_preserves_samples_and_coverage(client, db_session):
+    tag = _tag(db_session)
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    job = PiBackfillJob(
+        tag_id=tag.id, mode="RECORDED", target_start=start, target_end=end,
+        status="FAILED", stage="FAILED", error_message="Tag sem pi_web_id.",
+    )
+    db_session.add_all([
+        job,
+        PiSample(
+            tag_id=tag.id, ts=start, source_mode="RECORDED", value_type="double",
+            value_double=1.25, good=True,
+        ),
+        PiIngestionCoverage(
+            tag_id=tag.id, range_start=start, range_end=end, mode="RECORDED",
+            status="PARTIAL",
+        ),
+    ])
+    db_session.commit()
+    job_id = job.id
+
+    response = client.delete(f"/api/admin/historical-reloads/{job_id}")
+
+    assert response.status_code == 204, response.text
+    assert db_session.query(PiBackfillJob).filter_by(id=job_id).count() == 0
+    assert db_session.query(PiSample).filter_by(tag_id=tag.id).count() == 1
+    assert db_session.query(PiIngestionCoverage).filter_by(tag_id=tag.id).count() == 1
+
+
+def test_delete_active_reload_is_rejected(client, db_session):
+    tag = _tag(db_session)
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    job = PiBackfillJob(
+        tag_id=tag.id, mode="RECORDED", target_start=start,
+        target_end=start + timedelta(days=1), status="RUNNING", stage="FETCHING",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.delete(f"/api/admin/historical-reloads/{job.id}")
+
+    assert response.status_code == 409
+    assert db_session.get(PiBackfillJob, job.id) is not None

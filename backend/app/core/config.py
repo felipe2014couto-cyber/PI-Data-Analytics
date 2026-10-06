@@ -313,8 +313,6 @@ class Settings(BaseSettings):
         le=86400,
         description="Atraso máximo aceito para períodos relativos antes de sinalizar dados obsoletos.",
     )
-    ingestion_interpolated_10s_window_hours: float = Field(default=12.0, ge=0.25, le=24.0)
-    ingestion_interpolated_300s_window_days: int = Field(default=14, ge=1, le=60)
     ingestion_tag_concurrency: int = Field(
         default=4,
         ge=1,

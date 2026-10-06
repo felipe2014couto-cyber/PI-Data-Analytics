@@ -105,4 +105,3 @@ def test_invalid_dependency_is_recorded_without_historical_fetch(db_session):
     assert relation.status == "INVALID"
     assert relation.tag_id is None
     assert provider.recorded_calls == []
-    assert provider.interpolated_calls == []

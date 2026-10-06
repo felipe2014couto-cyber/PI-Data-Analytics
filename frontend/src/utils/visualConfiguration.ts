@@ -6,7 +6,6 @@ import type {
   VisualConfigurationSidebarState,
   VisualRulesState,
 } from "../types";
-import { DEFAULT_ANALYSIS_MODEL } from "../constants/analysisModels";
 
 export interface PersistablePageState {
   filters: VisualConfigurationSidebarState["filters"];
@@ -22,7 +21,7 @@ const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 export function buildVisualConfigurationDocument(state: PersistablePageState): VisualConfigurationDocument {
   return copy({
     schema_version: 1,
-    visual_rules: state.visualRules,
+    visual_rules: { ...state.visualRules, queryMode: "recorded" },
     sidebar_state: {
       filters: state.filters,
       selectedTagIds: state.selectedTagIds,
@@ -39,23 +38,25 @@ export function normalizeVisualConfigurationDocument(
   timezone: TimezoneId,
 ): PersistablePageState {
   const saved = document.sidebar_state;
+  const visualRules = { ...document.visual_rules, queryMode: "recorded" as const };
   if (!saved) {
     return copy({
       ...defaults,
-      filters: { ...defaults.filters, mode: document.visual_rules.queryMode ?? defaults.filters.mode },
-      visualRules: document.visual_rules,
+      filters: { ...defaults.filters, mode: "recorded" },
+      visualRules,
     });
   }
   const savedModel = saved.filters?.analysisModel;
   const analysisModel =
     savedModel === "unit" || savedModel === "cyclic" || savedModel === "oee" || savedModel === "downtime" || savedModel === "quality"
       ? savedModel
-      : (defaults.filters.analysisModel ?? DEFAULT_ANALYSIS_MODEL);
+      : (defaults.filters.analysisModel ?? "unit");
 
   return copy({
     filters: {
       ...defaults.filters,
       ...saved.filters,
+      mode: "recorded",
       analysisModel,
       ...(analysisModel === "cyclic"
         ? { timeAnalysisRule: "DEFAULT" }
@@ -72,6 +73,6 @@ export function normalizeVisualConfigurationDocument(
     seriesAssignments: saved.seriesAssignments ?? defaults.seriesAssignments,
     metricConfiguration: saved.metricConfiguration ?? defaults.metricConfiguration,
     comparison: { ...defaults.comparison, ...saved.comparison },
-    visualRules: document.visual_rules,
+    visualRules,
   });
 }

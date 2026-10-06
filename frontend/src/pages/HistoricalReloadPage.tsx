@@ -42,7 +42,6 @@ function groupReloadJobs(jobs: HistoricalReloadJob[]): HistoricalReloadGroup[] {
       return latest
         && latest.tag_id === job.tag_id
         && latest.mode === job.mode
-        && latest.interval === job.interval
         && Math.abs(createdAt - new Date(latest.created_at).getTime()) <= 2_000;
     });
     if (group) {
@@ -190,8 +189,8 @@ export function HistoricalReloadPage() {
           break;
         }
         case "mode": {
-          const modeA = `${a.representative.mode}${a.representative.interval ? " " + a.representative.interval : ""}`;
-          const modeB = `${b.representative.mode}${b.representative.interval ? " " + b.representative.interval : ""}`;
+          const modeA = a.representative.mode;
+          const modeB = b.representative.mode;
           cmp = modeA.localeCompare(modeB, "pt-BR", { sensitivity: "base" });
           break;
         }
@@ -385,6 +384,22 @@ export function HistoricalReloadPage() {
       setMessage(`${result.deleted} job(s) concluído(s)/cancelado(s) removido(s).`);
       await load();
     } catch { setError("Não foi possível limpar os jobs finalizados."); }
+  };
+
+  const removeJob = async (job: HistoricalReloadJob) => {
+    if (["PENDING", "RUNNING"].includes(job.status)) return;
+    if (!window.confirm(`Remover somente o registro da recarga #${job.id}? As amostras históricas e a cobertura serão preservadas.`)) return;
+    setError(null); setMessage(null);
+    try {
+      await historicalReloadApi.deleteJob(job.id);
+      setJobs((previous) => previous.filter((item) => item.id !== job.id));
+      setSelectedJobIds((previous) => {
+        const next = new Set(previous);
+        next.delete(job.id);
+        return next;
+      });
+      setMessage(`Registro da recarga #${job.id} removido. Amostras históricas e cobertura foram preservadas.`);
+    } catch { setError(`Não foi possível remover o registro da recarga #${job.id}.`); }
   };
 
   return <>
@@ -682,7 +697,7 @@ export function HistoricalReloadPage() {
                     </span>
                   </div>
                 </td>
-                <td>{job.mode}{job.interval ? ` ${job.interval}` : ""}</td>
+                <td>{job.mode}</td>
                 <td>{new Date(group.start).toLocaleString()} – {new Date(group.end).toLocaleString()}</td>
                 <td>
                   {isCompleted ? (
@@ -704,7 +719,7 @@ export function HistoricalReloadPage() {
                     <Badge bg="secondary">{group.status}</Badge>
                   )}
                 </td>
-                <td>{cancellable ? <Button size="sm" variant="outline-danger" onClick={() => void cancelGroup(group)}>Cancelar</Button> : null}</td>
+                <td>{cancellable ? <Button size="sm" variant="outline-danger" onClick={() => void cancelGroup(group)}>Cancelar</Button> : <Button size="sm" variant="outline-secondary" aria-label={`Remover job #${job.id}`} onClick={() => void removeJob(job)}>Remover</Button>}</td>
               </tr>
             );
           })}

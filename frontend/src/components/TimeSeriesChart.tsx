@@ -5,8 +5,10 @@ import { EChartsWrapper } from "./EChartsWrapper";
 import type { ChartBuildResult, ChartSeries } from "../utils/chartData";
 import type { NormLimitSeries } from "../utils/normLimitSeries";
 import type { UmChartSeries } from "../utils/umChartSeries";
-import type { SeriesVisualConfiguration, VisualRulesState } from "../types";
+import type { SeriesVisualConfiguration, TimeSeriesMode, VisualRulesState } from "../types";
 import { formatNumericValue } from "../utils/values";
+import { resolveNumericCursorValue } from "../utils/cursorValue";
+import { findProductionUnitSegment, formatOocValue, formatProductionUnitValue, productionUnitRuleLabel, productionUnitTooltip } from "../utils/productionUnitChart";
 
 const SAMPLE_THRESHOLD = 1200;
 const AREA_ZOOM_DRAG_THRESHOLD_PX = 6;
@@ -38,11 +40,33 @@ function formatElapsed(value: number): string {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+function buildStringCategoryIndex(chart: ChartBuildResult): { labels: string[]; index: Map<string, number> } {
+  const labels: string[] = [];
+  const index = new Map<string, number>();
+  const hasStringSeries = chart.series.some((series) => series.dataType === "STRING");
+  for (const series of chart.series) {
+    if (series.dataType !== "STRING" && !(hasStringSeries && series.dataType === "DIGITAL")) continue;
+    const seriesKey = series.seriesInstanceId ?? `tag:${series.tagId}`;
+    for (const value of series.stateValues) {
+      const key = `${seriesKey}\u0000${value}`;
+      if (index.has(key)) continue;
+      index.set(key, labels.length);
+      labels.push(`${series.displayName} (${series.tagName}): ${value === "" ? "(vazio)" : value}`);
+    }
+  }
+  return { labels, index };
+}
+
 interface TooltipSeries {
   seriesId: string;
   displayName: string;
   tagName: string;
   unit: string | null;
+  dataType?: ChartSeries["dataType"];
+  stateValues?: string[];
+  step?: boolean | null;
+  points?: Array<[number, number | null]>;
+  qualitySeries?: Array<[number, number]>;
   /** Series principal numérica (processa value) */
   value: (point: TimeSeriesPoint) => string;
   /** Para pontos textuais (UM) */
@@ -72,7 +96,7 @@ export interface TimeSeriesChartProps {
   baseStart?: Date;
   baseEnd?: Date;
   isZoomed?: boolean;
-  mode: "recorded" | "interpolated";
+  mode: TimeSeriesMode;
   loading?: boolean;
   titleLabel?: string;
   visualRules?: VisualRulesState;
@@ -80,6 +104,7 @@ export interface TimeSeriesChartProps {
   normLimitSeries?: NormLimitSeries[];
   hidePhysicalNormLimits?: boolean;
   umSeries?: UmChartSeries | null;
+  unitBands?: Array<{ start: number; end: number; label: string }>;
   pinnedCursorTs?: number | null;
   onClearCursor?: () => void;
   onPinnedCursorChange?: (ts: number | null) => void;
@@ -184,8 +209,9 @@ function buildTooltip(
   state: TooltipSeriesState,
   _startLocal: string,
   _endLocal: string,
-  _mode: "recorded" | "interpolated",
   umSeries?: UmChartSeries | null,
+  stringCategoryIndex?: Map<string, number>,
+  getUnitHoverTimestamp?: () => number | null,
 ) {
   const qualityBySeries = new Map<string, Map<number, number>>();
   for (const s of chart.series) {
@@ -240,6 +266,9 @@ function buildTooltip(
         hoveredTs = first.value[0];
       }
 
+      if (chart.series.some((series) => series.unitAggregation)) {
+        hoveredTs = getUnitHoverTimestamp?.() ?? hoveredTs;
+      }
       const lines: string[] = [];
       if (chart.comparisonType === "periods" && hoveredTs !== null) {
         lines.push(
@@ -257,6 +286,12 @@ function buildTooltip(
       }
 
       const seen = new Set<string>();
+      if (hoveredTs !== null && chart.series.some((series) => series.unitAggregation)) {
+        for (const series of chart.series) {
+          if (series.unitAggregation) lines.push(productionUnitTooltip(series.unitAggregation, hoveredTs, series.displayName, series.unit));
+        }
+        return lines.join("");
+      }
       for (const entry of params as Array<{
         seriesId?: string;
         seriesName: string;
@@ -309,6 +344,21 @@ function buildTooltip(
           rawVal = entry.value;
         }
 
+        let cursorValueSource: string | null = null;
+        if (series.dataType === "REAL" && hoveredTs !== null && series.points) {
+          const cursorValue = resolveNumericCursorValue(
+            series.points, hoveredTs, series.step, series.qualitySeries,
+          );
+          if (cursorValue.source === "GAP") {
+            rawVal = null;
+            sampleTs = hoveredTs;
+          } else if (cursorValue.value !== null) {
+            rawVal = cursorValue.value;
+            sampleTs = hoveredTs;
+            cursorValueSource = cursorValue.source;
+          }
+        }
+
         let quality: number | null = null;
         if (sampleTs !== null) {
           const q = qualityBySeries.get(seriesId)?.get(sampleTs);
@@ -316,7 +366,18 @@ function buildTooltip(
         }
 
         let valueText = "(sem dado)";
-        if (rawVal !== null && rawVal !== undefined && rawVal !== "") {
+        // STRING series carry their categorical index as a number in statePoints;
+        // resolve it back to the original text so the tooltip shows the real value.
+        if (series.dataType === "STRING" || series.dataType === "DIGITAL") {
+          if (typeof rawVal === "number" && Number.isInteger(rawVal)) {
+            const matchedState = (series.stateValues ?? []).find((state) =>
+              stringCategoryIndex?.get(`${seriesId}\u0000${state}`) === rawVal,
+            );
+            if (matchedState !== undefined) valueText = matchedState === "" ? "(texto vazio)" : matchedState;
+          } else if (rawVal !== null && rawVal !== undefined && rawVal !== "") {
+            valueText = String(rawVal);
+          }
+        } else if (rawVal !== null && rawVal !== undefined && rawVal !== "") {
           if (typeof rawVal === "number") {
             valueText = Number.isFinite(rawVal) ? formatNumericValue(rawVal) : "(sem dado)";
           } else {
@@ -324,9 +385,17 @@ function buildTooltip(
           }
         }
 
-        const unitSuffix = series.unit && valueText !== "(sem dado)" ? ` ${escapeHtml(series.unit)}` : "";
+        const unitSuffix = series.unit && valueText !== "(sem dado)" && series.dataType !== "STRING" ? ` ${escapeHtml(series.unit)}` : "";
         const qText = qualityText(quality);
         const qualitySuffix = qText ? ` - ${escapeHtml(qText)}` : "";
+        const stateNotice = (series.dataType === "STRING" || series.dataType === "DIGITAL") && valueText !== "(sem dado)"
+          ? ` <span style="color:#888;font-size:0.85em">(estado mantido em degraus até o próximo evento)</span>`
+          : "";
+        const derivedNotice = cursorValueSource === "LINEAR_BETWEEN_RECORDED"
+          ? ` <span style="color:#888;font-size:0.85em">(valor visual derivado entre eventos RECORDED; não é uma amostra)</span>`
+          : cursorValueSource === "STEP_STATE"
+            ? ` <span style="color:#888;font-size:0.85em">(último estado RECORDED)</span>`
+            : "";
 
         let sampleNotice = "";
         if (
@@ -344,7 +413,7 @@ function buildTooltip(
 
         const marker = entry.marker ?? "";
         lines.push(
-          `<div>${marker} <strong>${escapeHtml(series.displayName)}</strong>: ${escapeHtml(valueText)}${unitSuffix}${sampleNotice}${qualitySuffix}</div>`,
+          `<div>${marker} <strong>${escapeHtml(series.displayName)}</strong>: ${escapeHtml(valueText)}${unitSuffix}${sampleNotice}${qualitySuffix}${stateNotice}${derivedNotice}</div>`,
         );
       }
 
@@ -370,7 +439,11 @@ function buildStateTooltip(chart: ChartBuildResult) {
     };
     const series = chart.series[entry.seriesIndex];
     if (!series) return "";
-    const state = series.stateValues[entry.dataIndex] ?? "-";
+    const stateIndex = series.statePoints[entry.dataIndex]?.[1];
+    const rawState = stateIndex === null || stateIndex === undefined
+      ? "(sem dado)"
+      : series.stateValues[stateIndex] ?? "-";
+    const state = rawState === "" ? "(texto vazio)" : rawState;
     const quality = series.stateQualitySeries[entry.dataIndex]?.[1];
     return [
       `<div style="font-weight:600">${entry.axisValueLabel ?? ""}</div>`,
@@ -382,7 +455,7 @@ function buildStateTooltip(chart: ChartBuildResult) {
 }
 
 function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
-  const { chart, equipment, start, end, mode, pinnedCursorTs, onClearCursor } = props;
+  const { chart, equipment, start, end, pinnedCursorTs, onClearCursor } = props;
   const series = chart.series[0];
   const markLine =
     pinnedCursorTs !== null && pinnedCursorTs !== undefined && Number.isFinite(pinnedCursorTs)
@@ -413,7 +486,7 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
 
   return {
     title: {
-      text: `${equipment ?? "Equipamento"} | Estados ${mode === "recorded" ? "registrados" : "interpolados"}`,
+      text: `${equipment ?? "Equipamento"} | Estados registrados`,
       subtext: `${start.toLocaleString("pt-BR")} ate ${end.toLocaleString("pt-BR")}`,
       left: "center",
     },
@@ -506,21 +579,54 @@ function normLimitDisplayName(entry: NormLimitSeries, kind: "lower" | "upper"): 
   return kind === "lower" ? `Limite inferior — ${base}` : `Limite superior — ${base}`;
 }
 
-export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): EChartsOption {
+/** Categorical strip: identifiers have no Y value or numeric mapping. */
+function buildUnitBandOption(bands: NonNullable<TimeSeriesChartProps["unitBands"]>, formatter: ReturnType<typeof buildTooltip>) {
+  return {
+    id: "production-unit-band", name: "UM", type: "custom", clip: false,
+    dimensions: [{ name: "start", type: "time" }, { name: "end", type: "time" }, { name: "UM", type: "ordinal" }], encode: { x: [0, 1] },
+    tooltip: { show: true, trigger: "item", formatter: (param: any) => formatter([{ axisValue: param.value?.[0] }]) },
+    data: bands.map(band => [band.start, band.end, band.label]),
+    renderItem: (params: any, api: any) => {
+      const grid = params.coordSys;
+      const left = Math.max(grid.x, api.coord([api.value(0), 0])[0]);
+      const right = Math.min(grid.x + grid.width, api.coord([api.value(1), 0])[0]);
+      const width = right - left;
+      if (width <= 0) return null;
+      return { type: "group", children: [
+        { type: "rect", shape: { x: left, y: grid.y - 32, width, height: 26 },
+          style: { fill: params.dataIndex % 2 ? "#d8e9f6" : "#eaf3fa", stroke: "#6e9ab7", lineWidth: 1 } },
+        { type: "text", style: { x: left + width / 2, y: grid.y - 19,
+          text: bands[params.dataIndex]?.label ?? String(api.value(2)), fill: "#174c70", align: "center", verticalAlign: "middle",
+          fontSize: 11, width: Math.max(0, width - 8), overflow: "truncate" } },
+      ] };
+    },
+  };
+}
+
+export function buildTimeSeriesChartOption(props: TimeSeriesChartProps, getUnitHoverTimestamp?: () => number | null): EChartsOption {
+  const { chart, equipment, start, end } = props;
+  // OOC values are percentages. Keep manual norm selections in page state,
+  // but never place their physical limits on the 0–100% axis.
   const visibleNormLimits = props.hidePhysicalNormLimits ? [] : props.normLimitSeries ?? [];
-  const { chart, equipment, start, end, mode } = props;
-  if (chart.valueKind === "textual" || chart.valueKind === "categorical") {
+  // Pure-textual/categorical charts without any numeric or STRING-typed series
+  // still use the dedicated state renderer. Mixed charts with STRING series
+  // are handled below as combined numeric+categorical charts.
+  const hasStringSeries = chart.series.some((s) => s.dataType === "STRING");
+  if (!hasStringSeries && (chart.valueKind === "textual" || chart.valueKind === "categorical")) {
     return buildStateOption(props);
   }
-  const titleText = `${equipment ?? "Equipamento"} | ${props.titleLabel ?? (mode === "recorded" ? "Histórico Plot — base cíclica" : "Valores interpolados")}`;
+  const titleText = `${equipment ?? "Equipamento"} | ${props.titleLabel ?? "Histórico PI Recorded"}`;
   const subtitle = `${start.toLocaleString("pt-BR")} ate ${end.toLocaleString("pt-BR")}`;
 
   const umSeries = props.umSeries;
   const hasUm = !!umSeries && umSeries.steps.length > 0;
   const hasNumericAxes = chart.yAxisLabels.length > 0;
 
+  const { labels: stringCategories, index: stringCategoryIndex } = buildStringCategoryIndex(chart);
+
   let yAxis: Array<Record<string, unknown>>;
   let umYAxisIndex = -1;
+  let stringYAxisIndex = -1;
 
   if (hasNumericAxes) {
     yAxis = chart.yAxisLabels.map((label, index) => ({
@@ -528,10 +634,27 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
       name: label,
       nameTextStyle: { padding: [0, 0, 0, 24] },
       position: (index === 0 ? "left" : "right") as "left" | "right",
+      ...(chart.series.some((series) => series.unitAggregation) ? { offset: Math.max(0, index - 1) * 60 } : {}),
+      ...(chart.series.some(series => series.unitAggregation?.rule === "OOC") ? { min: 0, max: 100, axisLabel: { formatter: "{value}%" } } : {}),
       alignTicks: true,
       scale: true,
       axisPointer: { show: false },
     }));
+    if (stringCategories.length > 0) {
+      yAxis.push({
+        type: "category" as const,
+        data: stringCategories,
+        show: false,
+        name: "",
+        axisLabel: { show: false },
+        axisTick: { show: false },
+        axisLine: { show: false },
+        splitLine: { show: false },
+        splitArea: { show: false },
+        axisPointer: { show: false },
+      });
+      stringYAxisIndex = yAxis.length - 1;
+    }
     if (hasUm && umSeries) {
       yAxis.push({
         type: "category" as const,
@@ -548,8 +671,39 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
       umYAxisIndex = yAxis.length - 1;
     }
   } else {
-    // Caso sem séries numéricas: cria eixo categórico oculto para renderização da UM sem escala lateral
-    if (hasUm && umSeries) {
+    // No numeric axes: create hidden categorical axis for STRING or UM rendering.
+    if (stringCategories.length > 0) {
+      yAxis = [
+        {
+          type: "category" as const,
+          data: stringCategories,
+          show: false,
+          name: "",
+          axisLabel: { show: false },
+          axisTick: { show: false },
+          axisLine: { show: false },
+          splitLine: { show: false },
+          splitArea: { show: false },
+          axisPointer: { show: false },
+        },
+      ];
+      stringYAxisIndex = 0;
+      if (hasUm && umSeries) {
+        yAxis.push({
+          type: "category" as const,
+          data: umSeries.categories,
+          show: false,
+          name: "",
+          axisLabel: { show: false },
+          axisTick: { show: false },
+          axisLine: { show: false },
+          splitLine: { show: false },
+          splitArea: { show: false },
+          axisPointer: { show: false },
+        });
+        umYAxisIndex = yAxis.length - 1;
+      }
+    } else if (hasUm && umSeries) {
       yAxis = [
         {
           type: "category" as const,
@@ -579,6 +733,8 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
       props.visualRules,
       props.pinnedCursorTs,
       idx === 0,
+      stringYAxisIndex >= 0 ? stringYAxisIndex : undefined,
+      stringCategoryIndex,
     ),
   ) as EChartsOption["series"];
   const limitSeriesOption = (props.limitSeries ?? []).map((series) => buildLimitSeriesOption(series)) as EChartsOption["series"];
@@ -625,7 +781,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
       axisPointer: {
         type: "line",
         lineStyle: { color: "#888", type: "dashed" },
-        snap: true,
+        snap: false,
       },
       confine: true,
       extraCssText: "pointer-events: none;",
@@ -634,15 +790,16 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
         tooltipState,
         start.toLocaleString("pt-BR"),
         end.toLocaleString("pt-BR"),
-        mode,
         umSeries,
+        stringCategoryIndex,
+        getUnitHoverTimestamp,
       ),
     },
     legend: { type: "scroll", bottom: 24, data: legendData },
     grid: {
       left: chart.yAxisLabels.length > 1 ? 60 : 45,
-      right: chart.yAxisLabels.length > 1 ? 60 : 24,
-      top: 70,
+      right: chart.yAxisLabels.length > 1 ? 60 + (chart.series.some((series) => series.unitAggregation) ? Math.max(0, chart.yAxisLabels.length - 2) * 60 : 0) : 24,
+      top: props.unitBands?.length ? 106 : 70,
       bottom: 56,
     },
     xAxis: {
@@ -696,6 +853,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps): ECharts
       ...((limitSeriesOption ?? []) as unknown[]),
       ...((normLimitSeriesOption ?? []) as unknown[]),
       ...(umSeriesOption as unknown[]),
+      ...(props.unitBands?.length ? [buildUnitBandOption(props.unitBands, buildTooltip(chart, tooltipState, start.toLocaleString("pt-BR"), end.toLocaleString("pt-BR"), undefined, stringCategoryIndex))] : []),
     ] as EChartsOption["series"],
   };
 }
@@ -710,6 +868,11 @@ function buildTooltipState(
     displayName: series.displayName,
     tagName: series.tagName,
     unit: series.unit,
+    dataType: series.dataType,
+    stateValues: series.stateValues,
+    step: series.step,
+    points: series.points,
+    qualitySeries: series.qualitySeries,
     value: (point) => {
       const v = point.value;
       if (v === null || v === undefined || v === "") return "(sem dado)";
@@ -795,11 +958,43 @@ function buildSeriesOption(
   visualRules?: VisualRulesState,
   pinnedCursorTs?: number | null,
   isPrimarySeries: boolean = false,
+  stringYAxisIndex?: number,
+  stringCategoryIndex?: Map<string, number>,
 ) {
   const config: SeriesVisualConfiguration | undefined = visualRules?.enabled
     ? visualRules.bySeries[series.seriesInstanceId ?? `tag:${series.tagId}`]
     : undefined;
   const showSymbol = baseShowSymbol && series.points.length <= SAMPLE_THRESHOLD;
+
+  // STRING-typed series render as categorical step bands on their own hidden
+  // Y axis so they share the time axis with numeric measurements without
+  // polluting the numeric scale or requiring float conversion.
+  const seriesKey = series.seriesInstanceId ?? `tag:${series.tagId}`;
+  const isCategoricalBandSeries = (series.dataType === "STRING" || series.dataType === "DIGITAL") &&
+    series.stateValues.some((state) => stringCategoryIndex?.has(`${seriesKey}\u0000${state}`));
+  if (isCategoricalBandSeries && stringYAxisIndex !== undefined && stringYAxisIndex >= 0) {
+    return {
+      id: series.seriesInstanceId ?? `tag:${series.tagId}`,
+      name: series.displayName,
+      type: "line" as const,
+      yAxisIndex: stringYAxisIndex,
+      step: "end" as const,
+      showSymbol: series.statePoints.length <= SAMPLE_THRESHOLD,
+      symbol: "circle",
+      symbolSize: 6,
+      connectNulls: false,
+      sampling: undefined,
+      lineStyle: { color: series.color, width: 2 },
+      itemStyle: { color: series.color },
+      emphasis: { focus: "series" as const },
+      data: series.statePoints.map(([timestamp, stateIndex]) => {
+        if (stateIndex === null) return [timestamp, null];
+        const state = series.stateValues[stateIndex];
+        return [timestamp, stringCategoryIndex?.get(`${seriesKey}\u0000${state}`) ?? null];
+      }),
+      markLine: undefined,
+    };
+  }
 
   const markLineData: Array<Record<string, unknown>> = [];
   if (config) {
@@ -845,17 +1040,24 @@ function buildSeriesOption(
     name: series.displayName,
     type: "line" as const,
     yAxisIndex: series.yAxisIndex,
-    showSymbol,
+    showSymbol: series.unitAggregation ? false : showSymbol,
     symbol: "circle",
     symbolSize: 6,
     // The backend already reduced PI Plot buckets to significant ordered
     // vertices. A second LTTB pass can discard the very extrema we preserved.
-    sampling: series.comparisonType || series.isPlotSeries ? undefined : ("lttb" as const),
+    sampling: series.unitAggregation || series.comparisonType || series.isPlotSeries ? undefined : ("lttb" as const),
     connectNulls: false,
+    ...(series.step === true ? { step: "end" as const } : {}),
     lineStyle: { color: series.color, width: 2, type: (series.contextId === "B" ? "dashed" : "solid") as "dashed" | "solid" },
     itemStyle: { color: series.color },
     emphasis: { focus: "none" as const },
-    data: series.points,
+    // Keep an entirely ineligible OOC variable in chart metadata for its UM
+    // tooltip/marker context, but give ECharts no numeric vertices to draw.
+    // In particular, null percentages must never become an apparent 0% line.
+    data: series.unitAggregation?.rule === "OOC" &&
+      !series.points.some(([, value]) => typeof value === "number" && Number.isFinite(value))
+      ? []
+      : series.points,
     markLine: markLineData.length > 0
       ? {
           silent: true,
@@ -977,7 +1179,6 @@ function formatMarkerHeader(dateOrMs: number | Date): string {
 function getSeriesValueAtTimestamp(
   points: Array<[number, unknown]>,
   timestampMs: number,
-  mode: "recorded" | "interpolated",
 ): { value: number | null } {
   if (!points || points.length === 0) return { value: null };
   if (timestampMs <= points[0][0]) {
@@ -1011,15 +1212,6 @@ function getSeriesValueAtTimestamp(
     return { value: v };
   }
 
-  if (mode === "interpolated") {
-    const v1 = typeof p1[1] === "number" ? p1[1] : null;
-    const v2 = typeof p2[1] === "number" ? p2[1] : null;
-    if (v1 !== null && v2 !== null && Number.isFinite(v1) && Number.isFinite(v2)) {
-      const fraction = (timestampMs - p1[0]) / (p2[0] - p1[0]);
-      return { value: v1 + (v2 - v1) * fraction };
-    }
-  }
-
   const dist1 = Math.abs(timestampMs - p1[0]);
   const dist2 = Math.abs(p2[0] - timestampMs);
   const chosen = dist1 <= dist2 ? p1 : p2;
@@ -1029,6 +1221,8 @@ function getSeriesValueAtTimestamp(
 
 export function TimeSeriesChart(props: TimeSeriesChartProps) {
   const { chart, equipment, start, end, mode, loading, titleLabel, umSeries } = props;
+  const hasUnitAggregates = chart.series.some((series) => series.unitAggregation);
+  const stringCategoryIndex = useMemo(() => buildStringCategoryIndex(chart).index, [chart]);
 
   const [markers, setMarkers] = useState<number[]>(() => {
     if (props.pinnedCursorTs !== null && props.pinnedCursorTs !== undefined) {
@@ -1040,6 +1234,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   const [isDraggingState, setIsDraggingState] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const unitHoverTimestampRef = useRef<number | null>(null);
   const [instance, setInstance] = useState<ECharts | null>(null);
   const instanceRef = useRef<ECharts | null>(null);
   const isDraggingRef = useRef(false);
@@ -1109,11 +1304,11 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     const width = containerRef.current?.clientWidth ?? inst?.getWidth() ?? 800;
     const height = containerRef.current?.clientHeight ?? inst?.getHeight() ?? 420;
     const left = chart.yAxisLabels.length > 1 ? 60 : 45;
-    const right = width - (chart.yAxisLabels.length > 1 ? 60 : 24);
+    const right = width - (chart.yAxisLabels.length > 1 ? 60 + (hasUnitAggregates ? Math.max(0, chart.yAxisLabels.length - 2) * 60 : 0) : 24);
     const top = 70;
     const bottom = height - 96;
     return { left, right, top, bottom, height: Math.max(0, bottom - top) };
-  }, [chart.yAxisLabels.length]);
+  }, [chart.yAxisLabels.length, hasUnitAggregates]);
 
 
 
@@ -1156,9 +1351,10 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         limitSeries: props.limitSeries,
         normLimitSeries: props.normLimitSeries,
         umSeries: props.umSeries,
+        unitBands: props.unitBands,
         pinnedCursorTs: props.pinnedCursorTs ?? null,
         onClearCursor: props.onClearCursor,
-      }),
+      }, () => unitHoverTimestampRef.current),
     [
       chart,
       equipment,
@@ -1173,6 +1369,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       props.limitSeries,
       props.normLimitSeries,
       props.umSeries,
+      props.unitBands,
       props.pinnedCursorTs,
       props.onClearCursor,
     ],
@@ -1612,6 +1809,19 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   return (
     <div
       ref={containerRef}
+      onMouseMoveCapture={(event) => {
+        if (!chart.series.some((series) => series.unitAggregation)) return;
+        const inst = instanceRef.current;
+        if (!inst) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const bounds = getGridBounds();
+        const value = x >= bounds.left && x <= bounds.right && y >= bounds.top && y <= bounds.bottom
+          ? inst.convertFromPixel({ xAxisIndex: 0 }, x) : null;
+        unitHoverTimestampRef.current = typeof value === "number" && Number.isFinite(value) ? value : null;
+      }}
+      onMouseLeave={() => { unitHoverTimestampRef.current = null; }}
       onPointerDown={handleCanvasPointerDown}
       onPointerUp={handleCanvasPointerUp}
       onPointerCancel={cancelAreaSelection}
@@ -1733,26 +1943,60 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
 
           // Compute values and dot positions for each series
           const seriesData = chart.series.map((s, sIdx) => {
-            const { value } = getSeriesValueAtTimestamp(s.points, markerTs, mode);
+            // Categorical bands use statePoints; DIGITAL joins the band when
+            // a STRING series is present so all state lanes share this time axis.
+            const isCategoricalBand = s.dataType === "STRING" ||
+              (s.dataType === "DIGITAL" && chart.series.some((item) => item.dataType === "STRING"));
+            const lookupPoints = isCategoricalBand ? s.statePoints : s.points;
+            let { value } = getSeriesValueAtTimestamp(lookupPoints, markerTs);
+            if (s.unitAggregation) {
+              value = findProductionUnitSegment(s.unitAggregation.segments, markerTs)?.value ?? null;
+            } else if (!isCategoricalBand && s.dataType === "REAL" && s.step !== null && s.step !== undefined) {
+              const resolved = resolveNumericCursorValue(s.points, markerTs, s.step, s.qualitySeries);
+              if (resolved.source === "GAP") value = null;
+              else if (resolved.value !== null) value = resolved.value;
+            }
             let dotY: number | null = null;
             if (value !== null && Number.isFinite(value)) {
-              const pt = instance.convertToPixel({ seriesIndex: sIdx }, [markerTs, value]);
+              const seriesKey = s.seriesInstanceId ?? `tag:${s.tagId}`;
+              const stateValue = isCategoricalBand ? s.stateValues[value] : undefined;
+              const pixelValue = stateValue === undefined
+                ? value
+                : stringCategoryIndex.get(`${seriesKey}\u0000${stateValue}`) ?? value;
+              const pt = instance.convertToPixel({ seriesIndex: sIdx }, [markerTs, pixelValue]);
               if (pt && Number.isFinite(pt[1]) && pt[1] >= gridTop - 4 && pt[1] <= gridTop + gridHeight + 4) {
                 dotY = pt[1];
               }
             }
-            const valueFormatted =
-              value !== null
-                ? `${formatNumericValue(value)}${s.unit ? " " + s.unit : ""}`
-                : "(sem dado)";
+            let valueFormatted: string;
+            if (s.unitAggregation?.rule === "OOC") {
+              valueFormatted = `Atendido: ${formatOocValue(findProductionUnitSegment(s.unitAggregation.segments, markerTs))}`;
+            } else if (s.unitAggregation) {
+              valueFormatted = formatProductionUnitValue(value) + (value !== null && s.unit ? ` ${s.unit}` : "");
+            } else if (isCategoricalBand) {
+              // Resolve original state text using the state event's local index
+              if (value !== null && Number.isInteger(value) && value >= 0 && value < s.stateValues.length) {
+                valueFormatted = s.stateValues[value];
+              } else {
+                valueFormatted = "(sem dado)";
+              }
+            } else {
+              valueFormatted =
+                value !== null
+                  ? `${formatNumericValue(value)}${s.unit ? " " + s.unit : ""}`
+                  : "(sem dado)";
+            }
             return {
               id: s.seriesInstanceId ?? `tag:${s.tagId}`,
-              displayName: s.displayName,
+              displayName: s.unitAggregation ? `${s.displayName} (${productionUnitRuleLabel(s.unitAggregation.rule)} da UM)` : s.displayName,
               color: s.color,
               valueText: valueFormatted,
               dotY,
             };
           });
+
+          const unitContext = chart.series.find(s => s.unitAggregation)?.unitAggregation;
+          const markerUnit = unitContext ? findProductionUnitSegment(unitContext.segments, markerTs) : null;
 
           // UM Series (if selected)
           let umData: { displayName: string; color: string; valueText: string; dotY: number | null } | null = null;
@@ -1904,6 +2148,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
                   </button>
                 </div>
 
+                {unitContext ? <div data-testid="marker-unit">UM: {markerUnit?.um ?? "Sem UM"}</div> : null}
                 {seriesData.map((sd) => (
                   <div key={sd.id} style={{ marginBottom: 3 }}>
                     <div

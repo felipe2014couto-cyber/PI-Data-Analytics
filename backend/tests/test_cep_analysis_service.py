@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -81,8 +81,8 @@ def _make_materialized(
     )
 
 
-def _make_interpolated_values(tag_id: int, values: list) -> dict:
-    """Create interpolated data dict mapping tag_id_str → PiValue list."""
+def _make_recorded_values(tag_id: int, values: list) -> dict:
+    """Create recorded data dict mapping tag_id_str → PiValue list."""
     return {str(tag_id): values}
 
 
@@ -90,7 +90,7 @@ def _make_interpolated_values(tag_id: int, values: list) -> dict:
 async def test_success_total():
     """Scenario 8: All variables processed successfully."""
     provider = FakePiDataProvider(
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -123,7 +123,7 @@ async def test_success_total():
 
 
 @pytest.mark.asyncio
-async def test_resolves_missing_webids_before_interpolated_fetch():
+async def test_resolves_missing_webids_before_recorded_fetch():
     """CEP must not classify valid variables as no-data just because the cache is empty."""
     paths = {
         r"\\PI_DATA\reading": PiPoint(web_id="W10", name="reading"),
@@ -132,7 +132,7 @@ async def test_resolves_missing_webids_before_interpolated_fetch():
     }
     provider = FakePiDataProvider(
         points=paths,
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -166,18 +166,18 @@ async def test_resolves_missing_webids_before_interpolated_fetch():
 
 
 @pytest.mark.asyncio
-async def test_interpolated_batch_keeps_each_tag_associated_with_its_webid():
+async def test_recorded_batch_keeps_each_tag_associated_with_its_webid():
     provider = FakePiDataProvider(
-        interpolated={
+        recorded={
             "W_SHARED": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W_UPPER": [make_value("2026-01-01T00:05:00Z", 60.0)],
         }
     )
     service = CepAnalysisService(provider)
 
-    values, diagnostics = await service._fetch_interpolated(
+    values, diagnostics = await service._fetch_recorded_for_analysis(
         {10: "W_SHARED", -20: "W_SHARED", -21: "W_UPPER"},
-        _ts(), _ts(day=2), "5m",
+        _ts(), _ts(day=2),
     )
 
     assert diagnostics == []
@@ -190,7 +190,7 @@ async def test_interpolated_batch_keeps_each_tag_associated_with_its_webid():
 async def test_success_partial():
     """Scenario 9: Mix of processed and error variables."""
     provider = FakePiDataProvider(
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -230,7 +230,7 @@ async def test_success_partial():
 async def test_failure_total():
     """Scenario 10: All variables fail."""
     provider = FakePiDataProvider(
-        raise_on_interpolated=Exception("PI unavailable")
+        raise_on_recorded=Exception("PI unavailable")
     )
     service = CepAnalysisService(provider)
     store = CepQueryStore()
@@ -258,7 +258,7 @@ async def test_failure_total():
 @pytest.mark.asyncio
 async def test_no_data_variables():
     """Scenario 4: Variables with no points → no_data."""
-    provider = FakePiDataProvider(interpolated={})
+    provider = FakePiDataProvider(recorded={})
     service = CepAnalysisService(provider)
     store = CepQueryStore()
     registry = QueryRegistry()
@@ -288,7 +288,7 @@ async def test_no_data_variables():
 async def test_overall_pct_with_denominator():
     """Scenario 43: overall_pct calculated when denominator > 0."""
     provider = FakePiDataProvider(
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -320,7 +320,7 @@ async def test_overall_pct_with_denominator():
 @pytest.mark.asyncio
 async def test_overall_pct_none_when_no_eligible():
     """Scenario 44: overall_pct is None when no eligible points."""
-    provider = FakePiDataProvider(interpolated={})
+    provider = FakePiDataProvider(recorded={})
     service = CepAnalysisService(provider)
     store = CepQueryStore()
     registry = QueryRegistry()
@@ -347,7 +347,7 @@ async def test_overall_pct_none_when_no_eligible():
 async def test_tags_deduplicated():
     """Scenario 7: Shared tags are deduplicated."""
     provider = FakePiDataProvider(
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -383,9 +383,9 @@ async def test_tags_deduplicated():
 
 @pytest.mark.asyncio
 async def test_include_recorded_false():
-    """Scenario 27: No Recorded calls when include_recorded=false."""
+    """CEP calculation reads RECORDED events even when response series are hidden."""
     provider = FakePiDataProvider(
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -412,18 +412,13 @@ async def test_include_recorded_false():
     entry = await store.get(query_id)
     assert entry.query_status == "completed"
     assert entry.result.recorded_series is None
-    assert len(provider.recorded_calls) == 0
+    assert len(provider.recorded_calls) == 3
 
 
 @pytest.mark.asyncio
 async def test_include_recorded_true():
     """Scenario 28: Recorded series present when include_recorded=true."""
     provider = FakePiDataProvider(
-        interpolated={
-            "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
-            "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
-            "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
-        },
         recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
@@ -459,12 +454,12 @@ async def test_cancellation_during_execution():
 
     # Create a provider that delays to allow cancellation
     class SlowProvider(FakePiDataProvider):
-        async def get_interpolated_values_batch(self, web_ids, start_time, end_time, interval, max_count=None):
+        async def get_recorded_values_batch(self, web_ids, start_time, end_time, max_count=None):
             await asyncio.sleep(1.0)  # Slow enough to be cancelled
-            return await super().get_interpolated_values_batch(web_ids, start_time, end_time, interval, max_count)
+            return await super().get_recorded_values_batch(web_ids, start_time, end_time, max_count)
 
     provider = SlowProvider(
-        interpolated={
+        recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
             "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
@@ -515,8 +510,8 @@ async def test_exception_generates_failed():
     query_id = "q1"
     await store.register(query_id, materialized.request)
 
-    # Mock _fetch_interpolated to raise
-    with patch.object(service, '_fetch_interpolated', side_effect=Exception("test error")):
+    # Mock _fetch_recorded_for_analysis to raise
+    with patch.object(service, '_fetch_recorded_for_analysis', side_effect=Exception("test error")):
         task = asyncio.create_task(
             service.run_analysis(query_id, materialized, store, registry)
         )
@@ -535,20 +530,14 @@ async def test_recorded_individual_truncation_flag_false():
     """Scenario 29: Individual truncation doesn't set aggregate flag."""
     # Create a tag with exactly individual_limit points
     individual_limit = settings.pi_cep_recorded_max_points_per_tag
-    # Generate timestamps within valid range (0-23 hours)
+    # Keep every generated event at a unique timestamp.
     recorded_values = []
     for i in range(individual_limit):
-        h = i % 24
-        m = (i // 24) % 60
-        recorded_values.append(make_value(f"2026-01-01T{h:02d}:{m:02d}:00Z", float(i)))
+        timestamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=i)
+        recorded_values.append(make_value(timestamp.isoformat(), float(i)))
 
     provider = FakePiDataProvider(
-        interpolated={
-            "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
-            "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
-            "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
-        },
-        recorded={"W10": recorded_values + [make_value("2026-01-01T23:59:00Z", 99.0)]},
+        recorded={"W10": recorded_values + [make_value((datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=individual_limit)).isoformat(), 99.0)]},
     )
     service = CepAnalysisService(provider)
     store = CepQueryStore()
@@ -587,9 +576,8 @@ async def test_recorded_aggregate_truncation_flag_true():
     def make_recorded_values(count):
         values = []
         for i in range(count):
-            h = i % 24
-            m = (i // 24) % 60
-            values.append(make_value(f"2026-01-01T{h:02d}:{m:02d}:00Z", float(i)))
+            timestamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=i)
+            values.append(make_value(timestamp.isoformat(), float(i)))
         return values
 
     tags = []
@@ -602,7 +590,6 @@ async def test_recorded_aggregate_truncation_flag_true():
         recorded[web_id] = make_recorded_values(individual_limit + 5)
 
     provider = FakePiDataProvider(
-        interpolated={f"W{10+i}": [make_value("2026-01-01T00:05:00Z", 50.0)] for i in range(12)},
         recorded=recorded,
     )
     service = CepAnalysisService(provider)
@@ -657,11 +644,6 @@ async def test_recorded_aggregate_truncation_flag_true():
 async def test_recorded_lexicographic_order():
     """Scenario 36: Tags processed in lexicographic order."""
     provider = FakePiDataProvider(
-        interpolated={
-            "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
-            "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
-            "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
-        },
         recorded={
             "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
             "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
@@ -702,16 +684,10 @@ async def test_source_point_count_null_when_truncated():
     # Create more points than the limit
     recorded_values = []
     for i in range(individual_limit + 5):
-        h = i % 24
-        m = (i // 24) % 60
-        recorded_values.append(make_value(f"2026-01-01T{h:02d}:{m:02d}:00Z", float(i)))
+        timestamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=i)
+        recorded_values.append(make_value(timestamp.isoformat(), float(i)))
 
     provider = FakePiDataProvider(
-        interpolated={
-            "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
-            "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
-            "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
-        },
         recorded={"W10": recorded_values},
     )
     service = CepAnalysisService(provider)
@@ -744,11 +720,6 @@ async def test_source_point_count_null_when_truncated():
 async def test_source_point_count_exact_when_complete():
     """Scenario 33: source_point_count is exact when complete."""
     provider = FakePiDataProvider(
-        interpolated={
-            "W10": [make_value("2026-01-01T00:05:00Z", 50.0)],
-            "W11": [make_value("2026-01-01T00:05:00Z", 40.0)],
-            "W12": [make_value("2026-01-01T00:05:00Z", 60.0)],
-        },
         recorded={
             "W10": [
                 make_value("2026-01-01T00:05:00Z", 50.0),

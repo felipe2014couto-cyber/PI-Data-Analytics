@@ -31,7 +31,7 @@ const state = (): PersistablePageState => ({
   ],
   metricConfiguration: { kind: "single", metric: "mean" },
   comparison: { type: "equipments", contextBEquipmentId: 44, contextBCategoryId: null, contextBTagIds: [202, 201], contextBStart: "", contextBEnd: "" },
-  visualRules: { enabled: true, selectedSeriesInstanceId: "tag:101", bySeries: {} },
+  visualRules: { enabled: true, queryMode: "recorded", selectedSeriesInstanceId: "tag:101", bySeries: {} },
 });
 
 describe("estado persistente da configuração visual", () => {
@@ -75,9 +75,10 @@ describe("estado persistente da configuração visual", () => {
 
   it("abre documento antigo usando padrões atuais para campos ausentes", () => {
     const defaults = state();
-    const restored = normalizeVisualConfigurationDocument({ schema_version: 1, visual_rules: { enabled: false, selectedSeriesInstanceId: null, bySeries: {}, queryMode: "interpolated" } }, defaults, "America/Sao_Paulo");
+    const restored = normalizeVisualConfigurationDocument({ schema_version: 1, visual_rules: { enabled: false, selectedSeriesInstanceId: null, bySeries: {}, queryMode: "interpolated" } as never }, defaults, "America/Sao_Paulo");
     expect(restored.filters.equipmentId).toBe(defaults.filters.equipmentId);
-    expect(restored.filters.mode).toBe("interpolated");
+    expect(restored.filters.mode).toBe("recorded");
+    expect(restored.visualRules.queryMode).toBe("recorded");
     expect(restored.selectedTagIds).toEqual(defaults.selectedTagIds);
     expect(restored.visualRules.enabled).toBe(false);
   });
@@ -105,25 +106,14 @@ describe("estado persistente da configuração visual", () => {
     expect(ids).toContain("rule-generic");
   });
 
-  it("abre configuração antiga sem o campo de modelo usando o default Base Cíclica", () => {
+  it("abre configuração antiga sem o campo de modelo aplicando Base Unidade como compatibilidade", () => {
     const defaults = state();
-    defaults.filters.analysisModel = "cyclic";
     const legacyDoc = buildVisualConfigurationDocument(defaults);
     // Remove o campo analysisModel simulando documento antigo
     delete (legacyDoc.sidebar_state?.filters as Record<string, unknown>).analysisModel;
     const restored = normalizeVisualConfigurationDocument(legacyDoc, defaults, "America/Sao_Paulo");
-    expect(restored.filters.analysisModel).toBe("cyclic");
-    expect(restored.filters.timeAnalysisRule).toBe("DEFAULT");
-  });
-
-  it("preserva Base Unidade quando esse modelo foi salvo explicitamente", () => {
-    const custom = state();
-    custom.filters.analysisModel = "unit";
-    custom.filters.timeAnalysisRule = "MEDIA";
-    const doc = buildVisualConfigurationDocument(custom);
-    const restored = normalizeVisualConfigurationDocument(doc, state(), "America/Sao_Paulo");
     expect(restored.filters.analysisModel).toBe("unit");
-    expect(restored.filters.timeAnalysisRule).toBe("MEDIA");
+    expect(restored.filters.timeAnalysisRule).toBeUndefined();
   });
 
   it("restaura configuração com Base Cíclica e regra Padrão preservadas", () => {

@@ -159,6 +159,7 @@ export const apiMock = {
   validateBatchPiTags: vi.fn(),
   getDistinctValues: vi.fn().mockResolvedValue([]),
   timeSeriesQuery: vi.fn(),
+  productionUnitsAnalyze: vi.fn(),
   timeSeriesCompare: vi.fn(),
   cancelQuery: vi.fn(),
   databaseHealthGet: vi.fn(),
@@ -218,6 +219,7 @@ export function mockApiModule() {
       compare: apiMock.timeSeriesCompare,
       cancelQuery: apiMock.cancelQuery,
     },
+    productionUnitsApi: { analyze: apiMock.productionUnitsAnalyze },
     databaseHealthApi: {
       getHealth: apiMock.databaseHealthGet,
     },

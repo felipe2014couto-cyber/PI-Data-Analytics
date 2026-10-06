@@ -43,12 +43,6 @@ class BarrierFakePiProvider(FakePiDataProvider):
             await self.barrier.wait()
         return await super().get_recorded_values(web_id, start, end, max_count)
 
-    async def get_interpolated_values(self, web_id: str, start, end, interval, max_count=None):
-        self.call_count += 1
-        if self.barrier:
-            await self.barrier.wait()
-        return await super().get_interpolated_values(web_id, start, end, interval, max_count)
-
 
 def _seed_db_fixture():
     """Ensure test user and test equipment/tags exist in DB."""

@@ -47,7 +47,7 @@ def _seed_state(db, tag_id, watermark=None, next_attempt_at=None, failures=0):
     state = PiIngestionState(
         tag_id=tag_id, source_mode="RECORDED",
         watermark_ts=watermark, last_source_ts=None,
-        sampling_mode="RECORDED", consecutive_failures=failures,
+        consecutive_failures=failures,
         next_attempt_at=next_attempt_at,
     )
     db.add(state)
@@ -310,6 +310,32 @@ def test_reprocessing_same_interval_does_not_duplicate(monkeypatch):
             "WHERE tag_id = 141 AND source_mode = 'RECORDED'"
         )).scalar_one()
     assert count == 1  # idempotent: single event, not duplicated
+
+
+def test_ingestion_contract_is_recorded_only_and_rejects_legacy_mode(monkeypatch):
+    _patch_session(monkeypatch)
+    with TestingSessionLocal() as db:
+        tag = _seed_tag(db, 142, "WEB_RECORDED_ONLY")
+
+    assert iw._modes_for(tag) == (("RECORDED", None, None),)
+    with pytest.raises(ValueError, match="não suportado"):
+        iw._window_for("INTERPOLATED_10S")
+    with pytest.raises(ValueError, match="somente RECORDED"):
+        iw._record(142, _P(NOW, -2.5), "INTERPOLATED_300S")
+
+    class _MustNotBeCalled:
+        async def get_recorded_values(self, *args, **kwargs):
+            raise AssertionError("modo legado não pode consultar PI nem persistir dados")
+
+    assert asyncio.run(iw._ingest_tag(
+        142, NOW, provider=_MustNotBeCalled(), source_mode="INTERPOLATED_10S",
+    )) == (0, 0)
+    from sqlalchemy import text
+    with TestingSessionLocal() as db:
+        count = db.execute(text(
+            "SELECT count(*) FROM pi_samples_timescale WHERE tag_id=142"
+        )).scalar_one()
+    assert count == 0
 
 
 # ------------------------------------------------------- session discipline

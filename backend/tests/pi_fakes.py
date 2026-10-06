@@ -16,7 +16,6 @@ from app.integrations.pi.errors import (
 )
 from app.integrations.pi.provider import (
     PiDataProvider,
-    PiInterpolatedValues,
     PiPoint,
     PiRecordedValues,
     PiValue,
@@ -37,23 +36,18 @@ class FakePiDataProvider(PiDataProvider):
         self,
         points: Optional[Dict[str, PiPoint]] = None,
         recorded: Optional[Dict[str, List[PiValue]]] = None,
-        interpolated: Optional[Dict[str, List[PiValue]]] = None,
         raise_on_ping: Optional[object] = None,
         raise_on_resolve: Optional[object] = None,
         raise_on_recorded: Optional[object] = None,
-        raise_on_interpolated: Optional[object] = None,
     ) -> None:
         self._points = points or {}
         self._recorded = recorded or {}
-        self._interpolated = interpolated or {}
         self._raise_on_ping = raise_on_ping
         self._raise_on_resolve = raise_on_resolve
         self._raise_on_recorded = raise_on_recorded
-        self._raise_on_interpolated = raise_on_interpolated
         self.ping_calls = 0
         self.resolve_calls: List[str] = []
         self.recorded_calls: List[tuple] = []
-        self.interpolated_calls: List[tuple] = []
         # When true, ``resolve_point`` will return None for paths not in the map
         # instead of raising PiTagNotFoundError. Used to simulate "not found".
         self.treat_missing_as_not_found = True
@@ -97,21 +91,6 @@ class FakePiDataProvider(PiDataProvider):
             raise exc
         values = self._recorded.get(web_id, [])
         return PiRecordedValues(web_id=web_id, values=list(values))
-
-    async def get_interpolated_values(
-        self,
-        web_id: str,
-        start_time: datetime,
-        end_time: datetime,
-        interval: str,
-        max_count: Optional[int] = None,
-    ) -> PiInterpolatedValues:
-        self.interpolated_calls.append((web_id, start_time, end_time, interval, max_count))
-        exc = self._resolve_raise(self._raise_on_interpolated, web_id)
-        if exc is not None:
-            raise exc
-        values = self._interpolated.get(web_id, [])
-        return PiInterpolatedValues(web_id=web_id, values=list(values))
 
 
 def make_value(

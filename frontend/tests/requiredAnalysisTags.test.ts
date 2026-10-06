@@ -11,19 +11,25 @@ describe("resolveRequiredAnalysisTagIds & queryTagIds composition", () => {
   };
 
   const dynamicTagString: SectionAnalysisTag = {
+    id: 201,
     variable_type_id: 101,
     variable_type_code: "STR_VAR",
     variable_type_name: "String Variable",
     filter_data_type: "STRING",
     pi_tag_id: 90,
+    pi_tag_name: "TAG_STR_VAR",
+    filter_type: "TEXT",
   };
 
   const dynamicTagReal: SectionAnalysisTag = {
+    id: 202,
     variable_type_id: 102,
     variable_type_code: "REAL_VAR",
     variable_type_name: "Real Variable",
     filter_data_type: "REAL",
     pi_tag_id: 91,
+    pi_tag_name: "TAG_REAL_VAR",
+    filter_type: "MIN_MAX",
   };
 
   const extraAnalysisTags: SectionAnalysisTag[] = [dynamicTagString, dynamicTagReal];

@@ -37,13 +37,12 @@ from app.schemas.pi import (
     TimeSeriesPoint,
     TimeSeriesRequest,
     TimeSeriesSeries,
+    determine_series_data_type,
 )
 from app.services.cache import VisualCache, VisualCacheKey, WebIdCache, _webid_cache_key
 from app.services.pi_query_planner import (
     QueryPlan,
     build_plan_for_visual,
-    compute_interpolated_chunks,
-    estimate_interpolated_points,
     split_chunk,
     split_period_into_chunks,
     validate_period,
@@ -52,9 +51,7 @@ from app.services.pi_query_planner import (
 from app.services.query_registry import get_query_registry
 from app.services.streamset_client import (
     build_web_ids_version,
-    detect_missing_series,
     fetch_recorded_streamsets_batch,
-    fetch_streamset_batch,
 )
 from app.services.timing import QueryTimings, measure
 
@@ -108,11 +105,8 @@ class PiLongRangeService:
 
     def _validate_request(self, request: TimeSeriesRequest) -> None:
         validate_period(request.start_time, request.end_time)
-        if request.mode == "interpolated" and not request.interval:
-            raise TimeRangeInvalidError(
-                "O intervalo e obrigatorio no modo interpolated.",
-                details={"mode": request.mode},
-            )
+        if request.mode != "recorded":
+            raise TimeRangeInvalidError("O histórico temporal aceita somente RECORDED.")
 
     def _load_tags(self, tag_ids: List[int]) -> List[PiTag]:
         if not tag_ids:
@@ -357,135 +351,16 @@ class PiLongRangeService:
                     series.chunk_count = None
                     series_list.append(series)
                     total_visual_points += len(exact_values)
-            elif request.mode == "interpolated" and len(web_ids) > 1:
-                interval = plan.effective_interval or request.interval or "1m"
-                streamset_mode = "interpolated"
-                stream_results, req_count, used = await fetch_streamset_batch(
-                    [w for _, w in web_ids],
-                    request.start_time,
-                    request.end_time,
-                    "interpolated",
-                    interval,
-                    settings.pi_query_chunk_max_points,
-                    provider,
-                )
-                streamset_used = used
-                if used:
-                    batch_count = max(1, (len(web_ids) + settings.pi_query_streamset_batch_size - 1) // settings.pi_query_streamset_batch_size)
-                    batch_size = settings.pi_query_streamset_batch_size
-                    total_pi_requests += req_count
-                    if query_id:
-                        for _ in range(req_count):
-                            await get_query_registry().increment_pi_requests(query_id)
-                            await self._check_pi_limit(query_id)
-                    missing = detect_missing_series(
-                        [w for _, w in web_ids], stream_results
-                    )
-                    for tag, wid in web_ids:
-                        await self._check_cancelled(query_id)
-                        if wid in stream_results and stream_results[wid]:
-                            deduped = _remove_boundary_duplicates(stream_results[wid])
-                            source_count = len(deduped)
-                            target = plan.estimated_points_per_chunk or settings.pi_query_visual_default_points_per_tag
-                            sampled_flag = False
-                            if not preserve_all_points and len(deduped) > target:
-                                sampled_flag = True
-                                deduped = _sample_series(deduped, target)
-                            series = self._build_series(tag, request, deduped)
-                            series.source_point_count = source_count
-                            series.returned_point_count = len(deduped)
-                            series.sampled = sampled_flag
-                            series_list.append(series)
-                            total_visual_points += len(deduped)
-                            if sampled_flag:
-                                all_sampled = True
-                        elif wid in missing:
-                            individual_fallback += 1
-                            total_pi_requests += 1
-                            if query_id:
-                                await get_query_registry().increment_pi_requests(query_id)
-                                await self._check_pi_limit(query_id)
-                            async with semaphore:
-                                try:
-                                    response = await provider.get_interpolated_values(
-                                        wid,
-                                        request.start_time,
-                                        request.end_time,
-                                        interval=interval,
-                                        max_count=settings.pi_query_chunk_max_points,
-                                    )
-                                except PiIntegrationError:
-                                    errors.append({
-                                        "tag_id": tag.id,
-                                        "code": "PI_TAG_NOT_FOUND",
-                                        "message": "Serie ausente no StreamSet e falha no fallback.",
-                                    })
-                                    all_partial = True
-                                    continue
-                            deduped = _remove_boundary_duplicates(response.values)
-                            source_count = len(deduped)
-                            target = plan.estimated_points_per_chunk or settings.pi_query_visual_default_points_per_tag
-                            sampled_flag = False
-                            if not preserve_all_points and len(deduped) > target:
-                                sampled_flag = True
-                                deduped = _sample_series(deduped, target)
-                            series = self._build_series(tag, request, deduped)
-                            series.source_point_count = source_count
-                            series.returned_point_count = len(deduped)
-                            series.sampled = sampled_flag
-                            series_list.append(series)
-                            total_visual_points += len(deduped)
-                            if sampled_flag:
-                                all_sampled = True
-                            if wid in web_id_map:
-                                logger.info(
-                                    "StreamSet missing series for webId %s, individual fallback succeeded",
-                                    wid
-                                )
-                else:
-                    for tag, wid in web_ids:
-                        await self._check_cancelled(query_id)
-                        try:
-                            series, pi_req_count, subdivided, sampled, truncated = (
-                                await self._fetch_interpolated_visual(
-                                    tag, wid, request, plan, semaphore, query_id=query_id,
-                                    preserve_all_points=preserve_all_points,
-                                )
-                            )
-                            total_pi_requests += pi_req_count
-                            total_subdivided += subdivided
-                            total_visual_points += len(series.points)
-                            if sampled:
-                                all_sampled = True
-                            if truncated:
-                                all_partial = True
-                                series.truncated = True
-                            series_list.append(series)
-                        except PiIntegrationError as exc:
-                            errors.append({
-                                "tag_id": tag.id,
-                                "code": exc.code,
-                                "message": exc.safe_message,
-                            })
-                            all_partial = True
             else:
                 for tag, wid in web_ids:
                     await self._check_cancelled(query_id)
                     try:
-                        if request.mode == "recorded":
-                            series, pi_req_count, subdivided, sampled, truncated = (
-                                await self._fetch_recorded_visual(
-                                    tag, wid, request, plan, semaphore, query_id=query_id,
-                                    preserve_all_points=preserve_all_points,
-                                )
+                        series, pi_req_count, subdivided, sampled, truncated = (
+                            await self._fetch_recorded_visual(
+                                tag, wid, request, plan, semaphore, query_id=query_id,
+                                preserve_all_points=preserve_all_points,
                             )
-                        else:
-                            series, pi_req_count, subdivided, sampled, truncated = (
-                                await self._fetch_interpolated_visual(
-                                    tag, wid, request, plan, semaphore, query_id=query_id,
-                                    preserve_all_points=preserve_all_points,
-                                )
-                            )
+                        )
                         total_pi_requests += pi_req_count
                         total_subdivided += subdivided
                         total_visual_points += len(series.points)
@@ -651,62 +526,6 @@ class PiLongRangeService:
 
         return series, pi_request_count, subdivided_count, sampled_flag, truncated
 
-    async def _fetch_interpolated_visual(
-        self,
-        tag: PiTag,
-        web_id: str,
-        request: TimeSeriesRequest,
-        plan: QueryPlan,
-        semaphore: asyncio.Semaphore,
-        query_id: Optional[str] = None,
-        preserve_all_points: bool = False,
-    ) -> Tuple[TimeSeriesSeries, int, int, bool, bool]:
-        provider = self._resolve_provider()
-        all_values: List[PiValue] = []
-        pi_request_count = 0
-        interval = plan.effective_interval or request.interval or "1m"
-
-        chunks = compute_interpolated_chunks(
-            request.start_time, request.end_time, interval
-        )
-
-        for chunk in chunks:
-            await self._check_cancelled(query_id)
-            async with semaphore:
-                try:
-                    if query_id:
-                        await get_query_registry().increment_pi_requests(query_id)
-                        await self._check_pi_limit(query_id)
-                    response = await provider.get_interpolated_values(
-                        web_id,
-                        chunk.start_time,
-                        chunk.end_time,
-                        interval=interval,
-                        max_count=settings.pi_query_chunk_max_points,
-                    )
-                    pi_request_count += 1
-                except PiIntegrationError:
-                    raise
-            all_values.extend(response.values)
-
-        deduped = _remove_boundary_duplicates(all_values)
-        source_count = len(deduped)
-
-        sampled_flag = False
-        visual_target = plan.estimated_points_per_chunk or settings.pi_query_visual_default_points_per_tag
-        if not preserve_all_points and len(deduped) > visual_target:
-            sampled_flag = True
-            deduped = _sample_series(deduped, visual_target)
-
-        series = self._build_series(tag, request, deduped)
-        series.source_point_count = source_count
-        series.returned_point_count = len(deduped)
-        series.sampled = sampled_flag
-        series.truncated = False
-        series.chunk_count = pi_request_count
-
-        return series, pi_request_count, 0, sampled_flag, False
-
     def _build_series(
         self,
         tag: PiTag,
@@ -735,6 +554,7 @@ class PiLongRangeService:
             section=section_code,
             variable_type=variable_type_code,
             unit=unit,
+            data_type=determine_series_data_type(tag),
             points=points,
         )
 
@@ -748,6 +568,8 @@ class PiLongRangeService:
         max_count: Optional[int] = None,
     ) -> AsyncIterator[str]:
         validate_period(start_time, end_time)
+        if mode != "recorded":
+            raise TimeRangeInvalidError("A exportação histórica aceita somente RECORDED.")
         tags = self._load_tags(tag_ids)
         provider = self._resolve_provider()
         semaphore = get_global_semaphore()
@@ -791,24 +613,6 @@ class PiLongRangeService:
                         all_values.extend(vals)
 
                 all_values.sort(key=lambda v: v.timestamp)
-                deduped = _remove_boundary_duplicates(all_values)
-            else:
-                eff_interval = interval or "1m"
-                chunks = compute_interpolated_chunks(start_time, end_time, eff_interval)
-                all_values = []
-                for chunk in chunks:
-                    async with semaphore:
-                        try:
-                            response = await provider.get_interpolated_values(
-                                web_id,
-                                chunk.start_time,
-                                chunk.end_time,
-                                interval=eff_interval,
-                                max_count=max_count or settings.pi_query_chunk_max_points,
-                            )
-                        except PiIntegrationError:
-                            continue
-                    all_values.extend(response.values)
                 deduped = _remove_boundary_duplicates(all_values)
 
             for v in deduped:

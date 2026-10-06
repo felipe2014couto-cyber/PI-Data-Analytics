@@ -13,8 +13,6 @@ from app.services.pi_query_planner import (
     TimeChunk,
     build_plan_for_visual,
     compute_automatic_interval,
-    compute_interpolated_chunks,
-    estimate_interpolated_points,
     interval_to_seconds,
     seconds_to_interval,
     split_chunk,
@@ -104,21 +102,6 @@ class TestAutomaticInterval:
             assert seconds_to_interval(interval_to_seconds(iv)) == iv
 
 
-class TestInterpolatedChunks:
-    def test_chunks_respect_max_points(self):
-        start = _utc(2026, 1, 1)
-        end = _utc(2026, 7, 1)
-        chunks = compute_interpolated_chunks(start, end, "30m", chunk_days=7)
-        assert len(chunks) >= 1
-        for c in chunks:
-            assert c.start_time >= start
-            assert c.end_time <= end
-
-    def test_estimate_points(self):
-        n = estimate_interpolated_points(_utc(2026, 1, 1), _utc(2026, 7, 1), "30m")
-        assert n == 8689
-
-
 class TestSplitChunk:
     def test_split_in_half(self):
         chunk = TimeChunk(start_time=_utc(2026, 1, 1), end_time=_utc(2026, 1, 8), index=0, depth=0)
@@ -146,20 +129,6 @@ class TestVisualBudget:
 
 
 class TestBuildPlan:
-    def test_plan_for_interpolated_automatic(self):
-        plan = build_plan_for_visual(
-            tag_count=2,
-            start_time=_utc(2026, 1, 1),
-            end_time=_utc(2026, 7, 1),
-            mode="interpolated",
-            resolution_mode="automatic",
-            interval=None,
-            target_points_per_tag=10000,
-        )
-        assert plan.effective_interval is not None
-        assert len(plan.chunks) > 0
-        assert plan.resolution_mode == "automatic"
-
     def test_plan_for_recorded(self):
         plan = build_plan_for_visual(
             tag_count=1,

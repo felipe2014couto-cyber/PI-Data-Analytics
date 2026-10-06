@@ -11,9 +11,9 @@ describe("CEP analysis page", () => {
   });
 
   it("ends relative analysis at a completed ingestion interval", () => {
-    expect(relativeCepPeriod(new Date("2026-09-23T12:07:34Z"), 24, "5m")).toEqual({
-      start: "2026-09-22T12:00:00.000Z",
-      end: "2026-09-23T12:00:00.000Z",
+    expect(relativeCepPeriod(new Date("2026-09-23T12:07:34Z"), 24)).toEqual({
+      start: "2026-09-22T12:06:00.000Z",
+      end: "2026-09-23T12:06:00.000Z",
     });
   });
 

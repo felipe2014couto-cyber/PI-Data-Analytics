@@ -61,6 +61,19 @@ const QUALITY_BAD_CONFIG: DataFilterConfiguration = {
 };
 
 describe("Quality filters", () => {
+  it("keeps render sentinels as gaps without counting them as discarded quality samples", () => {
+    const data = ts([series(1, [
+      { timestamp: "2026-01-01T00:00:00Z", value: 0 },
+      { timestamp: "2026-01-01T00:01:00Z", value: null, good: false },
+      { timestamp: "2026-01-01T00:02:00Z", value: -2 },
+    ])]);
+    data.series[0].points[1].is_render_sentinel = true;
+    const result = applyDataFilters(data, QUALITY_BAD_CONFIG);
+    expect(result.filteredTimeSeries.series[0].points[1].is_render_sentinel).toBe(true);
+    expect(result.summary.removedByQuality).toBe(0);
+    expect(result.summary.removedPoints).toBe(0);
+  });
+
   it("keeps Good=true point", () => {
     const data = ts([series(1, [{ timestamp: "2026-01-01T00:00:00Z", value: 42 }])]);
     const result = applyDataFilters(data, EMPTY_CONFIG);

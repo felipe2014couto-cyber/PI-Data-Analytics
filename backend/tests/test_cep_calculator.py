@@ -12,7 +12,7 @@ from app.services.cep_calculator import (
     ImputationMethod,
     OutOfLimitPeriod,
     PointQuality,
-    _apply_imputation,
+    _validate_recorded_samples,
     _check_cross_series_tz,
     _check_timestamp_consistency,
     _is_bad_value,
@@ -253,14 +253,14 @@ class TestIsBadValue:
 # Imputation
 # ---------------------------------------------------------------------------
 
-class TestImputation:
+class TestRecordedQualityHandling:
     def test_all_valid(self):
         samples = [
             CepSample(_ts(10, 0), 20.0, _good(20)),
             CepSample(_ts(10, 1), 25.0, _good(25)),
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert len(result) == 3
         assert all(r.is_valid for r in result)
         assert all(not r.imputed for r in result)
@@ -274,11 +274,11 @@ class TestImputation:
             CepSample(_ts(10, 1), None, _bad_good_false()),
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert len(result) == 3
-        assert result[1].imputed is True
-        assert result[1].effective_value == 25.0
-        assert result[1].imputation_method == ImputationMethod.NEIGHBOR_MEAN
+        assert result[1].is_valid is False
+        assert result[1].imputed is False
+        assert result[1].effective_value is None
 
     def test_multiple_bad_between_valids(self):
         samples = [
@@ -287,12 +287,12 @@ class TestImputation:
             CepSample(_ts(10, 2), None, _bad_questionable()),
             CepSample(_ts(10, 3), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert len(result) == 4
-        assert result[1].imputed is True
-        assert result[1].effective_value == 25.0
-        assert result[2].imputed is True
-        assert result[2].effective_value == 25.0
+        assert result[1].is_valid is False
+        assert result[1].effective_value is None
+        assert result[2].is_valid is False
+        assert result[2].effective_value is None
 
     def test_bad_at_start_no_recovery(self):
         samples = [
@@ -300,7 +300,7 @@ class TestImputation:
             CepSample(_ts(10, 1), 25.0, _good(25)),
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert result[0].is_valid is False
         assert result[0].effective_value is None
 
@@ -310,7 +310,7 @@ class TestImputation:
             CepSample(_ts(10, 1), 25.0, _good(25)),
             CepSample(_ts(10, 2), None, _bad_good_false()),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert result[2].is_valid is False
         assert result[2].effective_value is None
 
@@ -319,26 +319,25 @@ class TestImputation:
             CepSample(_ts(10, 0), None, _bad_good_false()),
             CepSample(_ts(10, 1), None, _bad_questionable()),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert all(not r.is_valid for r in result)
 
-    def test_imputed_not_used_as_neighbor(self):
+    def test_bad_values_are_not_filled_from_neighbors(self):
         samples = [
             CepSample(_ts(10, 0), 20.0, _good(20)),
             CepSample(_ts(10, 1), None, _bad_good_false()),
             CepSample(_ts(10, 2), None, _bad_good_false()),
             CepSample(_ts(10, 3), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
-        # Both bad points use mean of original valid 20 and 30 = 25
-        assert result[1].effective_value == 25.0
-        assert result[2].effective_value == 25.0
+        result = _validate_recorded_samples(samples)
+        assert result[1].effective_value is None
+        assert result[2].effective_value is None
 
     def test_substituted_flag_preserved(self):
         samples = [
             CepSample(_ts(10, 0), 20.0, _substituted(20)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert result[0].source_substituted is True
         assert result[0].is_valid is True
 
@@ -348,9 +347,9 @@ class TestImputation:
             CepSample(_ts(10, 1), float("nan"), _good(0)),
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
-        assert result[1].imputed is True
-        assert result[1].effective_value == 25.0
+        result = _validate_recorded_samples(samples)
+        assert result[1].imputed is False
+        assert result[1].effective_value is None
 
     def test_minus_999_treated_as_bad(self):
         samples = [
@@ -358,9 +357,9 @@ class TestImputation:
             CepSample(_ts(10, 1), -999.0, _good(0)),
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
-        assert result[1].imputed is True
-        assert result[1].effective_value == 25.0
+        result = _validate_recorded_samples(samples)
+        assert result[1].imputed is False
+        assert result[1].effective_value is None
 
     def test_text_value_treated_as_bad(self):
         samples = [
@@ -368,10 +367,10 @@ class TestImputation:
             CepSample(_ts(10, 1), "abc", _good(0)),  # type: ignore[arg-type]
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         # "abc" is not numeric finite, so it's bad and gets imputed
-        assert result[1].imputed is True
-        assert result[1].effective_value == 25.0
+        assert result[1].imputed is False
+        assert result[1].effective_value is None
 
     def test_source_substituted_and_imputed_independent(self):
         """Substituted flag and imputed flag are independent."""
@@ -380,7 +379,7 @@ class TestImputation:
             CepSample(_ts(10, 1), 25.0, _substituted(25)),  # valid but substituted
             CepSample(_ts(10, 2), 30.0, _good(30)),
         ]
-        result = _apply_imputation(samples)
+        result = _validate_recorded_samples(samples)
         assert result[1].source_substituted is True
         assert result[1].imputed is False
         assert result[1].effective_value == 25.0
@@ -490,7 +489,7 @@ class TestCalculateCompliance:
         assert points[0].status == CepStatus.CONFORME
         assert points[0].target_effective == 17.0
 
-    def test_imputed_points_counted(self):
+    def test_bad_points_are_not_imputed(self):
         reading = [
             CepSample(_ts(10, 0), 20.0, _good(20)),
             CepSample(_ts(10, 1), None, _bad_good_false()),
@@ -499,8 +498,9 @@ class TestCalculateCompliance:
         lower = [CepSample(_ts(10, i), 10.0, _good(10)) for i in range(3)]
         upper = [CepSample(_ts(10, i), 30.0, _good(30)) for i in range(3)]
         points, summary = calculate_compliance(reading, lower, upper)
-        assert points[1].reading_imputed is True
-        assert summary.total_imputed >= 1
+        assert points[1].reading_imputed is False
+        assert points[1].reading_effective is None
+        assert summary.total_imputed == 0
 
     def test_empty_series(self):
         points, summary = calculate_compliance([], [], [])
@@ -611,7 +611,7 @@ class TestCalculateCompliance:
         assert points[0].upper_source_substituted is False
         assert points[0].target_source_substituted is True
 
-    def test_imputed_flag_on_each_series(self):
+    def test_recorded_bad_flags_do_not_create_values(self):
         """imputed is tracked independently per series."""
         reading = [
             CepSample(_ts(10, 0), 20.0, _good(20)),
@@ -625,9 +625,11 @@ class TestCalculateCompliance:
         ]
         upper = [CepSample(_ts(10, i), 30.0, _good(30)) for i in range(3)]
         points, _ = calculate_compliance(reading, lower, upper)
-        assert points[1].reading_imputed is True
-        assert points[1].lower_imputed is True
+        assert points[1].reading_imputed is False
+        assert points[1].lower_imputed is False
         assert points[1].upper_imputed is False
+        assert points[1].reading_effective is None
+        assert points[1].lower_effective is None
 
     def test_sem_dados_not_in_percentage(self):
         """SEM_DADOS excluded from denominator."""

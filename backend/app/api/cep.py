@@ -218,9 +218,7 @@ def _load_and_materialize(
 
 def _validate_historical_coverage(db: Session, materialized: MaterializedAnalysisData) -> None:
     """Reject CEP requests whose required Timescale ranges are incomplete."""
-    # CEP interpolates from the RECORDED history maintained by the live worker.
-    # The old INTERPOLATED_* coverage stopped advancing when ingestion moved to
-    # RECORDED-only mode, so requiring it rejects fully populated periods.
+    # CEP requires only complete RECORDED query coverage.
     affected: list[dict] = []
     for item in materialized.unique_tags:
         row = db.execute(
@@ -245,7 +243,6 @@ def _validate_historical_coverage(db: Session, materialized: MaterializedAnalysi
         raise HistoricalDataNotLoadedError(details={
             "affected_tags": affected,
             "mode": "recorded",
-            "interpolated_interval": materialized.request.interpolated_interval,
             "requested_period": {
                 "start": materialized.request.start_time.isoformat(),
                 "end": materialized.request.end_time.isoformat(),
@@ -406,7 +403,7 @@ async def get_variable_series(
     store: CepQueryStore = Depends(get_cep_query_store),
     registry: QueryRegistry = Depends(get_query_registry_dep),
 ) -> CepVariableSeries:
-    """Return the Interpolated series retained for one completed execution."""
+    """Return the RECORDED series retained for one completed execution."""
     entry = await _get_valid_entry(query_id, store, registry)
     series = entry.variable_series.get(variable_id)
     if series is None:

@@ -1,0 +1,976 @@
+{
+  "equipment_id": 2,
+  "section_id": 5,
+  "tag_ids": [
+    20
+  ],
+  "start": "2026-10-01T21:32:12+00:00",
+  "end": "2026-10-02T21:32:12+00:00",
+  "filters": {
+    "filters_enabled": true,
+    "quality": {
+      "exclude_bad": true,
+      "exclude_questionable": false,
+      "exclude_substituted": false
+    },
+    "rules": [
+      {
+        "id": "benchmark-range",
+        "kind": "numeric",
+        "enabled": true,
+        "tag_id": 20,
+        "series_instance_id": null,
+        "section_tag_map": null,
+        "operator": "between",
+        "value": 25.0,
+        "second_value": 32.0,
+        "value_type": null,
+        "case_sensitive": false,
+        "days": null,
+        "start_time": null,
+        "end_time": null
+      }
+    ]
+  },
+  "before": {
+    "runs_ms": [
+      378.834,
+      347.971,
+      329.826
+    ],
+    "median_ms": 347.971,
+    "queries": [
+      19,
+      15,
+      15
+    ],
+    "segments": 29,
+    "raw_samples": 140539,
+    "runtime_raw_sample_count": 140539,
+    "strategy": "production_unit_recorded_runtime",
+    "precomputed_segments": 0,
+    "runtime_segments": 29
+  },
+  "after": {
+    "runs_ms": [
+      329.935,
+      290.111,
+      293.47
+    ],
+    "median_ms": 293.47,
+    "queries": [
+      17,
+      17,
+      17
+    ],
+    "segments": 29,
+    "raw_samples": 140539,
+    "runtime_raw_sample_count": 140539,
+    "strategy": "production_unit_filtered_runtime",
+    "precomputed_segments": 0,
+    "runtime_segments": 29
+  },
+  "equal_results": true,
+  "average_tolerance": "floating statistics: relative and absolute 1e-12; counts/bounds/text exact",
+  "results": [
+    {
+      "segment_id": "29:2026-10-01T21:32:12+00:00",
+      "um_value": "161175T2100B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-01T21:32:12Z",
+      "end_time": "2026-10-01T21:32:45Z",
+      "duration_seconds": 33.0,
+      "start_reason": "QUERY_START",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-01T21:14:04Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 65,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-01T21:32:45+00:00",
+      "um_value": "600515A3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-01T21:32:45Z",
+      "end_time": "2026-10-01T22:25:50Z",
+      "duration_seconds": 3185.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-01T21:32:45Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6253,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-01T22:25:50+00:00",
+      "um_value": "600436J8000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-01T22:25:50Z",
+      "end_time": "2026-10-01T23:15:23Z",
+      "duration_seconds": 2973.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-01T22:25:50Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 5841,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-01T23:15:23+00:00",
+      "um_value": "602661A2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-01T23:15:23Z",
+      "end_time": "2026-10-02T00:09:33Z",
+      "duration_seconds": 3250.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-01T23:15:23Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6380,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T00:09:33+00:00",
+      "um_value": "602565D2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T00:09:33Z",
+      "end_time": "2026-10-02T01:02:26Z",
+      "duration_seconds": 3173.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T00:09:33Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6229,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T01:02:26+00:00",
+      "um_value": "602644G2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T01:02:26Z",
+      "end_time": "2026-10-02T01:53:41Z",
+      "duration_seconds": 3075.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T01:02:26Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6034,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T01:53:41+00:00",
+      "um_value": "600422J2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T01:53:41Z",
+      "end_time": "2026-10-02T02:45:31Z",
+      "duration_seconds": 3110.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T01:53:41Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6106,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T02:45:31+00:00",
+      "um_value": "602623A1000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T02:45:31Z",
+      "end_time": "2026-10-02T03:37:09Z",
+      "duration_seconds": 3098.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T02:45:31Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6083,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T03:37:09+00:00",
+      "um_value": "161175T2100B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T03:37:09Z",
+      "end_time": "2026-10-02T05:30:31Z",
+      "duration_seconds": 6802.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T03:37:09Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 2,
+          "raw_sample_count": 2088,
+          "filtered_sample_count": 2,
+          "excluded_quality_count": 0,
+          "average": 29.9621122,
+          "minimum": 27.9994144,
+          "maximum": 31.92481,
+          "first_timestamp": "2026-10-02T03:45:12.099014Z",
+          "last_timestamp": "2026-10-02T03:45:12.599014Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T05:30:31+00:00",
+      "um_value": "600349E1100B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T05:30:31Z",
+      "end_time": "2026-10-02T06:32:00Z",
+      "duration_seconds": 3689.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T05:30:31Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 7206,
+          "raw_sample_count": 7240,
+          "filtered_sample_count": 7206,
+          "excluded_quality_count": 0,
+          "average": 26.807625608451335,
+          "minimum": 25.001976,
+          "maximum": 28.08427,
+          "first_timestamp": "2026-10-02T05:30:47.554000Z",
+          "last_timestamp": "2026-10-02T06:31:59.608001Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T06:32:00+00:00",
+      "um_value": "602608B2200B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T06:32:00Z",
+      "end_time": "2026-10-02T07:42:32Z",
+      "duration_seconds": 4232.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T06:32:00Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 8308,
+          "raw_sample_count": 8308,
+          "filtered_sample_count": 8308,
+          "excluded_quality_count": 0,
+          "average": 26.50721247035376,
+          "minimum": 25.926569,
+          "maximum": 28.20383,
+          "first_timestamp": "2026-10-02T06:32:00.124008Z",
+          "last_timestamp": "2026-10-02T07:42:31.567001Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T07:42:32+00:00",
+      "um_value": "600429E1000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T07:42:32Z",
+      "end_time": "2026-10-02T09:11:57Z",
+      "duration_seconds": 5365.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T07:42:32Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 10085,
+          "raw_sample_count": 10529,
+          "filtered_sample_count": 10085,
+          "excluded_quality_count": 0,
+          "average": 26.42063375076846,
+          "minimum": 25.0234146,
+          "maximum": 28.1866245,
+          "first_timestamp": "2026-10-02T07:42:32.083007Z",
+          "last_timestamp": "2026-10-02T09:11:56.890014Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T09:11:57+00:00",
+      "um_value": "600304J2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T09:11:57Z",
+      "end_time": "2026-10-02T09:36:07Z",
+      "duration_seconds": 1450.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T09:11:57Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 2090,
+          "raw_sample_count": 2845,
+          "filtered_sample_count": 2090,
+          "excluded_quality_count": 0,
+          "average": 28.92834597818181,
+          "minimum": 25.003582,
+          "maximum": 31.716486,
+          "first_timestamp": "2026-10-02T09:11:57.406005Z",
+          "last_timestamp": "2026-10-02T09:36:06.871002Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T09:36:07+00:00",
+      "um_value": "BOB L2 02/10/2026 06:14:26",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T09:36:07Z",
+      "end_time": "2026-10-02T09:50:58Z",
+      "duration_seconds": 891.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T09:36:07Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 1743,
+          "raw_sample_count": 1743,
+          "filtered_sample_count": 1743,
+          "excluded_quality_count": 0,
+          "average": 30.633754810040173,
+          "minimum": 28.0472755,
+          "maximum": 31.2149,
+          "first_timestamp": "2026-10-02T09:36:07.387008Z",
+          "last_timestamp": "2026-10-02T09:50:57.557006Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T09:50:58+00:00",
+      "um_value": "BOB L2 02/10/2026 06:26:20",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T09:50:58Z",
+      "end_time": "2026-10-02T09:59:21Z",
+      "duration_seconds": 503.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T09:50:58Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 985,
+          "raw_sample_count": 985,
+          "filtered_sample_count": 985,
+          "excluded_quality_count": 0,
+          "average": 31.06231809228425,
+          "minimum": 30.9620361,
+          "maximum": 31.110363,
+          "first_timestamp": "2026-10-02T09:50:58.072006Z",
+          "last_timestamp": "2026-10-02T09:59:20.696014Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T09:59:21+00:00",
+      "um_value": "600304J2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T09:59:21Z",
+      "end_time": "2026-10-02T10:27:00Z",
+      "duration_seconds": 1659.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T09:59:21Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 3257,
+          "raw_sample_count": 3257,
+          "filtered_sample_count": 3257,
+          "excluded_quality_count": 0,
+          "average": 30.924689807430234,
+          "minimum": 30.0361519,
+          "maximum": 31.1214962,
+          "first_timestamp": "2026-10-02T09:59:21.211013Z",
+          "last_timestamp": "2026-10-02T10:26:59.874008Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T10:27:00+00:00",
+      "um_value": "600304J3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T10:27:00Z",
+      "end_time": "2026-10-02T11:03:59Z",
+      "duration_seconds": 2219.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T10:27:00Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 1777,
+          "raw_sample_count": 4353,
+          "filtered_sample_count": 1777,
+          "excluded_quality_count": 0,
+          "average": 30.947500794541355,
+          "minimum": 30.0390263,
+          "maximum": 31.99252,
+          "first_timestamp": "2026-10-02T10:27:00.389007Z",
+          "last_timestamp": "2026-10-02T11:03:58.869003Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T11:03:59+00:00",
+      "um_value": "602620G3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T11:03:59Z",
+      "end_time": "2026-10-02T11:39:37Z",
+      "duration_seconds": 2138.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T11:03:59Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 19,
+          "raw_sample_count": 4178,
+          "filtered_sample_count": 19,
+          "excluded_quality_count": 0,
+          "average": 31.092621315789476,
+          "minimum": 31.0547848,
+          "maximum": 31.6633816,
+          "first_timestamp": "2026-10-02T11:03:59.369003Z",
+          "last_timestamp": "2026-10-02T11:04:08.509002Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T11:39:37+00:00",
+      "um_value": "602716C2000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T11:39:37Z",
+      "end_time": "2026-10-02T12:31:32Z",
+      "duration_seconds": 3115.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T11:39:37Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6104,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T12:31:32+00:00",
+      "um_value": "602620G4000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T12:31:32Z",
+      "end_time": "2026-10-02T13:07:25Z",
+      "duration_seconds": 2153.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T12:31:32Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 4216,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T13:07:25+00:00",
+      "um_value": "609729I3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T13:07:25Z",
+      "end_time": "2026-10-02T13:47:26Z",
+      "duration_seconds": 2401.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T13:07:25Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 4690,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T13:47:26+00:00",
+      "um_value": "461238T3303B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T13:47:26Z",
+      "end_time": "2026-10-02T16:46:23Z",
+      "duration_seconds": 10737.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T13:47:26Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 969,
+          "raw_sample_count": 3410,
+          "filtered_sample_count": 969,
+          "excluded_quality_count": 0,
+          "average": 29.671901535706926,
+          "minimum": 25.0214672,
+          "maximum": 31.3319912,
+          "first_timestamp": "2026-10-02T13:55:10.407012Z",
+          "last_timestamp": "2026-10-02T16:44:27.902999Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T16:46:23+00:00",
+      "um_value": "405635T9101B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T16:46:23Z",
+      "end_time": "2026-10-02T16:59:22Z",
+      "duration_seconds": 779.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T16:46:23Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 1526,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T16:59:22+00:00",
+      "um_value": "600375J9000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T16:59:22Z",
+      "end_time": "2026-10-02T17:53:50Z",
+      "duration_seconds": 3268.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T16:59:22Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6399,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T17:53:50+00:00",
+      "um_value": "600430C3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T17:53:50Z",
+      "end_time": "2026-10-02T18:46:12Z",
+      "duration_seconds": 3142.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T17:53:50Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 6150,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T18:46:12+00:00",
+      "um_value": "600377F3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T18:46:12Z",
+      "end_time": "2026-10-02T19:29:03Z",
+      "duration_seconds": 2571.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T18:46:12Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 5037,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T19:29:03+00:00",
+      "um_value": "602633J4000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T19:29:03Z",
+      "end_time": "2026-10-02T20:07:00Z",
+      "duration_seconds": 2277.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T19:29:03Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 0,
+          "raw_sample_count": 4463,
+          "filtered_sample_count": 0,
+          "excluded_quality_count": 0,
+          "average": null,
+          "minimum": null,
+          "maximum": null,
+          "first_timestamp": null,
+          "last_timestamp": null,
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T20:07:00+00:00",
+      "um_value": "600465I1000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T20:07:00Z",
+      "end_time": "2026-10-02T20:58:34Z",
+      "duration_seconds": 3094.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "NEXT_UM",
+      "state_source_timestamp": "2026-10-02T20:07:00Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 5942,
+          "raw_sample_count": 6074,
+          "filtered_sample_count": 5942,
+          "excluded_quality_count": 0,
+          "average": 30.06575029145062,
+          "minimum": 29.045084,
+          "maximum": 31.7588081,
+          "first_timestamp": "2026-10-02T20:08:07.531005Z",
+          "last_timestamp": "2026-10-02T20:58:33.837005Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    },
+    {
+      "segment_id": "29:2026-10-02T20:58:34+00:00",
+      "um_value": "600466G3000B",
+      "status": "ASSIGNED",
+      "start_time": "2026-10-02T20:58:34Z",
+      "end_time": "2026-10-02T21:32:12Z",
+      "duration_seconds": 2018.0,
+      "start_reason": "UM_TRANSITION",
+      "end_reason": "QUERY_END",
+      "state_source_timestamp": "2026-10-02T20:58:34Z",
+      "variables": [
+        {
+          "tag_id": 20,
+          "tag_name": "LFI_RB1_VEL_PROC_PV",
+          "display_name": "Velocidade",
+          "data_type": "NUMERIC",
+          "unit": null,
+          "sample_count": 3953,
+          "raw_sample_count": 3953,
+          "filtered_sample_count": 3953,
+          "excluded_quality_count": 0,
+          "average": 30.708912665924537,
+          "minimum": 29.9836826,
+          "maximum": 31.1069,
+          "first_timestamp": "2026-10-02T20:58:34.337005Z",
+          "last_timestamp": "2026-10-02T21:32:11.598007Z",
+          "first_value": null,
+          "last_value": null
+        }
+      ]
+    }
+  ]
+}

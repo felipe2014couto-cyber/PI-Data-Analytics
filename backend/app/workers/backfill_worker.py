@@ -57,6 +57,8 @@ def _job_cursor(job: PiBackfillJob) -> datetime:
 
 
 def _record(tag_id: int, point: Any, mode: str = "RECORDED") -> dict[str, Any]:
+    if mode != "RECORDED":
+        raise ValueError(f"Backfill histórico aceita somente RECORDED, recebido: {mode}")
     value_type = "boolean" if isinstance(point.value, bool) else "double" if isinstance(point.value, (int, float)) else "string"
     return {
         "tag_id": tag_id,
@@ -68,7 +70,7 @@ def _record(tag_id: int, point: Any, mode: str = "RECORDED") -> dict[str, Any]:
         "good": point.good,
         "questionable": point.questionable,
         "substituted": point.substituted,
-        "source_mode": mode,
+        "source_mode": "RECORDED",
     }
 
 
@@ -93,6 +95,7 @@ def _recover_expired_leases() -> list[int]:
     with SessionLocal() as db:
         ids = list(db.scalars(select(PiBackfillJob.id).where(
             PiBackfillJob.status == "RUNNING",
+            PiBackfillJob.mode == "RECORDED",
             PiBackfillJob.lease_expires_at.is_not(None),
             PiBackfillJob.lease_expires_at < now,
         )).all())
@@ -126,6 +129,7 @@ def _recover_legacy_running_jobs() -> list[int]:
         # Find legacy RUNNING without lease, stale by updated_at/heartbeat.
         ids = list(db.scalars(select(PiBackfillJob.id).where(
             PiBackfillJob.status == "RUNNING",
+            PiBackfillJob.mode == "RECORDED",
             PiBackfillJob.lease_expires_at.is_(None),
             or_(
                 PiBackfillJob.heartbeat_at.is_(None),
@@ -166,7 +170,9 @@ def _claim_job(job_id: int, *, allow_legacy_running: bool = False) -> bool:
         ))
     with SessionLocal() as db:
         result = db.execute(update(PiBackfillJob).where(
-            PiBackfillJob.id == job_id, eligible,
+            PiBackfillJob.id == job_id,
+            PiBackfillJob.mode == "RECORDED",
+            eligible,
         ).values(
             status="RUNNING",
             stage="RUNNING",
@@ -297,6 +303,12 @@ async def backfill_tag_interval(
     allow_legacy_running: bool = False,
     _split_depth: int = 0,
 ) -> bool:
+    if mode != "RECORDED" or interval_seconds is not None:
+        logger.warning(
+            "backfill_unsupported_legacy_mode_ignored job_id=%s tag_id=%s mode=%s interval_seconds=%s",
+            job_id, tag_id, mode, interval_seconds,
+        )
+        return False
     now = _now()
     if start >= now:
         logger.warning("backfill_reject_future_start job_id=%s start=%s now=%s", job_id, start, now)
@@ -500,8 +512,8 @@ async def backfill_tag_interval(
 
 
 def _window_for_job(job: PiBackfillJob) -> timedelta:
-    if job.mode == "INTERPOLATED_300S":
-        return timedelta(days=30)
+    if job.mode != "RECORDED":
+        raise ValueError(f"Modo de backfill legado não suportado: {job.mode}")
     return timedelta(hours=settings.backfill_recorded_window_hours)
 
 
@@ -510,6 +522,7 @@ def _active_job_ids(*, rounds: bool) -> list[int]:
         round_filter = PiBackfillJob.round_name.in_(ROUND_NAMES) if rounds else PiBackfillJob.round_name.is_(None)
         return list(db.scalars(select(PiBackfillJob.id).where(
             round_filter,
+            PiBackfillJob.mode == "RECORDED",
             PiBackfillJob.status.in_(("PENDING", "RUNNING")),
         ).order_by(PiBackfillJob.id)).all())
 
@@ -519,6 +532,9 @@ async def _resume_job_by_id(job_id: int, semaphore: asyncio.Semaphore, *, explic
         job = db.get(PiBackfillJob, job_id)
         if job is None:
             logger.warning("backfill_resume_missing job_id=%s", job_id)
+            return False
+        if job.mode != "RECORDED" or job.interval_seconds is not None:
+            logger.info("backfill_legacy_mode_ignored job_id=%s mode=%s interval_seconds=%s", job_id, job.mode, job.interval_seconds)
             return False
         if job.status in ("COMPLETED", "FAILED", "CANCELLED"):
             return True
@@ -546,7 +562,7 @@ async def _resume_job_by_id(job_id: int, semaphore: asyncio.Semaphore, *, explic
     return await backfill_tag_interval(
         tag_id, cursor, end, t0, round_name, semaphore,
         mode=mode, interval_seconds=interval_seconds, job_id=job_id,
-        max_count=settings.backfill_recorded_max_points if mode in ("RECORDED", "INTERPOLATED_10S") else None,
+        max_count=settings.backfill_recorded_max_points,
         allow_legacy_running=explicit,
     )
 
@@ -583,6 +599,7 @@ async def _resume_jobs(job_ids: Iterable[int], *, explicit: bool = False) -> boo
         with SessionLocal() as db:
             active_ids = list(db.scalars(select(PiBackfillJob.id).where(
                 PiBackfillJob.id.in_(ids),
+                PiBackfillJob.mode == "RECORDED",
                 PiBackfillJob.status.in_(("PENDING", "RUNNING")),
                 or_(PiBackfillJob.next_attempt_at.is_(None), PiBackfillJob.next_attempt_at <= _now()),
             ).order_by(PiBackfillJob.id)).all())
@@ -607,6 +624,7 @@ async def _resume_round_jobs() -> bool:
     with SessionLocal() as db:
         ids = list(db.scalars(select(PiBackfillJob.id).where(
             PiBackfillJob.round_name.in_(ROUND_NAMES),
+            PiBackfillJob.mode == "RECORDED",
             PiBackfillJob.status == "PENDING",
             or_(PiBackfillJob.next_attempt_at.is_(None), PiBackfillJob.next_attempt_at <= _now()),
         ).order_by(PiBackfillJob.updated_at, PiBackfillJob.id)).all())
@@ -617,6 +635,7 @@ async def _run_admin_jobs() -> bool:
     with SessionLocal() as db:
         ids = list(db.scalars(select(PiBackfillJob.id).where(
             PiBackfillJob.round_name.is_(None),
+            PiBackfillJob.mode == "RECORDED",
             PiBackfillJob.status == "PENDING",
             or_(PiBackfillJob.next_attempt_at.is_(None), PiBackfillJob.next_attempt_at <= _now()),
         ).order_by(PiBackfillJob.id).limit(100)).all())
