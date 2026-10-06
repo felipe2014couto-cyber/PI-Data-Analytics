@@ -70,7 +70,6 @@ _timescaledb_query_cache = LruCache[tuple[Any, ...], TimeSeries](
     max_size=settings.timescaledb_query_cache_max_entries,
     default_ttl_seconds=settings.timescaledb_query_cache_ttl_seconds,
 )
-_point_step_cache = LruCache[str, bool](max_size=10_000, default_ttl_seconds=900)
 
 
 def invalidate_time_series_cache(tag_ids: list[int], start: datetime, end: datetime) -> int:
@@ -170,12 +169,9 @@ class DatabaseTimeSeriesService:
     reason to synchronously call PI from a user query.
     """
 
-    def __init__(self, db: Session, pi_service: Optional[object] = None):
+    def __init__(self, db: Session):
         self.db = db
         self.repo = PiTagRepository(db)
-        # This provider is used only for PI Point metadata (Step), never for
-        # historical values. History continues to come exclusively from the DB.
-        self.pi_provider = pi_service
 
     async def _fetch_with_sip(self, request: TimeSeriesRequest, **kwargs: Any) -> TimeSeries:
         from app.core.exceptions import NotFoundError
@@ -548,8 +544,6 @@ class DatabaseTimeSeriesService:
                     },
                 )
             series.append(self._build_series(tag, points))
-
-        await self._attach_point_step_metadata(tags, series)
 
         if missing_details:
             raise HistoricalDataNotLoadedError(details={
@@ -1280,48 +1274,6 @@ class DatabaseTimeSeriesService:
             substituted=bool(row[7]),
             is_boundary_seed=True,
         )
-
-    async def _attach_point_step_metadata(
-        self,
-        tags: list[PiTag],
-        series: list[TimeSeriesSeries],
-    ) -> None:
-        provider = getattr(self, "pi_provider", None)
-        getter = getattr(provider, "get_point_step", None)
-        if not callable(getter):
-            return
-        tag_by_id = {tag.id: tag for tag in tags}
-        semaphore = asyncio.Semaphore(8)
-
-        async def read_step(tag_id: int) -> tuple[int, Optional[bool]]:
-            tag = tag_by_id[tag_id]
-            web_id = getattr(tag, "pi_web_id", None)
-            if not web_id:
-                return tag_id, None
-            cached = _point_step_cache.get(web_id)
-            if cached is not None:
-                return tag_id, cached
-            try:
-                async with semaphore:
-                    value = await getter(web_id)
-                if isinstance(value, bool):
-                    _point_step_cache.set(web_id, value)
-                    return tag_id, value
-            except Exception:
-                logger.warning("Não foi possível resolver o atributo PI Point Step para tag_id=%s", tag_id, exc_info=True)
-            return tag_id, None
-
-        eligible = [
-            item.tag_id for item in series
-            if item.data_type == "REAL" and tag_by_id[item.tag_id].pi_web_id
-        ]
-        if not eligible:
-            return
-        results = await asyncio.gather(*(read_step(tag_id) for tag_id in eligible))
-        by_tag = dict(results)
-        for item in series:
-            if item.tag_id in by_tag:
-                item.step = by_tag[item.tag_id]
 
     def _get_from_raw_plot(
         self, tag_id: int, start: datetime, end: datetime, bucket_seconds: int

@@ -18,9 +18,11 @@ from tests.conftest import TestingSessionLocal
 from tests.test_norm_limit_reload_service import START, Provider, _point, _source
 
 
-def test_materialized_graph_and_overlay_http_routes_never_resolve_or_call_pi(client, db_session, monkeypatch):
+def test_materialized_graph_and_overlay_routes_never_resolve_or_call_pi(client, db_session, monkeypatch):
     end = START + timedelta(days=7)
     source = _source(db_session, 'MATERIALIZED-HTTP', 'HTTP-LOW', 'HTTP-UP')
+    source.pi_web_id = 'step-must-not-be-fetched'
+    db_session.commit()
     db_session.add_all([
         PiSample(tag_id=source.id, ts=START + timedelta(minutes=1), source_mode='RECORDED', value_type='double', value_double=30),
         PiSample(tag_id=source.id, ts=START + timedelta(minutes=2), source_mode='RECORDED', value_type='double', value_double=31),
@@ -39,7 +41,10 @@ def test_materialized_graph_and_overlay_http_routes_never_resolve_or_call_pi(cli
     monkeypatch.setattr(deps, 'get_pi_data_provider', forbidden)
     monkeypatch.setattr(manager, 'get_pi_data_provider', forbidden)
     monkeypatch.setattr(manager.PiDataProviderManager, 'get', forbidden)
-    for method in ('resolve_point','get_recorded_values','get_recorded_values_boundary','get_interpolated_values','_request'):
+    # The graph route must not resolve the PI provider at all. Remove the
+    # fixture's provider override so a reintroduced dependency fails here.
+    client.app.dependency_overrides.pop(deps.get_pi_provider, None)
+    for method in ('resolve_point','get_point_step','get_recorded_values','get_recorded_values_boundary','get_interpolated_values','_request'):
         if hasattr(PiWebApiDataProvider, method):
             monkeypatch.setattr(PiWebApiDataProvider, method, forbidden)
     # Exercise the production dependency without the fixture's provider wiring.
@@ -48,6 +53,7 @@ def test_materialized_graph_and_overlay_http_routes_never_resolve_or_call_pi(cli
     principal = client.get('/api/time-series', params={**params,'tag_ids':[source.id],'refresh':True})
     assert principal.status_code == 200, principal.text
     assert principal.json()['query_execution']['source'] == 'timescaledb'
+    assert principal.json()['series'][0]['data_type'] == 'REAL'
     assert [p['value'] for p in principal.json()['series'][0]['points']] == [30,31]
     overlay = client.get(f'/api/pi-tags/{source.id}/norm-limits', params=params)
     assert overlay.status_code == 200, overlay.text

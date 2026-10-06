@@ -55,9 +55,8 @@ def get_norm_limits_service(
 
 def get_db_time_series_service(
     db: Session = Depends(get_db_session),
-    provider: Optional[PiDataProvider] = Depends(get_pi_provider),
 ) -> DatabaseTimeSeriesService:
-    return DatabaseTimeSeriesService(db, provider)
+    return DatabaseTimeSeriesService(db)
 
 
 def get_query_registry_dep() -> QueryRegistry:

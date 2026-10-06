@@ -1,14 +1,10 @@
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
-
-from app.schemas.pi import TimeSeriesPoint, TimeSeriesSeries
+from app.schemas.pi import TimeSeriesPoint
 from app.services.database_time_series_service import (
     DatabaseTimeSeriesService,
     PlotReadResult,
-    _point_step_cache,
 )
 
 
@@ -151,43 +147,3 @@ def test_fully_confirmed_empty_plot_window_is_complete_not_partial():
     assert isinstance(result, PlotReadResult)
     assert result.points == []
     assert result.uncovered == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("step", [False, True])
-async def test_series_receives_pi_point_step_metadata(step):
-    web_id = f"step-test-{step}"
-    _point_step_cache.remove(web_id)
-    provider = SimpleNamespace(get_point_step=AsyncMock(return_value=step))
-    service = object.__new__(DatabaseTimeSeriesService)
-    service.pi_provider = provider
-    tag = SimpleNamespace(id=20, pi_web_id=web_id)
-    series = TimeSeriesSeries(
-        tag_id=20,
-        tag_name="LFI_RB1_VEL_PROC_PV",
-        display_name="Velocidade",
-        data_type="REAL",
-        points=[],
-    )
-
-    await service._attach_point_step_metadata([tag], [series])
-
-    assert series.step is step
-    provider.get_point_step.assert_awaited_once_with(web_id)
-
-
-@pytest.mark.asyncio
-async def test_step_metadata_is_not_requested_for_string_or_digital_series():
-    provider = SimpleNamespace(get_point_step=AsyncMock(return_value=True))
-    service = object.__new__(DatabaseTimeSeriesService)
-    service.pi_provider = provider
-    tags = [SimpleNamespace(id=1, pi_web_id="string"), SimpleNamespace(id=2, pi_web_id="digital")]
-    series = [
-        TimeSeriesSeries(tag_id=1, tag_name="S", display_name="S", data_type="STRING", points=[]),
-        TimeSeriesSeries(tag_id=2, tag_name="D", display_name="D", data_type="DIGITAL", points=[]),
-    ]
-
-    await service._attach_point_step_metadata(tags, series)
-
-    provider.get_point_step.assert_not_awaited()
-    assert [item.step for item in series] == [None, None]
