@@ -81,6 +81,20 @@ class PiDataProvider(ABC):
     ) -> PiRecordedValues:
         """Fetch recorded values for a point between two timestamps."""
 
+    async def get_recorded_values_boundary(
+        self,
+        web_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        boundary_type: str,
+        max_count: Optional[int] = None,
+    ) -> PiRecordedValues:
+        """Fetch with PI boundary semantics (Inside or Outside)."""
+        if boundary_type != "Inside":
+            raise NotImplementedError("Provider nao implementa boundary RECORDED")
+        return await self.get_recorded_values(web_id, start_time, end_time, max_count)
+
     async def get_recorded_values_batch(
         self,
         web_ids: Sequence[str],

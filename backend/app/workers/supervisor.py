@@ -30,6 +30,7 @@ OWNER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
 _LEADER_LOCK_INGESTION = 2147483601
 _LEADER_LOCK_BACKFILL = 2147483602
 _LEADER_LOCK_COLUMNSTORE_MAINTENANCE = 2147483603
+_LEADER_LOCK_NORM_LIMIT_RELOAD = 2147483605
 
 
 class _WorkerStatus:
@@ -473,6 +474,16 @@ class WorkerSupervisor:
             "sip_reload", lambda: run_sip_reload_loop(self._stop), self._stop,
             _WorkerStatus("sip_reload"), lock=sip_lock,
         )))
+
+        if getattr(settings, "worker_norm_limit_reload_enabled", True):
+            from app.workers.norm_limit_reload_worker import run_norm_limit_reload_loop
+            lock = _AdvisoryLock(_LEADER_LOCK_NORM_LIMIT_RELOAD, "norm_limit_reload")
+            self._locks.append(lock)
+            self._tasks.append(asyncio.create_task(_run_supervised(
+                "norm_limit_reload",
+                lambda: run_norm_limit_reload_loop(self._stop), self._stop,
+                _WorkerStatus("norm_limit_reload"), lock=lock,
+            )))
 
         if getattr(settings, "columnstore_maintenance_enabled", False):
             from app.services.columnstore_maintenance_service import (

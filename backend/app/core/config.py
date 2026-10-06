@@ -364,6 +364,10 @@ class Settings(BaseSettings):
         default=True,
         description="Ativa worker de backfill integrado ao backend.",
     )
+    worker_norm_limit_reload_enabled: bool = Field(
+        default=True,
+        description="Ativa recarga horaria dos limites visuais historicos.",
+    )
     ingestion_catchup_concurrency: int = Field(
         default=2,
         ge=1,

@@ -46,7 +46,7 @@ function toChartPoints(
   for (const p of points) {
     const ts = Date.parse(p.timestamp);
     if (!Number.isFinite(ts)) continue;
-    const good = p.good !== false && p.questionable !== true && p.substituted !== true;
+    const good = p.good !== false && p.questionable !== true;
     events.push([ts, good && typeof p.value === "number" && Number.isFinite(p.value) ? p.value : null, good]);
   }
   const gaps = coverageGaps.map(([a, b]) => [Date.parse(a), Date.parse(b)] as const)
@@ -74,11 +74,14 @@ function toChartPoints(
   ].sort((a, b) => a.ts - b.ts || (a.kind === "gap" ? -1 : 1));
   for (const operation of timeline) {
     if (operation.kind === "gap") {
+      if (current !== null) out.push([operation.ts, current]);
       current = null;
       out.push([operation.ts, null]);
     } else {
       if (inGap(operation.ts)) continue;
-      current = operation.good && operation.value !== null ? operation.value! : null;
+      const next = operation.good && operation.value !== null ? operation.value! : null;
+      if (next === null && current !== null) out.push([operation.ts, current]);
+      current = next;
       out.push([operation.ts, current]);
     }
   }
@@ -103,4 +106,18 @@ export function buildNormLimitSeries(input: BuildNormLimitInput): NormLimitSerie
     lowerPoints: toChartPoints(input.lowerPoints, input.lowerCoverageGaps, input.startTimeIso, input.endTimeIso),
     upperPoints: toChartPoints(input.upperPoints, input.upperCoverageGaps, input.startTimeIso, input.endTimeIso),
   };
+}
+
+/** Preserve the safe API diagnosis even when an adapter did not construct ApiError. */
+export function normLimitErrorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null) {
+    const body = error as { error?: { message?: unknown }; message?: unknown; name?: unknown };
+    const message = body.error?.message ?? body.message;
+    if (typeof message === "string" && message.trim()) {
+      if (body.name === "AbortError") return `Consulta do limite cancelada: ${message}`;
+      return message.trim();
+    }
+  }
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return "Falha de consulta do limite: resposta sem diagnóstico técnico.";
 }

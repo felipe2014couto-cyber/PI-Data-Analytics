@@ -132,7 +132,10 @@ class ProductionUnitOocService:
         # current PI value or static visual limit is involved.
         if not name or not name.strip():
             return None
-        matches = self.db.query(PiTag).filter(PiTag.pi_tag_name == name.strip(), PiTag.pi_server == source.pi_server, PiTag.active.is_(True), PiTag.data_type == PiTagDataType.NUMERIC).all()
+        # Configured limit dependencies are deliberately inactive so ordinary
+        # ingestion does not schedule them. The explicit materializer stores
+        # them in pi_tags/pi_samples; OOC may still read those dependencies.
+        matches = self.db.query(PiTag).filter(PiTag.pi_tag_name == name.strip(), PiTag.pi_server == source.pi_server, PiTag.data_type == PiTagDataType.NUMERIC).all()
         if len(matches) > 1:
             raise ValidationError(f'Configuração ambígua do limite histórico {name}.')
         return matches[0].id if matches else None

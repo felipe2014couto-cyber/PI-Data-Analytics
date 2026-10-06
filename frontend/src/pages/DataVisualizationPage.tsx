@@ -76,7 +76,7 @@ import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument,
 import { applyTimeAnalysisRule } from "../utils/timeAnalysisRule";
 import { assignProductionUnitAxes, buildProductionUnitTimeSeries, isProductionUnitRule } from "../utils/productionUnitChart";
 import { resolveProductionUnitScope } from "../utils/productionUnitScope";
-import { buildNormLimitSeries, type NormLimitSeries } from "../utils/normLimitSeries";
+import { normLimitErrorMessage, buildNormLimitSeries, type NormLimitSeries } from "../utils/normLimitSeries";
 import { buildUmChartSeries, type UmChartSeries } from "../utils/umChartSeries";
 import { EMPTY_VISUAL_CONFIGURATION, defaultNormLimitConfig } from "../utils/visualRules";
 import type { ChartSeries } from "../utils/chartData";
@@ -318,6 +318,7 @@ export function DataVisualizationPage() {
   const normLimitAbortRef = useRef<AbortController | null>(null);
   const normLimitCacheRef = useRef<Map<string, PiTagNormLimitsResponse>>(new Map());
   const normLimitInFlightRef = useRef<Map<string, Promise<PiTagNormLimitsResponse>>>(new Map());
+  const normLimitRequestControllersRef = useRef<Map<string, AbortController>>(new Map());
   const activeNormContextKeyRef = useRef<string>("");
 
   const [equipments, setEquipments] = useState<Equipment[]>([]);
@@ -1740,6 +1741,8 @@ export function DataVisualizationPage() {
     });
   }, []);
 
+  const normStartTimeIso = chartStart.toISOString();
+  const normEndTimeIso = chartEnd.toISOString();
   const effectiveNormQuery = useMemo(() => {
     if (!resolvedForResult || !effectiveNormEnabledKey) {
       return {
@@ -1757,9 +1760,9 @@ export function DataVisualizationPage() {
       };
     }
 
-    const startTimeIso = chartStart.toISOString();
-    const endTimeIso = chartEnd.toISOString();
-    const interval = undefined;
+    const startTimeIso = normStartTimeIso;
+    const endTimeIso = normEndTimeIso;
+    const interval = filters.mode === "interpolated" ? filters.interval : undefined;
     const sortedIds = effectiveNormEnabledKey.split(",").filter(Boolean);
 
     const items = sortedIds
@@ -1797,14 +1800,28 @@ export function DataVisualizationPage() {
     resolvedForResult,
     effectiveNormEnabledKey,
     seriesToPiTag,
-    chartStart,
-    chartEnd,
+    normStartTimeIso,
+    normEndTimeIso,
     filters.analysisModel,
     filters.mode,
   ]);
 
+  useEffect(() => () => {
+    for (const request of normLimitRequestControllersRef.current.values()) request.abort();
+    normLimitRequestControllersRef.current.clear();
+    normLimitInFlightRef.current.clear();
+  }, []);
+
   useEffect(() => {
     normLimitAbortRef.current?.abort();
+    const wanted = new Set(effectiveNormQuery.items.map((item) => item.cacheKey));
+    for (const [key, request] of normLimitRequestControllersRef.current) {
+      if (!wanted.has(key)) {
+        request.abort();
+        normLimitRequestControllersRef.current.delete(key);
+        normLimitInFlightRef.current.delete(key);
+      }
+    }
     if (!effectiveNormQuery.key || effectiveNormQuery.items.length === 0) {
       setRawNormResponses((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       setNormLimitErrors((prev) => (Object.keys(prev).length === 0 ? prev : {}));
@@ -1841,6 +1858,8 @@ export function DataVisualizationPage() {
               if (!response) {
                 let inFlight = normLimitInFlightRef.current.get(item.cacheKey);
                 if (!inFlight) {
+                  const requestController = new AbortController();
+                  normLimitRequestControllersRef.current.set(item.cacheKey, requestController);
                   inFlight = piTagsApi
                     .getNormLimits(
                       item.tagId,
@@ -1850,9 +1869,10 @@ export function DataVisualizationPage() {
                         mode: effectiveNormQuery.mode,
                         interval: effectiveNormQuery.interval,
                       },
-                      controller.signal,
+                      requestController.signal,
                     )
                     .then((res) => {
+                      if (requestController.signal.aborted) throw new DOMException("Consulta cancelada", "AbortError");
                       const cache = normLimitCacheRef.current;
                       if (cache.has(item.cacheKey)) {
                         cache.delete(item.cacheKey);
@@ -1864,7 +1884,10 @@ export function DataVisualizationPage() {
                       return res;
                     })
                     .finally(() => {
-                      normLimitInFlightRef.current.delete(item.cacheKey);
+                      if (normLimitRequestControllersRef.current.get(item.cacheKey) === requestController) {
+                        normLimitRequestControllersRef.current.delete(item.cacheKey);
+                        normLimitInFlightRef.current.delete(item.cacheKey);
+                      }
                     });
                   normLimitInFlightRef.current.set(item.cacheKey, inFlight);
                 }
@@ -1887,7 +1910,7 @@ export function DataVisualizationPage() {
                 return;
               }
               nextErrors[item.instanceId] = `${item.displayName}: ${
-                err instanceof ApiError ? err.message : "Não foi possível consultar os limites de norma."
+                normLimitErrorMessage(err)
               }`;
             }
           }),

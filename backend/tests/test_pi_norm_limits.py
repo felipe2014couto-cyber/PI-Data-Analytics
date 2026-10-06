@@ -49,7 +49,7 @@ def test_missing_historical_limit_reports_coverage_reason_without_pi(client: Tes
     })
     assert response.status_code == 200
     body = response.json()
-    assert "coverage ausente" in body["errors"][0]
+    assert "aguardando a próxima recarga histórica" in body["errors"][0]
     assert client.fake_provider.recorded_calls == []  # type: ignore[attr-defined]
 
 
@@ -85,8 +85,9 @@ def test_norm_limits_reject_interpolated_and_ignore_legacy_rows(client: TestClie
         "start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded",
     })
     assert recorded.status_code == 200
-    assert "coverage ausente" in recorded.json()["errors"][0]
-    assert not hasattr(client.fake_provider, "get_interpolated_values")
+    assert "Cobertura RECORDED pendente" in recorded.json()["errors"][0]
+    assert client.fake_provider.resolve_calls == []
+    assert client.fake_provider.recorded_calls == []
 
 
 def test_source_without_limits_returns_empty_without_error(client: TestClient, db_session: Session) -> None:
@@ -165,7 +166,100 @@ def test_bad_event_and_coverage_gap_are_reported_for_limit(client: TestClient, d
     })
     assert response.status_code == 200, response.text
     body = response.json()
-    assert any("coverage ausente" in message for message in body["errors"])
+    assert any("Cobertura RECORDED pendente" in message for message in body["errors"])
     assert any("Bad/Timeout" in message for message in body["errors"])
     assert body["lower"]["points"][1]["good"] is False
     assert len(body["lower"]["coverage_gaps"]) == 1
+
+
+def test_window_after_watermark_preserves_good_seed_and_events(client: TestClient, db_session: Session) -> None:
+    start = datetime(2026, 9, 28, 14, 22, 28, tzinfo=UTC)
+    end = datetime(2026, 10, 5, 14, 22, 28, tzinfo=UTC)
+    watermark = datetime(2026, 10, 5, 14, 17, tzinfo=UTC)
+    low = _seed(db_session, "LOW_WATERMARK", start - timedelta(minutes=2), watermark, 25)
+    db_session.add_all([
+        PiSample(tag_id=low.id, ts=start + timedelta(days=1), value_type="double", value_double=27, source_mode="RECORDED"),
+        ])
+    db_session.commit()
+    source = _make_tag(db_session, code="SOURCE_WATERMARK", lower=low.pi_tag_name, upper=None)
+    response = client.get(f"/api/pi-tags/{source.id}/norm-limits", params={"start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
+    assert response.status_code == 200
+    body = response.json()
+    assert [p["value"] for p in body["lower"]["points"]] == [25, 27]
+    assert body["lower"]["coverage_gaps"] == [[watermark.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z")]]
+    assert any("Cobertura RECORDED pendente" in error and watermark.isoformat() in error for error in body["errors"])
+    assert "Não foi possível consultar" not in str(body)
+    assert client.fake_provider.recorded_calls == []
+
+
+def test_empty_confirmed_until_watermark_retains_seed_and_real_gap(client: TestClient, db_session: Session) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
+    watermark = start + timedelta(minutes=50)
+    low = _seed(db_session, "LOW_EMPTY_TAIL", start - timedelta(hours=1), start + timedelta(minutes=20), 10)
+    CoverageService.record_coverage(db_session, low.id, start + timedelta(minutes=30), watermark, status="EMPTY_CONFIRMED")
+    db_session.commit()
+    source = _make_tag(db_session, code="SOURCE_EMPTY_TAIL", lower=low.pi_tag_name, upper=None)
+    response = client.get(f"/api/pi-tags/{source.id}/norm-limits", params={"start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
+    assert response.status_code == 200
+    body = response.json()
+    assert [p["value"] for p in body["lower"]["points"]] == [10]
+    assert len(body["lower"]["coverage_gaps"]) == 2
+    assert body["lower"]["coverage_gaps"][0][0].endswith("00:20:00Z")
+    assert body["lower"]["coverage_gaps"][1][0].endswith("00:50:00Z")
+    assert any("Cobertura RECORDED pendente" in error for error in body["errors"])
+
+
+def test_two_limit_metadata_is_batched_without_orm_relationship_queries(client: TestClient, db_session: Session) -> None:
+    from sqlalchemy import event
+    start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
+    low = _seed(db_session, "LOW_BATCH", start, end, 10)
+    high = _seed(db_session, "HIGH_BATCH", start, end, 20)
+    source = _make_tag(db_session, code="SOURCE_BATCH", lower=low.pi_tag_name, upper=high.pi_tag_name)
+    source_id = source.id
+    statements = []
+    def count(_conn, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("SELECT"): statements.append(statement)
+    bind = db_session.get_bind()
+    event.listen(bind, "before_cursor_execute", count)
+    try:
+        response = client.get(f"/api/pi-tags/{source_id}/norm-limits", params={"start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
+    finally:
+        event.remove(bind, "before_cursor_execute", count)
+    assert response.status_code == 200
+    metadata = [sql for sql in statements if "pi_tags" in sql]
+    assert len(metadata) == 2, statements
+    overlay_statements = [sql for sql in statements if "FROM users" not in sql]
+    assert len(overlay_statements) == 8, overlay_statements
+    assert all("JOIN equipments" not in sql and "sampling_mode" not in sql for sql in metadata)
+    assert client.fake_provider.recorded_calls == []
+
+
+def test_good_substituted_limit_is_still_good(client: TestClient, db_session: Session) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
+    low = _seed(db_session, "LOW_SUBSTITUTED", start - timedelta(minutes=1), end, 1120)
+    sample = db_session.query(PiSample).filter_by(tag_id=low.id).one()
+    sample.substituted = True
+    db_session.commit()
+    source = _make_tag(db_session, code="SOURCE_SUBSTITUTED", lower=low.pi_tag_name, upper=None)
+    response = client.get(f"/api/pi-tags/{source.id}/norm-limits", params={"start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
+    assert response.status_code == 200
+    assert response.json()["lower"]["points"][0]["good"] is True
+    assert response.json()["errors"] == []
+
+
+def test_query_failure_reports_safe_original_sqlstate(client: TestClient, db_session: Session, monkeypatch) -> None:
+    from sqlalchemy.exc import OperationalError
+    from app.services.pi_norm_limits_service import PiNormLimitsService
+    start = datetime(2026, 7, 1, tzinfo=UTC); end = start + timedelta(hours=1)
+    low = _seed(db_session, "LOW_TIMEOUT", start, end, 10)
+    source = _make_tag(db_session, code="SOURCE_TIMEOUT", lower=low.pi_tag_name, upper=None)
+    class StatementTimeout(Exception):
+        sqlstate = "57014"
+    def fail(*args, **kwargs):
+        raise OperationalError("secret SQL", {"password": "never expose"}, StatementTimeout("canceling statement due to statement timeout"))
+    monkeypatch.setattr(PiNormLimitsService, "_try_fetch_from_db", fail)
+    response = client.get(f"/api/pi-tags/{source.id}/norm-limits", params={"start_time": start.isoformat(), "end_time": end.isoformat(), "mode": "recorded"})
+    assert response.status_code == 200
+    assert "Timeout" in response.json()["lower"]["error"]
+    assert "SQLSTATE 57014" in response.json()["lower"]["error"]
+    assert "password" not in response.text and "secret SQL" not in response.text

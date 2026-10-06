@@ -694,10 +694,27 @@ class PiWebApiDataProvider(PiDataProvider):
                 "WebId vazio ao consultar valores registrados."
             )
 
+        return await self.get_recorded_values_boundary(
+            web_id, start_time, end_time, boundary_type="Inside", max_count=max_count,
+        )
+
+    async def get_recorded_values_boundary(
+        self,
+        web_id: str,
+        start_time: datetime,
+        end_time: datetime,
+        *,
+        boundary_type: str,
+        max_count: Optional[int] = None,
+    ) -> PiRecordedValues:
+        if not web_id:
+            raise PiInvalidResponseError("WebId vazio ao consultar valores registrados.")
+        if boundary_type not in {"Inside", "Outside"}:
+            raise ValueError("boundary_type deve ser Inside ou Outside")
         params: Dict[str, Any] = {
             "startTime": self._format_timestamp(start_time),
             "endTime": self._format_timestamp(end_time),
-            "boundaryType": "Inside",
+            "boundaryType": boundary_type,
         }
 
         if max_count is not None:
