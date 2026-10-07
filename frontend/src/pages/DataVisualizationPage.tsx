@@ -77,6 +77,7 @@ import { applyTimeAnalysisRule } from "../utils/timeAnalysisRule";
 import { assignProductionUnitAxes, buildProductionUnitTimeSeries, isProductionUnitRule } from "../utils/productionUnitChart";
 import { resolveProductionUnitScope } from "../utils/productionUnitScope";
 import { normLimitErrorMessage, buildNormLimitSeries, type NormLimitSeries } from "../utils/normLimitSeries";
+import { effectiveNormLimitEnd } from "../utils/effectiveNormLimitEnd";
 import { buildUmChartSeries, type UmChartSeries } from "../utils/umChartSeries";
 import { EMPTY_VISUAL_CONFIGURATION, defaultNormLimitConfig } from "../utils/visualRules";
 import type { ChartSeries } from "../utils/chartData";
@@ -1757,9 +1758,14 @@ export function DataVisualizationPage() {
   }, []);
 
   const normStartTimeIso = chartStart.toISOString();
-  const normEndTimeIso = chartEnd.toISOString();
+  const requestedNormEndTimeIso = chartEnd.toISOString();
+  const normEndTimeIso = effectiveNormLimitEnd(
+    requestedNormEndTimeIso,
+    query.timeSeries?.query_execution?.effective_end,
+    query.timeSeries?.query_execution?.data_available_until,
+  ) || requestedNormEndTimeIso;
   const effectiveNormQuery = useMemo(() => {
-    if (!resolvedForResult || !effectiveNormEnabledKey) {
+    if (!resolvedForResult || !query.timeSeries || !effectiveNormEnabledKey) {
       return {
         key: "",
         startTimeIso: "",
@@ -1779,8 +1785,9 @@ export function DataVisualizationPage() {
     const endTimeIso = normEndTimeIso;
     const interval = filters.mode === "interpolated" ? filters.interval : undefined;
     const sortedIds = effectiveNormEnabledKey.split(",").filter(Boolean);
+    const hasUsableWindow = Date.parse(endTimeIso) > Date.parse(startTimeIso);
 
-    const items = sortedIds
+    const items = (hasUsableWindow ? sortedIds : [])
       .map((instanceId) => {
         const piTag = seriesToPiTag.get(instanceId);
         const tagId = piTag?.id ?? 0;
@@ -1817,6 +1824,9 @@ export function DataVisualizationPage() {
     seriesToPiTag,
     normStartTimeIso,
     normEndTimeIso,
+    Boolean(query.timeSeries),
+    query.timeSeries?.query_execution?.effective_end,
+    query.timeSeries?.query_execution?.data_available_until,
     filters.analysisModel,
     filters.mode,
   ]);

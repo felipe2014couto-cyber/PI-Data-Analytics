@@ -55,6 +55,71 @@ beforeEach(() => {
 });
 
 describe("historical limit overlay integration", () => {
+  it("does not warn about a few-second tail after the principal data watermark", async () => {
+    let watermark = "";
+    apiMock.timeSeriesQuery.mockImplementation(async (params) => {
+      watermark = new Date(Date.parse(params.end_time) - 18_160).toISOString();
+      return {
+        start_time: params.start_time, end_time: params.end_time, mode: "recorded", errors: [],
+        query_execution: { resolution_mode: "auto", sampled: false, effective_end: watermark, data_available_until: watermark },
+        series: [{ tag_id: 1, tag_name: "PV", display_name: "Velocidade", unit: "m/min", equipment: "RB1", section: "FORNO", variable_type: "SPEED", points: [
+          { timestamp: params.start_time, value: 30, good: true, questionable: false, substituted: false },
+          { timestamp: watermark, value: 31, good: true, questionable: false, substituted: false },
+        ] }],
+      };
+    });
+    normApi.get.mockImplementation(async (id, params) => ({
+      ...limitResponse,
+      source_tag_id: id,
+      start_time: params.start_time,
+      end_time: params.end_time,
+      lower: { tag_name: "LOW", points: [{ timestamp: params.start_time, value: 25, good: true }], coverage_gaps: [], error: null },
+      errors: [],
+    }));
+
+    await openLimits();
+
+    await waitFor(() => expect(normApi.get).toHaveBeenCalledTimes(1));
+    expect(Date.parse(normApi.get.mock.calls[0][1].end_time)).toBe(Date.parse(watermark));
+    expect(screen.getByTestId("numeric-chart")).toBeInTheDocument();
+    expect(screen.queryByTestId("limit-errors")).toBeNull();
+    expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a genuine coverage warning that falls before the principal watermark", async () => {
+    let watermark = "";
+    apiMock.timeSeriesQuery.mockImplementation(async (params) => {
+      watermark = new Date(Date.parse(params.end_time) - 18_160).toISOString();
+      return {
+        start_time: params.start_time, end_time: params.end_time, mode: "recorded", errors: [],
+        query_execution: { resolution_mode: "auto", sampled: false, effective_end: watermark, data_available_until: watermark },
+        series: [{ tag_id: 1, tag_name: "PV", display_name: "Velocidade", unit: "m/min", equipment: "RB1", section: "FORNO", variable_type: "SPEED", points: [
+          { timestamp: params.start_time, value: 30, good: true, questionable: false, substituted: false },
+          { timestamp: watermark, value: 31, good: true, questionable: false, substituted: false },
+        ] }],
+      };
+    });
+    normApi.get.mockImplementation(async (id, params) => {
+      const gapStart = new Date(Date.parse(params.start_time) + 60_000).toISOString();
+      const gapEnd = new Date(Date.parse(params.start_time) + 120_000).toISOString();
+      return {
+        ...limitResponse,
+        source_tag_id: id,
+        start_time: params.start_time,
+        end_time: params.end_time,
+        lower: { tag_name: "LOW", points: [], coverage_gaps: [[gapStart, gapEnd]], error: `Cobertura RECORDED pendente em ${gapStart}–${gapEnd}` },
+        errors: [`LOW: Cobertura RECORDED pendente em ${gapStart}–${gapEnd}`],
+      };
+    });
+
+    await openLimits();
+
+    await waitFor(() => expect(screen.getByTestId("limit-errors")).toBeInTheDocument());
+    expect(Date.parse(normApi.get.mock.calls[0][1].end_time)).toBe(Date.parse(watermark));
+    expect(screen.getByTestId("limit-errors")).toHaveTextContent("Cobertura RECORDED pendente");
+    expect(screen.queryByText(/Não foi possível consultar os limites de norma/)).toBeNull();
+  });
+
   it("keeps the pending first overlay when enabling a second series in the same query", async () => {
     apiMock.listPiTags.mockResolvedValue(paginated([
       { ...piTagFixture, id: 1, display_name: "Velocidade", lower_limit_tag: "LOW", upper_limit_tag: null, validation_status: "VALID" },
@@ -132,11 +197,25 @@ describe("historical limit overlay integration", () => {
   });
 
   it("shows the not-yet-materialized diagnosis while preserving the principal chart", async () => {
-    normApi.get.mockResolvedValue({
-      ...limitResponse,
-      lower: { tag_name: "LOW", points: [], coverage_gaps: [[start, end]], error: "Limite aguardando a próxima recarga histórica: LOW ainda não foi materializado no TimescaleDB." },
-      errors: ["Limite aguardando a próxima recarga histórica: LOW ainda não foi materializado no TimescaleDB."],
+    apiMock.timeSeriesQuery.mockImplementation(async (params) => {
+      const watermark = new Date(Date.parse(params.end_time) - 18_160).toISOString();
+      return {
+        start_time: params.start_time, end_time: params.end_time, mode: "recorded", errors: [],
+        query_execution: { resolution_mode: "auto", sampled: false, effective_end: watermark, data_available_until: watermark },
+        series: [{ tag_id: 1, tag_name: "PV", display_name: "Velocidade", unit: "m/min", equipment: "RB1", section: "FORNO", variable_type: "SPEED", points: [
+          { timestamp: params.start_time, value: 30, good: true, questionable: false, substituted: false },
+          { timestamp: watermark, value: 31, good: true, questionable: false, substituted: false },
+        ] }],
+      };
     });
+    normApi.get.mockImplementation(async (id, params) => ({
+      ...limitResponse,
+      source_tag_id: id,
+      start_time: params.start_time,
+      end_time: params.end_time,
+      lower: { tag_name: "LOW", points: [], coverage_gaps: [[params.start_time, params.end_time]], error: "Limite aguardando a próxima recarga histórica: LOW ainda não foi materializado no TimescaleDB." },
+      errors: ["Limite aguardando a próxima recarga histórica: LOW ainda não foi materializado no TimescaleDB."],
+    }));
     await openLimits();
     expect(await screen.findAllByText(/Limite aguardando a próxima recarga histórica/)).toHaveLength(2);
     expect(screen.getByTestId("numeric-chart")).toBeInTheDocument();
