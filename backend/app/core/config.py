@@ -366,7 +366,7 @@ class Settings(BaseSettings):
     )
     worker_norm_limit_reload_enabled: bool = Field(
         default=True,
-        description="Ativa recarga horaria dos limites visuais historicos.",
+        description="Ativa materializacao incremental por minuto dos limites visuais.",
     )
     ingestion_catchup_concurrency: int = Field(
         default=2,

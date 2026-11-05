@@ -57,7 +57,7 @@ def build_limit_state_intervals(events, coverage, start, end):
         ordered = sorted(tag_events, key=lambda event: event['ts'])
         for index, event in enumerate(ordered):
             value = event['value_double']
-            if (not event['good'] or event['questionable'] or event['substituted']
+            if (not event['good'] or event['questionable']
                     or isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(value)):
                 continue

@@ -1,0 +1,18 @@
+[Unit]
+Description=PI Analytics Backend API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/felipe/dev/Dev_analytics/PI-Data-Analytics/backend
+EnvironmentFile=/home/felipe/dev/Dev_analytics/PI-Data-Analytics/backend/.env.staging
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/felipe/dev/Dev_analytics/PI-Data-Analytics/backend
+ExecStart=/home/felipe/dev/Dev_analytics/PI-Data-Analytics/backend/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

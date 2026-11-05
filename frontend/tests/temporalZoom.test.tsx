@@ -297,15 +297,15 @@ describe("Zoom temporal exclusivo — testes obrigatórios", () => {
     // Undo de cada nível
     pressCtrlZ();
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 20, end: 40 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS + (DURATION * 20) / 100, endValue: START_TS + (DURATION * 40) / 100 }),
     );
     pressCtrlZ();
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 10, end: 50 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS + (DURATION * 10) / 100, endValue: START_TS + (DURATION * 50) / 100 }),
     );
     pressCtrlZ();
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: END_TS }),
     );
     view.unmount();
   });
@@ -509,6 +509,7 @@ describe("Zoom temporal exclusivo — testes obrigatórios", () => {
     fireDataZoom(10, 50);
     expect(lastOption.tooltip).toBeDefined();
     expect(lastOption.tooltip.trigger).toBe("axis");
+    expect(lastOption.tooltip.triggerOn).toBe("none");
     view.unmount();
   });
 
@@ -603,7 +604,7 @@ describe("Zoom temporal exclusivo — testes obrigatórios", () => {
     pressCtrlZ();
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(2);
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, startValue: START_TS, endValue: END_TS }),
     );
 
     // Resposta atrasada não deve alterar o estado

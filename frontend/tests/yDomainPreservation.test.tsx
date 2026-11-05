@@ -302,7 +302,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
 
     pressCtrlZ();
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, startValue: START_TS, endValue: END_TS }),
     );
     // O undo restaura apenas a janela temporal; o eixo Y permanece automático.
     expect(lastOption.yAxis[0].min).toBeUndefined();
@@ -683,7 +683,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     // Primeiro Ctrl+Z: restaura Zoom 1 (X=10..50%)
     pressCtrlZ();
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 10, end: 50 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS + (DURATION * 10) / 100, endValue: START_TS + (DURATION * 50) / 100 }),
     );
     expect(lastOption.yAxis[0].min).toBeUndefined();
     expect(lastOption.yAxis[0].max).toBeUndefined();
@@ -692,7 +692,7 @@ describe("TimeSeriesChart - preservação do domínio Y no zoom", () => {
     // Segundo Ctrl+Z: restaura viewport inicial (X=0..100%)
     pressCtrlZ();
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: END_TS }),
     );
     expect(lastOption.yAxis[0].min).toBeUndefined();
     expect(lastOption.yAxis[0].max).toBeUndefined();

@@ -1,0 +1,15 @@
+[Unit]
+Description=PI Analytics Frontend (Vite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/felipe/dev/Dev_analytics/PI-Data-Analytics/frontend
+ExecStart=/usr/bin/npm run dev -- --host 0.0.0.0 --port 5173
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

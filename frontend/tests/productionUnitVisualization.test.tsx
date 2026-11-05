@@ -20,8 +20,10 @@ vi.mock("../src/components/EChartsWrapper", () => ({
 
 import { DataVisualizationPage } from "../src/pages/DataVisualizationPage";
 import { TimeSeriesChart } from "../src/components/TimeSeriesChart";
+import { buildTimeSeriesChartOption } from "../src/components/TimeSeriesChart";
 import { buildChartData } from "../src/utils/chartData";
 import { buildProductionUnitTimeSeries } from "../src/utils/productionUnitChart";
+import { buildNormLimitSeries } from "../src/utils/normLimitSeries";
 
 const numericLines = () => (plot.option?.series as LineSeriesOption[]).filter((s) => s.type === "line" && !String(s.id).startsWith("norm"));
 
@@ -301,6 +303,69 @@ describe("Base Unidade main chart integration", () => {
 });
 
 describe("Production unit marker UI", () => {
+  it("shows a Good -999 materialized limit in the marker card and plotted series", async () => {
+    const response = unitResponse();
+    const chart = buildChartData(buildProductionUnitTimeSeries(response, "MEDIA", [20]), { ignoreBadQuality: false });
+    const target = chart.series[0];
+    const limits = buildNormLimitSeries({
+      seriesInstanceId: target.seriesInstanceId ?? `tag:${target.tagId}`,
+      tagName: target.tagName,
+      mainDisplayName: target.displayName,
+      lowerTagName: "LIMIT_LOW",
+      upperTagName: "LIMIT_HIGH",
+      yAxisIndex: target.yAxisIndex,
+      lineStyle: "solid",
+      width: 2,
+      lowerColor: "#1565c0",
+      upperColor: "#d32f2f",
+      lowerPoints: [{ timestamp: new Date(T).toISOString(), value: -999, good: true }],
+      upperPoints: [],
+      startTimeIso: new Date(T).toISOString(),
+      endTimeIso: new Date(T + 3 * D).toISOString(),
+    });
+    render(<TimeSeriesChart chart={chart} equipment="RB1" start={new Date(T)} end={new Date(T + 3 * D)} mode="recorded" normLimitSeries={[limits]} pinnedCursorTs={T + D} />);
+    expect(await screen.findByTestId("marker-box-0")).toHaveTextContent("Limite inferior: -999 m/min");
+    const option = buildTimeSeriesChartOption({ chart, equipment: "RB1", start: new Date(T), end: new Date(T + 3 * D), mode: "recorded", normLimitSeries: [limits] }) as any;
+    const lowerLine = option.series.find((series: any) => series.id === `norm-lower:${limits.seriesInstanceId}`);
+    expect(lowerLine.data).toContainEqual([T, -999]);
+    expect(lowerLine.data).toContainEqual([T + 3 * D, -999]);
+    expect(lowerLine.connectNulls).toBe(false);
+  });
+
+  it("shows materialized norm limits at the marker timestamp and reports a null state as unavailable", async () => {
+    const response = unitResponse();
+    const chart = buildChartData(buildProductionUnitTimeSeries(response, "MEDIA", [20]), { ignoreBadQuality: false });
+    const target = chart.series[0];
+    const limits = buildNormLimitSeries({
+      seriesInstanceId: target.seriesInstanceId ?? `tag:${target.tagId}`,
+      tagName: target.tagName,
+      mainDisplayName: target.displayName,
+      lowerTagName: "LIMIT_LOW",
+      upperTagName: "LIMIT_HIGH",
+      yAxisIndex: target.yAxisIndex,
+      lineStyle: "dashed",
+      width: 2,
+      lowerColor: "#1565c0",
+      upperColor: "#d32f2f",
+      lowerPoints: [
+        { timestamp: new Date(T).toISOString(), value: 10 },
+        { timestamp: new Date(T + 2 * D).toISOString(), value: null, good: false },
+      ],
+      upperPoints: [{ timestamp: new Date(T).toISOString(), value: 50 }],
+      startTimeIso: new Date(T).toISOString(),
+      endTimeIso: new Date(T + 3 * D).toISOString(),
+    });
+    const props = { chart, equipment: "RB1", start: new Date(T), end: new Date(T + 3 * D), mode: "recorded" as const, normLimitSeries: [limits] };
+    const { rerender } = render(<TimeSeriesChart {...props} pinnedCursorTs={T + D} />);
+    const marker = await screen.findByTestId("marker-box-0");
+    expect(marker).toHaveTextContent("Limite inferior: 10 m/min");
+    expect(marker).toHaveTextContent("Limite superior: 50 m/min");
+
+    rerender(<TimeSeriesChart {...props} pinnedCursorTs={T + 2 * D} />);
+    await waitFor(() => expect(screen.getByTestId("marker-box-0")).toHaveTextContent("Limite inferior: indisponível"));
+    expect(screen.getByTestId("marker-box-0")).toHaveTextContent("Limite superior: 50 m/min");
+  });
+
   it("shows UM and exact OOC counters in the existing marker", async () => {
     const response = unitResponse();
     Object.assign(response.segments[0].variables[0], { attended_percent: 96.4, attended_sample_count:482, eligible_sample_count:500 });

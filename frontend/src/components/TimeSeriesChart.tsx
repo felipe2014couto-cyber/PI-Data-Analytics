@@ -3,7 +3,7 @@ import type { EChartsOption, ECharts } from "echarts";
 
 import { EChartsWrapper } from "./EChartsWrapper";
 import type { ChartBuildResult, ChartSeries } from "../utils/chartData";
-import type { NormLimitSeries } from "../utils/normLimitSeries";
+import { resolveNormLimitStateAtTimestamp, type NormLimitSeries } from "../utils/normLimitSeries";
 import type { UmChartSeries } from "../utils/umChartSeries";
 import type { SeriesVisualConfiguration, TimeSeriesMode, VisualRulesState } from "../types";
 import { formatNumericValue } from "../utils/values";
@@ -16,6 +16,9 @@ const AREA_ZOOM_DRAG_THRESHOLD_PX = 6;
 interface ZoomRange {
   start: number;
   end: number;
+  startValue?: number;
+  endValue?: number;
+  snapshotKey?: string;
 }
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
@@ -121,10 +124,15 @@ export interface TimeSeriesChartProps {
   onPinnedCursorChange?: (ts: number | null) => void;
   syncGroup?: string;
   enableZoomKeyboardUndo?: boolean;
+  zoomUndoAvailable?: boolean;
+  onZoomUndo?: () => void;
+  zoomSnapshotKey?: string;
+  zoomDataContextKey?: string | null;
   onVisibleWindowChange?: (
     start: Date,
     end: Date,
     reason: ZoomChangeReason,
+    snapshotKey?: string,
   ) => Promise<ZoomQueryOutcome> | ZoomQueryOutcome;
   onRestoreInitialZoom?: () => void;
 
@@ -502,6 +510,7 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
       left: "center",
     },
     tooltip: {
+      triggerOn: "none",
       trigger: "axis",
       alwaysShowContent: Boolean(pinnedCursorTs),
       axisPointer: { type: "cross", label: { backgroundColor: "#0d3b66" } },
@@ -529,11 +538,29 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
       feature: {
         dataZoom: {
           yAxisIndex: "none",
-          title: { zoom: "Zoom", back: "Voltar zoom" },
+          title: { zoom: "Zoom", back: "" },
+          // ECharts keeps a separate toolbox-only history that misses inside
+          // dataZoom events. The visible back control below uses our viewport
+          // history instead; leave the native back icon inert and invisible.
+          // A transparent 1×1 image reserves a valid icon box for ECharts.
+          // A degenerate vector path produces NaN transforms for the whole toolbox.
+          icon: { back: "image://data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" },
           brushStyle: {
             borderColor: "#1976d2",
             borderWidth: 1,
             color: "rgba(25, 118, 210, 0.14)",
+          },
+        },
+        myZoomBack: {
+          show: true,
+          title: "Voltar zoom",
+          icon: "path://M22,1.4L9.9,13.5l12.3,12.3 M10.3,13.5H54.9v44.6 H10.3v-26",
+          iconStyle: {
+            borderColor: props.zoomUndoAvailable ? "#555" : "#b7b7b7",
+            opacity: props.zoomUndoAvailable ? 1 : 0.38,
+          },
+          onclick: () => {
+            if (props.zoomUndoAvailable) props.onZoomUndo?.();
           },
         },
         restore: { title: "Restaurar" },
@@ -595,7 +622,7 @@ function buildUnitBandOption(bands: NonNullable<TimeSeriesChartProps["unitBands"
   return {
     id: "production-unit-band", name: "UM", type: "custom", clip: false,
     dimensions: [{ name: "start", type: "time" }, { name: "end", type: "time" }, { name: "UM", type: "ordinal" }], encode: { x: [0, 1] },
-    tooltip: { show: true, trigger: "item", formatter: (param: any) => formatter([{ axisValue: param.value?.[0] }]) },
+    tooltip: { show: true, trigger: "item", triggerOn: "none", formatter: (param: any) => formatter([{ axisValue: param.value?.[0] }]) },
     data: bands.map(band => [band.start, band.end, band.label]),
     renderItem: (params: any, api: any) => {
       const grid = params.coordSys;
@@ -618,7 +645,8 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps, getUnitH
   const { chart, equipment, start, end } = props;
   // OOC values are percentages. Keep manual norm selections in page state,
   // but never place their physical limits on the 0–100% axis.
-  const visibleNormLimits = props.hidePhysicalNormLimits ? [] : props.normLimitSeries ?? [];
+  const isOocChart = chart.series.some((series) => series.unitAggregation?.rule === "OOC");
+  const visibleNormLimits = props.hidePhysicalNormLimits || isOocChart ? [] : props.normLimitSeries ?? [];
   // Pure-textual/categorical charts without any numeric or STRING-typed series
   // still use the dedicated state renderer. Mixed charts with STRING series
   // are handled below as combined numeric+categorical charts.
@@ -787,6 +815,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps, getUnitH
   return {
     title: { text: titleText, subtext: subtitle, left: "center" },
     tooltip: {
+      triggerOn: "none",
       trigger: "axis",
       alwaysShowContent: Boolean(props.pinnedCursorTs),
       axisPointer: {
@@ -825,11 +854,26 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps, getUnitH
       feature: {
         dataZoom: {
           yAxisIndex: "none",
-          title: { zoom: "Zoom", back: "Voltar zoom" },
+          title: { zoom: "Zoom", back: "" },
+          // Keep the native dataZoom back slot valid while our custom action
+          // delegates to the same viewport stack as Ctrl+Z.
+          icon: { back: "image://data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=" },
           brushStyle: {
             borderColor: "#1976d2",
             borderWidth: 1,
             color: "rgba(25, 118, 210, 0.14)",
+          },
+        },
+        myZoomBack: {
+          show: true,
+          title: "Voltar zoom",
+          icon: "path://M22,1.4L9.9,13.5l12.3,12.3 M10.3,13.5H54.9v44.6 H10.3v-26",
+          iconStyle: {
+            borderColor: props.zoomUndoAvailable ? "#555" : "#b7b7b7",
+            opacity: props.zoomUndoAvailable ? 1 : 0.38,
+          },
+          onclick: () => {
+            if (props.zoomUndoAvailable) props.onZoomUndo?.();
           },
         },
         restore: { title: "Restaurar" },
@@ -854,7 +898,7 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps, getUnitH
         end: 100,
         moveOnMouseMove: false,
         moveOnMouseWheel: false,
-        zoomOnMouseWheel: true,
+        zoomOnMouseWheel: false,
         filterMode: "weakFilter",
       },
     ],
@@ -1115,7 +1159,7 @@ function buildNormLimitSeriesOption(
     sampling: undefined,
     connectNulls: false,
     step: "end" as const,
-    lineStyle: { color, width: entry.width, type: entry.lineStyle },
+    lineStyle: { color, width: entry.width, type: "solid" as const },
     itemStyle: { color },
     emphasis: { focus: "none" as const },
     z: 5,
@@ -1242,6 +1286,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     return [];
   });
   const [, setRenderTick] = useState(0);
+  const [hasZoomHistory, setHasZoomHistory] = useState(false);
   const [isDraggingState, setIsDraggingState] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1257,10 +1302,25 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   // state are stale mid-gesture. Handlers must consult this ref instead.
   const interactionStateRef = useRef<InteractionState>("idle");
   const zoomHistoryRef = useRef<ZoomRange[]>([]);
-  const currentZoomRef = useRef<ZoomRange>({ start: 0, end: 100 });
+  const zoomContextKey = `${props.zoomDataContextKey ?? "implicit-query"}-${props.baseStart?.getTime() ?? "implicit-base"}-${props.baseEnd?.getTime() ?? "implicit-base"}`;
+  const previousZoomContextRef = useRef(zoomContextKey);
+  const currentZoomRef = useRef<ZoomRange>({
+    start: 0,
+    end: 100,
+    startValue: (props.baseStart ?? start).getTime(),
+    endValue: (props.baseEnd ?? end).getTime(),
+    snapshotKey: props.zoomSnapshotKey ?? "",
+  });
+  // Keep the current level associated with the exact rendered data snapshot.
+  // This is a key only; snapshot arrays remain owned by the page cache.
+  if (currentZoomRef.current.snapshotKey !== (props.zoomSnapshotKey ?? "")) {
+    currentZoomRef.current = { ...currentZoomRef.current, snapshotKey: props.zoomSnapshotKey ?? "" };
+  }
+  const undoZoomHandlerRef = useRef<() => void>(() => {});
+  const triggerZoomUndo = useCallback(() => undoZoomHandlerRef.current(), []);
   const suppressZoomHistoryRef = useRef(false);
   const isProgrammaticUpdateRef = useRef(false);
-  const lastDispatchedWindowRef = useRef<{ start: number; end: number } | null>(null);
+  const lastDispatchedWindowRef = useRef<{ start: number; end: number; at: number } | null>(null);
   markersRef.current = markers;
 
   // Sync external pinnedCursorTs if changed
@@ -1295,6 +1355,21 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     instanceRef.current = inst;
     setInstance(inst);
   }, []);
+
+  useEffect(() => {
+    if (previousZoomContextRef.current === zoomContextKey) return;
+    previousZoomContextRef.current = zoomContextKey;
+    zoomHistoryRef.current = [];
+    currentZoomRef.current = {
+      start: 0,
+      end: 100,
+      startValue: (props.baseStart ?? start).getTime(),
+      endValue: (props.baseEnd ?? end).getTime(),
+      snapshotKey: props.zoomSnapshotKey ?? "",
+    };
+    lastDispatchedWindowRef.current = null;
+    setHasZoomHistory(false);
+  }, [end, props.baseEnd, props.baseStart, props.zoomSnapshotKey, start, zoomContextKey]);
 
   // Compute exact plot grid bounds (including during zoom)
   const getGridBounds = useCallback(() => {
@@ -1353,6 +1428,8 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         equipment,
         start,
         end,
+        zoomUndoAvailable: hasZoomHistory,
+        onZoomUndo: triggerZoomUndo,
         baseStart: props.baseStart,
         baseEnd: props.baseEnd,
         isZoomed: props.isZoomed,
@@ -1383,6 +1460,8 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       props.unitBands,
       props.pinnedCursorTs,
       props.onClearCursor,
+      hasZoomHistory,
+      triggerZoomUndo,
     ],
   );
 
@@ -1405,12 +1484,13 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       } as never);
       suppressZoomHistoryRef.current = true;
       currentZoomRef.current = previous;
-      inst.dispatchAction({
+      const action: Record<string, unknown> = {
         type: "dataZoom",
         dataZoomIndex: 0,
         start: previous.start,
         end: previous.end,
-      } as never);
+      };
+      inst.dispatchAction(action as never);
     } catch {
       // The visual domain has not changed yet, so clearing the candidate is sufficient.
     }
@@ -1424,12 +1504,13 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
     const dispatchZoom = (range: ZoomRange) => {
       suppressZoomHistoryRef.current = true;
       currentZoomRef.current = range;
-      instance.dispatchAction({
+      const action: Record<string, unknown> = {
         type: "dataZoom",
         dataZoomIndex: 0,
         start: range.start,
         end: range.end,
-      } as never);
+      };
+      instance.dispatchAction(action as never);
     };
     const requestVisibleWindow = (
       range: ZoomRange,
@@ -1437,6 +1518,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       reason: ZoomChangeReason,
       explicitStartMs?: number,
       explicitEndMs?: number,
+      snapshotKey?: string,
     ) => {
       const callback = props.onVisibleWindowChange;
       if (!callback) return;
@@ -1454,7 +1536,10 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         visibleEnd = domainStart + (duration * range.end) / 100;
       }
       if (!Number.isFinite(visibleStart) || !Number.isFinite(visibleEnd) || visibleEnd <= visibleStart) return;
-      void Promise.resolve(callback(new Date(visibleStart), new Date(visibleEnd), reason)).then((outcome) => {
+      const promise = snapshotKey
+        ? callback(new Date(visibleStart), new Date(visibleEnd), reason, snapshotKey)
+        : callback(new Date(visibleStart), new Date(visibleEnd), reason);
+      void Promise.resolve(promise).then((outcome) => {
         if (!active || outcome !== "rejected") return;
         const current = currentZoomRef.current;
         if (Math.abs(current.start - range.start) > 0.0001 || Math.abs(current.end - range.end) > 0.0001) return;
@@ -1469,6 +1554,28 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         dispatchZoom(rollback);
       }).catch(() => {});
     };
+    const undoZoom = () => {
+      const previous = zoomHistoryRef.current.pop();
+      if (!previous) {
+        setHasZoomHistory(false);
+        return;
+      }
+      const current = currentZoomRef.current;
+      setHasZoomHistory(zoomHistoryRef.current.length > 0);
+      dispatchZoom(previous);
+      const startValue = previous.startValue;
+      const endValue = previous.endValue;
+      requestVisibleWindow(
+        previous,
+        current,
+        "undo",
+        Number.isFinite(startValue) ? startValue : undefined,
+        Number.isFinite(endValue) ? endValue : undefined,
+        previous.snapshotKey,
+      );
+      setRenderTick((t) => t + 1);
+    };
+    undoZoomHandlerRef.current = undoZoom;
     const handleDataZoom = (event?: any) => {
       setRenderTick((t) => t + 1);
 
@@ -1549,7 +1656,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       if (lastDispatchedWindowRef.current) {
         const diffStart = Math.abs(lastDispatchedWindowRef.current.start - targetStartMs);
         const diffEnd = Math.abs(lastDispatchedWindowRef.current.end - targetEndMs);
-        if (diffStart < 100 && diffEnd < 100) {
+        if (Date.now() - lastDispatchedWindowRef.current.at < 100 && diffStart < 100 && diffEnd < 100) {
           return;
         }
       }
@@ -1557,19 +1664,33 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       const nextRange: ZoomRange = {
         start: startPct ?? ((targetStartMs - domainStart) / domainDuration) * 100,
         end: endPct ?? ((targetEndMs - domainStart) / domainDuration) * 100,
+        snapshotKey: props.zoomSnapshotKey ?? "",
       };
 
       const current = currentZoomRef.current;
       zoomHistoryRef.current.push({ ...current });
       if (zoomHistoryRef.current.length > 50) zoomHistoryRef.current.shift();
-      currentZoomRef.current = nextRange;
+      setHasZoomHistory(true);
+      currentZoomRef.current = {
+        ...nextRange,
+        startValue: targetStartMs,
+        endValue: targetEndMs,
+        snapshotKey: props.zoomSnapshotKey ?? "",
+      };
 
-      lastDispatchedWindowRef.current = { start: targetStartMs, end: targetEndMs };
+      lastDispatchedWindowRef.current = { start: targetStartMs, end: targetEndMs, at: Date.now() };
       requestVisibleWindow(nextRange, current, "selection", targetStartMs, targetEndMs);
     };
     const handleRestore = () => {
       zoomHistoryRef.current = [];
-      currentZoomRef.current = { start: 0, end: 100 };
+      currentZoomRef.current = {
+        start: 0,
+        end: 100,
+        startValue: (props.baseStart ?? start).getTime(),
+        endValue: (props.baseEnd ?? end).getTime(),
+        snapshotKey: props.zoomSnapshotKey ?? "",
+      };
+      setHasZoomHistory(false);
       lastDispatchedWindowRef.current = null;
       props.onRestoreInitialZoom?.();
       setRenderTick((t) => t + 1);
@@ -1596,15 +1717,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       // Outside an editor, this shortcut belongs to the chart even when its
       // zoom history is empty; suppress browser/page undo in either case.
       event.preventDefault();
-      const previous = zoomHistoryRef.current.pop();
-      if (!previous) return;
-      const current = currentZoomRef.current;
-      dispatchZoom(previous);
-      // Undo restores the viewport already held by the chart. It must not
-      // trigger a new historical query from the page. The callback is only
-      // used to cancel an in-flight refinement and synchronize the viewport.
-      requestVisibleWindow(previous, current, "undo");
-      setRenderTick((t) => t + 1);
+      undoZoom();
     };
     const forceUpdate = () => setRenderTick((t) => t + 1);
 
@@ -1618,8 +1731,9 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       instance.off("restore", handleRestore);
       window.removeEventListener("resize", forceUpdate);
       window.removeEventListener("keydown", handleKeyDown);
+      if (undoZoomHandlerRef.current === undoZoom) undoZoomHandlerRef.current = () => {};
     };
-  }, [cancelAreaSelection, end, getGridBounds, instance, props.enableZoomKeyboardUndo, props.onRestoreInitialZoom, props.onVisibleWindowChange, start]);
+  }, [cancelAreaSelection, end, getGridBounds, instance, props.enableZoomKeyboardUndo, props.onRestoreInitialZoom, props.onVisibleWindowChange, props.zoomSnapshotKey, start]);
 
   const handleGlobalPointerMove = useCallback(
     (e: PointerEvent) => {
@@ -1999,12 +2113,41 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
                   ? `${formatNumericValue(value)}${s.unit ? " " + s.unit : ""}`
                   : "(sem dado)";
             }
+            const normEntry = !props.hidePhysicalNormLimits && s.unitAggregation?.rule !== "OOC"
+              ? (props.normLimitSeries ?? []).find((entry) => entry.seriesInstanceId === (s.seriesInstanceId ?? `tag:${s.tagId}`))
+              : undefined;
+            const normLimitValues: Array<{ kind: "lower" | "upper"; text: string; color: string }> = [];
+            if (normEntry?.lowerTagName) {
+              const limitValue = resolveNormLimitStateAtTimestamp(
+                normEntry.lowerStatePoints ?? normEntry.lowerPoints.map(([timestamp, value]) => ({ timestamp, value })),
+                markerTs,
+                normEntry.lowerCoverageGaps,
+              );
+              normLimitValues.push({
+                kind: "lower",
+                text: limitValue === null ? "indisponível" : `${formatNumericValue(limitValue)}${s.unit ? ` ${s.unit}` : ""}`,
+                color: normEntry.lowerColor,
+              });
+            }
+            if (normEntry?.upperTagName) {
+              const limitValue = resolveNormLimitStateAtTimestamp(
+                normEntry.upperStatePoints ?? normEntry.upperPoints.map(([timestamp, value]) => ({ timestamp, value })),
+                markerTs,
+                normEntry.upperCoverageGaps,
+              );
+              normLimitValues.push({
+                kind: "upper",
+                text: limitValue === null ? "indisponível" : `${formatNumericValue(limitValue)}${s.unit ? ` ${s.unit}` : ""}`,
+                color: normEntry.upperColor,
+              });
+            }
             return {
               id: s.seriesInstanceId ?? `tag:${s.tagId}`,
               displayName: s.unitAggregation ? `${s.displayName} (${productionUnitRuleLabel(s.unitAggregation.rule)} da UM)` : s.displayName,
               color: s.color,
               valueText: valueFormatted,
               dotY,
+              normLimitValues,
             };
           });
 
@@ -2188,6 +2331,15 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
                     >
                       {sd.valueText}
                     </div>
+                    {sd.normLimitValues.map((limit) => (
+                      <div
+                        key={`norm-${limit.kind}-${sd.id}`}
+                        data-testid={`marker-norm-${limit.kind}-${sd.id}`}
+                        style={{ color: limit.color, fontSize: "10px", lineHeight: "13px" }}
+                      >
+                        Limite {limit.kind === "lower" ? "inferior" : "superior"}: {limit.text}
+                      </div>
+                    ))}
                   </div>
                 ))}
 

@@ -1500,7 +1500,7 @@ describe("Data visualization page", () => {
     expect(screen.getByTestId("metric-results")).toHaveTextContent("Informe LIE e LSE");
   });
 
-  it("changes comparison configuration locally and calls only compare on Consultar", async () => {
+  it("temporarily hides comparison and axis-choice controls", async () => {
     const tag = { ...piTagFixture, validation_status: "VALID" as const };
     apiMock.listPiTags.mockResolvedValue(paginated([tag]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
@@ -1515,18 +1515,17 @@ describe("Data visualization page", () => {
     });
     renderAt("/analises/visualizacao");
 
-    fireEvent.change(await screen.findByTestId("comparison-type"), { target: { value: "periods" } });
-    fireEvent.change(screen.getByTestId("comparison-start-b"), { target: { value: "2026-06-15T00:00" } });
-    fireEvent.change(screen.getByTestId("comparison-end-b"), { target: { value: "2026-06-15T01:00" } });
+    await screen.findByTestId("equipment-select");
+    expect(screen.getByTestId("temporarily-hidden-comparison")).toHaveAttribute("hidden");
+    expect(screen.getByTestId("temporarily-hidden-axis-configuration")).toHaveAttribute("hidden");
+    expect(screen.getByTestId("comparison-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("series-configuration")).toBeInTheDocument();
     expect(apiMock.timeSeriesCompare).not.toHaveBeenCalled();
     expect(apiMock.timeSeriesQuery).not.toHaveBeenCalled();
 
     await submitFirstAvailableTag();
-    await waitFor(() => expect(apiMock.timeSeriesCompare).toHaveBeenCalledTimes(1));
-    expect(apiMock.timeSeriesQuery).not.toHaveBeenCalled();
-    const payload = apiMock.timeSeriesCompare.mock.calls[0][0];
-    expect(payload.contexts).toHaveLength(2);
-    expect(payload.contexts.map((context: { context_id: string }) => context.context_id)).toEqual(["A", "B"]);
+    await waitFor(() => expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1));
+    expect(apiMock.timeSeriesCompare).not.toHaveBeenCalled();
   });
 
   it("applies and resets visual limits, ranges and colors without another API call", async () => {

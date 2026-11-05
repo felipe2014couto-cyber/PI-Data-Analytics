@@ -7,9 +7,11 @@ import type { ChartBuildResult, ChartSeries } from "../src/utils/chartData";
 let mockEChartsInstance: any;
 let registeredEventHandlers: Record<string, Function[]> = {};
 let currentZoom = { start: 0, end: 100 };
+let currentOption: any;
 
 vi.mock("../src/components/EChartsWrapper", () => ({
-  EChartsWrapper: ({ onInit, height }: any) => {
+  EChartsWrapper: ({ onInit, height, option }: any) => {
+    currentOption = option;
     useEffect(() => {
       if (onInit && mockEChartsInstance) {
         onInit(mockEChartsInstance);
@@ -111,6 +113,7 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     currentZoom = { start: 0, end: 100 };
     onVisibleWindowChange = vi.fn(() => Promise.resolve("applied"));
     dispatchAction = vi.fn();
+    currentOption = null;
 
     mockEChartsInstance = {
       convertToPixel: vi.fn(() => [200, 150]),
@@ -170,19 +173,19 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     expect(firstUndo.defaultPrevented).toBe(true);
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(4);
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 30 }),
+      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, startValue: START_TS, endValue: START_TS + (DURATION * 30) / 100 }),
     );
 
     pressCtrlZ();
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(5);
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 50 }),
+      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, startValue: START_TS, endValue: START_TS + (DURATION * 50) / 100 }),
     );
 
     pressCtrlZ();
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(6);
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", dataZoomIndex: 0, startValue: START_TS, endValue: END_TS }),
     );
 
     // Histórico esgotado: nenhum efeito adicional.
@@ -200,7 +203,7 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(before + 1);
     expect(onVisibleWindowChange.mock.calls.at(-1)?.[2]).toBe("undo");
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 50 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: START_TS + (DURATION * 50) / 100 }),
     );
   });
 
@@ -230,7 +233,7 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     field.focus();
     const event = pressCtrlZ({ target: field });
     expect(dispatchAction).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: END_TS }),
     );
     expect(event.defaultPrevented).toBe(false);
     field.remove();
@@ -244,15 +247,27 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     input.focus();
     pressCtrlZ({ target: input });
     expect(dispatchAction).not.toHaveBeenCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: END_TS }),
     );
     input.blur();
     const event = pressCtrlZ();
     expect(event.defaultPrevented).toBe(true);
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: END_TS }),
     );
     expect(onVisibleWindowChange.mock.calls.at(-1)?.[2]).toBe("undo");
+    input.remove();
+  });
+
+  it("respeita o campo editável ativo mesmo quando o evento é roteado pela janela", () => {
+    renderChart();
+    fireDataZoom(0, 50);
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    const event = pressCtrlZ();
+    expect(event.defaultPrevented).toBe(false);
+    expect(dispatchAction).not.toHaveBeenCalledWith(expect.objectContaining({ type: "dataZoom" }));
     input.remove();
   });
 
@@ -270,7 +285,7 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     const event = pressCtrlZ({ metaKey: true });
     expect(event.defaultPrevented).toBe(true);
     expect(dispatchAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "dataZoom", start: 0, end: 100 }),
+      expect.objectContaining({ type: "dataZoom", startValue: START_TS, endValue: END_TS }),
     );
   });
 
@@ -286,6 +301,36 @@ describe("TimeSeriesChart - Ctrl+Z do histórico de zoom", () => {
     const event = pressCtrlZ();
     expect(onVisibleWindowChange).toHaveBeenCalledTimes(2);
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("o botão Voltar zoom restaura um viewport por clique e desabilita quando o histórico acaba", () => {
+    renderChart();
+    const feature = () => currentOption.toolbox.feature.myZoomBack;
+    expect(currentOption.toolbox.feature.dataZoom.icon.back).toMatch(/^image:\/\/data:image\/gif;base64,/);
+    expect(feature().iconStyle.opacity).toBe(0.38);
+    act(() => feature().onclick());
+    expect(dispatchAction).not.toHaveBeenCalled();
+
+    fireDataZoom(0, 50);
+    fireDataZoom(0, 30);
+    expect(feature().iconStyle.opacity).toBe(1);
+
+    act(() => feature().onclick());
+    expect(dispatchAction).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "dataZoom",
+      startValue: START_TS,
+      endValue: START_TS + (DURATION * 50) / 100,
+    }));
+    expect(onVisibleWindowChange.mock.calls.at(-1)?.[2]).toBe("undo");
+    expect(feature().iconStyle.opacity).toBe(1);
+
+    act(() => feature().onclick());
+    expect(dispatchAction).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "dataZoom",
+      startValue: START_TS,
+      endValue: END_TS,
+    }));
+    expect(feature().iconStyle.opacity).toBe(0.38);
   });
 
   it("listener de teclado é removido no unmount", () => {

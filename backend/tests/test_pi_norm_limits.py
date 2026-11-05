@@ -229,7 +229,9 @@ def test_two_limit_metadata_is_batched_without_orm_relationship_queries(client: 
     metadata = [sql for sql in statements if "pi_tags" in sql]
     assert len(metadata) == 2, statements
     overlay_statements = [sql for sql in statements if "FROM users" not in sql]
-    assert len(overlay_statements) == 8, overlay_statements
+    # Each limit also resolves its persisted materialization baseline so old
+    # pre-baseline gaps can be distinguished from post-baseline coverage gaps.
+    assert len(overlay_statements) == 10, overlay_statements
     assert all("JOIN equipments" not in sql and "sampling_mode" not in sql for sql in metadata)
     assert client.fake_provider.recorded_calls == []
 

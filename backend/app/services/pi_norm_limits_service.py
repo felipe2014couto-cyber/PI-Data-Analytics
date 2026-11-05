@@ -1,7 +1,8 @@
 """Read materialized RECORDED norm-limit states exclusively from TimescaleDB.
 
-PI acquisition belongs to reload-norm-limits and its hourly worker. Missing
-local history is an optional overlay diagnostic, never an external fallback.
+PI acquisition belongs to the manual reload-norm-limits command and the
+incremental RECORDED worker. Missing local history is an optional overlay
+diagnostic, never an external fallback.
 """
 from __future__ import annotations
 
@@ -170,14 +171,14 @@ class PiNormLimitsService:
         interval: Optional[str],
         max_count: int,
         local_limit,
-    ) -> Optional[tuple[List[PiTagNormLimitPoint], List[tuple[datetime, datetime]]]]:
+        ) -> Optional[tuple[List[PiTagNormLimitPoint], List[tuple[datetime, datetime]], Optional[datetime]]]:
         """Attempt to fetch limit points directly from the TimescaleDB hypertable."""
         session_ctx = self.session_factory() if self.session_factory else None
         db = session_ctx or self.db
         if not db:
             return None
         try:
-            from app.models.postgres import PiSample
+            from app.models.postgres import PiIngestionCoverage, PiSample
             tag_id, _ = local_limit
             read_end = end_time
             from app.services.coverage_service import CoverageService, normalize_mode
@@ -207,6 +208,22 @@ class PiNormLimitsService:
             # The seed is a state input. Coverage is only required for the
             # requested window, never for history before its start.
             gaps = CoverageService.get_missing_intervals(db, tag_id, start_time, read_end, requested_mode, interval_seconds) if start_time < read_end else []
+            baseline = db.execute(
+                select(PiIngestionCoverage.range_start)
+                .where(
+                    PiIngestionCoverage.tag_id == tag_id,
+                    PiIngestionCoverage.mode == requested_mode,
+                    PiIngestionCoverage.status.in_(("COMPLETE", "EMPTY_CONFIRMED")),
+                )
+                .order_by(PiIngestionCoverage.range_start.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if baseline is None:
+                from app.models.postgres import PiIngestionState
+                state = db.get(PiIngestionState, (tag_id, "NORM_LIMIT"))
+                baseline = state.watermark_ts if state is not None else None
+            if baseline is not None:
+                baseline = baseline.replace(tzinfo=timezone.utc) if baseline.tzinfo is None else baseline.astimezone(timezone.utc)
             if seed is not None:
                 rows = [seed, *rows]
             pts = []
@@ -217,7 +234,7 @@ class PiNormLimitsService:
                 raw_value = r.value_double if r.value_type in {"double", "float", "int"} else r.value_boolean if r.value_type == "boolean" else r.value_text
                 val = float(raw_value) if _is_finite_number(raw_value) else None
                 pts.append(PiTagNormLimitPoint(timestamp=ts, value=val, good=r.good, questionable=r.questionable, substituted=r.substituted))
-            return (pts, gaps)
+            return (pts, gaps, baseline)
         finally:
             if session_ctx:
                 session_ctx.close()
@@ -241,11 +258,32 @@ class PiNormLimitsService:
             ), [reason])
         db_pts = self._try_fetch_from_db(tag_name, start_time, end_time, mode, interval, max_count, local_limit)
         if db_pts is not None:
-            points, gaps = db_pts
+            points, gaps, baseline = db_pts
             errors = []
+            historical: list[tuple[datetime, datetime]] = []
+            operational: list[tuple[datetime, datetime]] = []
             if gaps:
-                errors.append(f"Cobertura RECORDED pendente para limite {tag_name}: " + ", ".join(f"{a.isoformat()}–{b.isoformat()}" for a,b in gaps))
-            if not points:
+                if baseline is None:
+                    historical = gaps
+                else:
+                    baseline = baseline.replace(tzinfo=timezone.utc) if baseline.tzinfo is None else baseline.astimezone(timezone.utc)
+                    for start, end in gaps:
+                        start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start.astimezone(timezone.utc)
+                        end = end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end.astimezone(timezone.utc)
+                        if start < baseline:
+                            historical.append((start, min(end, baseline)))
+                        if end > baseline:
+                            operational.append((max(start, baseline), end))
+                if historical:
+                    errors.append(
+                        f"Histórico do limite {tag_name} não materializado; backfill manual necessário "
+                        f"(Cobertura RECORDED pendente: "
+                        + ", ".join(f"{a.isoformat()}–{b.isoformat()}" for a, b in historical)
+                        + ")"
+                    )
+                if operational:
+                    errors.append(f"Cobertura RECORDED pendente para limite {tag_name}: " + ", ".join(f"{a.isoformat()}–{b.isoformat()}" for a,b in operational))
+            if not points and not historical:
                 errors.append(f"Limite aguardando a próxima recarga histórica: sem seed ou eventos RECORDED para {tag_name}.")
             if any(not point.good or point.questionable for point in points):
                 errors.append(f"Bad/Timeout ou qualidade inválida em {tag_name}; validade interrompida até o próximo valor Good")

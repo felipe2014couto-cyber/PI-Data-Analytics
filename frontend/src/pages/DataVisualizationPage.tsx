@@ -158,6 +158,12 @@ interface QueryState {
   finishedAt: number | null;
   resolvedPeriod: ResolvedTimePeriod | null;
   errorDetails: HistoricalErrorDetails | null;
+  zoomContextKey?: string;
+}
+
+interface ZoomDatasetSnapshot {
+  timeSeries: TimeSeries;
+  unitAnalysis?: ProductionUnitAnalysisResponse;
 }
 
 interface HistoricalErrorDetails {
@@ -198,6 +204,27 @@ const INITIAL_ZOOM_QUERY: ZoomQueryState = {
 
 function zoomCacheKey(start: Date, end: Date): string {
   return `${start.getTime()}:${end.getTime()}`;
+}
+
+const MAX_ZOOM_HISTORY = 50;
+
+function cacheZoomSnapshot(
+  cache: Map<string, ZoomDatasetSnapshot>,
+  key: string,
+  state: QueryState,
+  baseKey: string | null,
+): void {
+  if (!state.timeSeries) return;
+  cache.delete(key);
+  cache.set(key, {
+    timeSeries: state.timeSeries,
+    ...(state.unitAnalysis ? { unitAnalysis: state.unitAnalysis } : {}),
+  });
+  const zoomKeys = [...cache.keys()].filter((entryKey) => entryKey !== baseKey);
+  while (zoomKeys.length > MAX_ZOOM_HISTORY) {
+    const oldest = zoomKeys.shift();
+    if (oldest !== undefined) cache.delete(oldest);
+  }
 }
 
 function hasSufficientZoomDetail(
@@ -340,7 +367,7 @@ export function DataVisualizationPage() {
   const zoomRequestSeqRef = useRef(0);
   const initialQueryRef = useRef<QueryState | null>(null);
   const activeQueryRef = useRef<QueryState>(INITIAL_QUERY);
-  const zoomCacheRef = useRef<Map<string, QueryState>>(new Map());
+  const zoomCacheRef = useRef<Map<string, ZoomDatasetSnapshot>>(new Map());
   const zoomRejectedRef = useRef<Set<string>>(new Set());
   const zoomInFlightRef = useRef<{ key: string; promise: Promise<ZoomQueryOutcome> } | null>(null);
   const queryIdRef = useRef<string | null>(null);
@@ -1402,11 +1429,14 @@ export function DataVisualizationPage() {
         startedAt,
         finishedAt,
         resolvedPeriod,
+        zoomContextKey: qid,
       };
       initialQueryRef.current = initialQueryState;
-      zoomCacheRef.current.set(
+      cacheZoomSnapshot(
+        zoomCacheRef.current,
         zoomCacheKey(new Date(resolvedPeriod.startTime), new Date(resolvedPeriod.endTime)),
         initialQueryState,
+        zoomCacheKey(new Date(resolvedPeriod.startTime), new Date(resolvedPeriod.endTime)),
       );
       setQuery(initialQueryState);
     } catch (err) {
@@ -1449,6 +1479,7 @@ export function DataVisualizationPage() {
     visibleStart: Date,
     visibleEnd: Date,
     reason: "selection" | "undo",
+    snapshotKey?: string,
   ): Promise<ZoomQueryOutcome> => {
     const initial = initialQueryRef.current;
     if (!initial?.timeSeries || !initial.resolvedPeriod) {
@@ -1461,22 +1492,38 @@ export function DataVisualizationPage() {
     const activeResult = activeQueryRef.current.timeSeries;
 
     if (reason === "undo") {
-      // The chart already has the data for its previous viewport. Invalidate
-      // any pending detail request, synchronize only the viewport, and never
-      // start another /api/time-series request for an undo action.
+      // Restore the graph-only dataset snapshot associated with this viewport.
+      // This changes neither page filters nor the query parameters and never
+      // starts another /api/time-series request.
+      const targetKey = snapshotKey || key;
+      const snapshot = zoomCacheRef.current.get(targetKey);
+      if (!snapshot) return Promise.resolve("rejected");
       zoomAbortRef.current?.abort();
       zoomRequestSeqRef.current += 1;
       zoomInFlightRef.current = null;
       setZoomQuery(INITIAL_ZOOM_QUERY);
-      setZoomedRange({ start: effectiveStart, end: effectiveEnd });
-      const cached = zoomCacheRef.current.get(key);
-      if (cached) setQuery(cached);
+      const baseKey = zoomCacheKey(
+        new Date(initial.resolvedPeriod.startTime),
+        new Date(initial.resolvedPeriod.endTime),
+      );
+      setZoomedRange(targetKey === baseKey ? null : { start: effectiveStart, end: effectiveEnd });
+      setQuery((current) => ({
+        ...current,
+        timeSeries: snapshot.timeSeries,
+        ...(snapshot.unitAnalysis ? { unitAnalysis: snapshot.unitAnalysis } : {}),
+      }));
       return Promise.resolve("applied");
     }
 
     if (initial.unitAnalysis) {
       // A visual crop preserves the backend statistic for the entire UM.
       // No bucket/detail query is needed, even inside a long constant segment.
+      const activeState = activeQueryRef.current;
+      if (activeState.timeSeries) {
+        cacheZoomSnapshot(zoomCacheRef.current, key, activeState, zoomCacheKey(
+          new Date(initial.resolvedPeriod.startTime), new Date(initial.resolvedPeriod.endTime),
+        ));
+      }
       setZoomedRange({ start: effectiveStart, end: effectiveEnd });
       setQuery(initial);
       setZoomQuery(INITIAL_ZOOM_QUERY);
@@ -1515,7 +1562,11 @@ export function DataVisualizationPage() {
       zoomInFlightRef.current = null;
       setZoomQuery(INITIAL_ZOOM_QUERY);
       setZoomedRange({ start: effectiveStart, end: effectiveEnd });
-      setQuery(cached);
+      setQuery((current) => ({
+        ...current,
+        timeSeries: cached.timeSeries,
+        ...(cached.unitAnalysis ? { unitAnalysis: cached.unitAnalysis } : {}),
+      }));
       return Promise.resolve("applied");
     }
 
@@ -1526,6 +1577,12 @@ export function DataVisualizationPage() {
       zoomRequestSeqRef.current += 1;
       zoomInFlightRef.current = null;
       setZoomQuery(INITIAL_ZOOM_QUERY);
+      const activeState = activeQueryRef.current;
+      if (activeState.timeSeries) {
+        cacheZoomSnapshot(zoomCacheRef.current, key, activeState, zoomCacheKey(
+          new Date(initial.resolvedPeriod.startTime), new Date(initial.resolvedPeriod.endTime),
+        ));
+      }
       setZoomedRange({ start: effectiveStart, end: effectiveEnd });
       return Promise.resolve("applied");
     }
@@ -1599,7 +1656,9 @@ export function DataVisualizationPage() {
           startedAt,
           finishedAt: Date.now(),
         };
-        zoomCacheRef.current.set(key, next);
+        cacheZoomSnapshot(zoomCacheRef.current, key, next, zoomCacheKey(
+          new Date(initial.resolvedPeriod!.startTime), new Date(initial.resolvedPeriod!.endTime),
+        ));
         setZoomedRange({ start: effectiveStart, end: effectiveEnd });
         setQuery(next);
         setZoomQuery(INITIAL_ZOOM_QUERY);
@@ -1634,7 +1693,13 @@ export function DataVisualizationPage() {
     zoomInFlightRef.current = null;
     setZoomQuery(INITIAL_ZOOM_QUERY);
     setZoomedRange(null);
-    if (initialQueryRef.current) setQuery(initialQueryRef.current);
+    zoomCacheRef.current.clear();
+    const initial = initialQueryRef.current;
+    if (initial?.timeSeries && initial.resolvedPeriod) {
+      const key = zoomCacheKey(new Date(initial.resolvedPeriod.startTime), new Date(initial.resolvedPeriod.endTime));
+      cacheZoomSnapshot(zoomCacheRef.current, key, initial, key);
+      setQuery(initial);
+    }
   }, []);
 
   useEffect(() => () => {
@@ -1783,7 +1848,7 @@ export function DataVisualizationPage() {
 
     const startTimeIso = normStartTimeIso;
     const endTimeIso = normEndTimeIso;
-    const interval = filters.mode === "interpolated" ? filters.interval : undefined;
+    const interval = (filters.mode as string) === "interpolated" ? filters.interval : undefined;
     const sortedIds = effectiveNormEnabledKey.split(",").filter(Boolean);
     const hasUsableWindow = Date.parse(endTimeIso) > Date.parse(startTimeIso);
 
@@ -2211,6 +2276,9 @@ export function DataVisualizationPage() {
                     zoomAbortRef.current?.abort();
                     requestSeqRef.current += 1;
                     zoomRequestSeqRef.current += 1;
+                    zoomInFlightRef.current = null;
+                    zoomCacheRef.current.clear();
+                    zoomRejectedRef.current.clear();
                     initialQueryRef.current = null;
                     setQuery(INITIAL_QUERY);
                     setZoomQuery(INITIAL_ZOOM_QUERY);
@@ -2461,6 +2529,8 @@ export function DataVisualizationPage() {
                         unitBands={unitContext && selectedTagIds.includes(unitContext.um_tag_id) ? unitContext.segments.map(segment => ({ start: Date.parse(segment.start_time), end: Date.parse(segment.end_time), label: segment.um_value ?? "Sem UM" })) : undefined}
                         syncGroup={TIME_CHART_SYNC_GROUP}
                         enableZoomKeyboardUndo
+                        zoomSnapshotKey={zoomCacheKey(chartStart, chartEnd)}
+                        zoomDataContextKey={query.zoomContextKey ?? null}
                         onVisibleWindowChange={handleVisibleWindowChange}
                         onRestoreInitialZoom={handleRestoreInitialZoom}
                       />
@@ -2545,6 +2615,8 @@ export function DataVisualizationPage() {
                         visualRules={visualRules}
                         syncGroup={TIME_CHART_SYNC_GROUP}
                         enableZoomKeyboardUndo={!numericChart || filters.visualization === "states"}
+                        zoomSnapshotKey={zoomCacheKey(chartStart, chartEnd)}
+                        zoomDataContextKey={query.zoomContextKey ?? null}
                         onVisibleWindowChange={handleVisibleWindowChange}
                         onRestoreInitialZoom={handleRestoreInitialZoom}
                       />

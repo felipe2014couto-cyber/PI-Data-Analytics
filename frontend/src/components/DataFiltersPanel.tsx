@@ -394,9 +394,13 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
                 </Form.Select>
               </Form.Group>
 
-              {comparisonConfiguration}
+              <div hidden aria-hidden="true" data-testid="temporarily-hidden-comparison">
+                {comparisonConfiguration}
+              </div>
 
-              {seriesConfiguration}
+              <div hidden aria-hidden="true" data-testid="temporarily-hidden-axis-configuration">
+                {seriesConfiguration}
+              </div>
 
               {visualConfiguration}
 

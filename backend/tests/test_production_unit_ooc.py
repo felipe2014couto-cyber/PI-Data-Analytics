@@ -84,6 +84,15 @@ def test_many_samples_between_limit_changes_retain_same_historical_value():
         assert lookup.at(T+timedelta(minutes=minute))['value_double'] == 2
 
 
+def test_good_negative_999_limit_is_applied_as_a_numeric_ooc_bound():
+    lower = limit_lookup([event(1, -1, -999)])
+    upper = limit_lookup([event(1, -1, 10)])
+    assert lower.at(T)['value_double'] == -999
+    assert classify_sample(-999, lower.at(T)['value_double'], upper.at(T)['value_double']) is True
+    assert classify_sample(-998, lower.at(T)['value_double'], upper.at(T)['value_double']) is True
+    assert classify_sample(-1000, lower.at(T)['value_double'], upper.at(T)['value_double']) is False
+
+
 def test_new_limit_replaces_previous_value_at_its_exact_timestamp():
     lookup = limit_lookup([event(1, -1, 2), event(1, 5, 4)])
     assert lookup.at(T+timedelta(minutes=4.99))['value_double'] == 2

@@ -246,7 +246,27 @@ describe("integração ECharts sem alterar dados", () => {
     const upper = option.series.find((s: any) => s.id === `norm-upper:A-7`);
     expect(lower.yAxisIndex).toBe(0);
     expect(upper.yAxisIndex).toBe(0);
+    expect(lower.lineStyle.type).toBe("solid");
+    expect(upper.lineStyle.type).toBe("solid");
+    expect(lower.step).toBe("end");
+    expect(lower.connectNulls).toBe(false);
     expect(maxYAxisIndex(option)).toBeLessThan(yAxisLen(option));
+  });
+
+  it("desenha limite em degraus sólidos, preserva null e não cria valores negativos", () => {
+    const normLimitSeries: NormLimitSeries[] = [{
+      seriesInstanceId: "A-7", tagName: "TAG_NORM", yAxisIndex: 0,
+      lowerColor: "#d32f2f", upperColor: "#d32f2f", lineStyle: "dashed", width: 2,
+      lowerPoints: [[1, 12], [2, 12], [3, null], [4, 14]], upperPoints: [],
+    }];
+    const option = buildTimeSeriesChartOption(props(chart(), undefined, normLimitSeries)) as any;
+    const lower = option.series.find((series: any) => series.id === "norm-lower:A-7");
+    expect(lower.lineStyle.type).toBe("solid");
+    expect(lower.step).toBe("end");
+    expect(lower.connectNulls).toBe(false);
+    expect(lower.data).toEqual([[1, 12], [2, 12], [3, null], [4, 14]]);
+    expect(lower.data.filter((point: [number, number | null]) => point[1] !== null)
+      .every((point: [number, number | null]) => point[1]! >= 0)).toBe(true);
   });
 
   it("limite inferior ausente não remove a variável principal", () => {
@@ -631,6 +651,7 @@ describe("integração ECharts sem alterar dados", () => {
   it("tooltip possui pointer-events none, confine e ponteiro temporal tipo line", () => {
     const option = buildTimeSeriesChartOption(props(chart())) as any;
     expect(option.tooltip.trigger).toBe("axis");
+    expect(option.tooltip.triggerOn).toBe("none");
     expect(option.tooltip.confine).toBe(true);
     expect(option.tooltip.extraCssText).toContain("pointer-events: none");
     expect(option.tooltip.axisPointer.type).toBe("line");
@@ -821,7 +842,7 @@ describe("painel local", () => {
   });
 
   describe("cursor interativo arrastável (pinned cursor)", () => {
-    it("renderiza markLine vertical com timestamp e desativa pan de arrasto no dataZoom", () => {
+    it("renderiza markLine vertical e bloqueia qualquer efeito da roda no gráfico", () => {
       const cursorTs = 1725418751000; // 04/09/2026 02:59:11
       const option = buildTimeSeriesChartOption({
         ...props(chart()),
@@ -829,13 +850,15 @@ describe("painel local", () => {
         onClearCursor: vi.fn(),
       }) as any;
 
-      // dataZoom inside não deve mover no mousemove para permitir arrasto do cursor
+      // A roda e o movimento do mouse não alteram o viewport do gráfico.
       expect(option.dataZoom[0].type).toBe("inside");
       expect(option.dataZoom[0].moveOnMouseMove).toBe(false);
-      expect(option.dataZoom[0].zoomOnMouseWheel).toBe(true);
+      expect(option.dataZoom[0].moveOnMouseWheel).toBe(false);
+      expect(option.dataZoom[0].zoomOnMouseWheel).toBe(false);
 
       // tooltip mantém conteúdo ativo quando cursor está fixado
       expect(option.tooltip.alwaysShowContent).toBe(true);
+      expect(option.tooltip.triggerOn).toBe("none");
 
       // botão myClearCursor adicionado na toolbox
       expect(option.toolbox.feature.myClearCursor).toBeDefined();
@@ -876,6 +899,8 @@ describe("painel local", () => {
       }) as any;
 
       expect(option.dataZoom[0].moveOnMouseMove).toBe(false);
+      expect(option.dataZoom[0].moveOnMouseWheel).toBe(false);
+      expect(option.dataZoom[0].zoomOnMouseWheel).toBe(false);
       expect(option.tooltip.alwaysShowContent).toBe(true);
       expect(option.toolbox.feature.myClearCursor).toBeDefined();
       expect(option.series[0].markLine).toBeDefined();
