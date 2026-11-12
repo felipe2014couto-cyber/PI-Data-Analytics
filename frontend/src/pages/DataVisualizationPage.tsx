@@ -41,12 +41,11 @@ import { BoxPlotChart } from "../components/BoxPlotChart";
 import { ScatterPlotChart } from "../components/ScatterPlotChart";
 import { LatestValuesBarChart } from "../components/LatestValuesBarChart";
 import { SingleValueCards } from "../components/SingleValueCards";
-import { MetricConfigurationPanel } from "../components/MetricConfigurationPanel";
-import { MetricResults } from "../components/MetricResults";
 import { VisualRulesPanel, type VisualSeriesOption } from "../components/VisualRulesPanel";
 import { VisualConfigurationsPanel } from "../components/VisualConfigurationsPanel";
 import { PageHeader } from "../components/PageHeader";
 import { AdvancedFiltersPanel, isFixedAnalysisTag, stripRetiredNamedFilterRules } from "../components/AdvancedFiltersPanel";
+import { CyclicFiltersModal, type CyclicLimitVariableOption } from "../components/CyclicFiltersModal";
 import { applyLineAssignments, buildChartDataGroups, resolveVisualization } from "../utils/chartData";
 import { downloadTimeSeriesCsv, buildCsvFilename, buildTimeSeriesCsv, downloadBlob } from "../utils/csv";
 import { applyDataFilters } from "../utils/dataFilters";
@@ -57,6 +56,7 @@ import { assignmentIdentity } from "../utils/seriesAssignments";
 import { buildTagOption, type TagOption } from "../components/TagMultiSelect";
 import {
   APPLICATION_TIMEZONE,
+  formatDateTimeLocal,
   formatResolvedTimePeriod,
   resolveTimePeriod,
   type ResolvedTimePeriod,
@@ -71,10 +71,10 @@ import {
   validateAssignments,
   type AssignmentTag,
 } from "../utils/seriesAssignments";
-import { calculateMetricResults } from "../utils/analysisMetrics";
+import { calculateMetricResults, createMetricConfiguration } from "../utils/analysisMetrics";
 import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument, type PersistablePageState } from "../utils/visualConfiguration";
 import { applyTimeAnalysisRule } from "../utils/timeAnalysisRule";
-import { assignProductionUnitAxes, buildProductionUnitTimeSeries, isProductionUnitRule } from "../utils/productionUnitChart";
+import { assignProductionUnitAxes, buildProductionUnitTimeSeries, isLegacyProductionUnitRule, isProductionUnitRule } from "../utils/productionUnitChart";
 import { resolveProductionUnitScope } from "../utils/productionUnitScope";
 import { normLimitErrorMessage, buildNormLimitSeries, type NormLimitSeries } from "../utils/normLimitSeries";
 import { effectiveNormLimitEnd } from "../utils/effectiveNormLimitEnd";
@@ -149,6 +149,7 @@ function intervalToSeconds(value: string): number {
 interface QueryState {
   timeSeries: TimeSeries | null;
   unitAnalysis?: ProductionUnitAnalysisResponse;
+  unitTimeSeriesPoints?: TimeSeries | null;
   unitFiltersActive?: boolean;
   loading: boolean;
   errorMessage: string | null;
@@ -164,6 +165,7 @@ interface QueryState {
 interface ZoomDatasetSnapshot {
   timeSeries: TimeSeries;
   unitAnalysis?: ProductionUnitAnalysisResponse;
+  unitTimeSeriesPoints?: TimeSeries | null;
 }
 
 interface HistoricalErrorDetails {
@@ -348,6 +350,29 @@ export function DataVisualizationPage() {
   const normLimitInFlightRef = useRef<Map<string, Promise<PiTagNormLimitsResponse>>>(new Map());
   const normLimitRequestControllersRef = useRef<Map<string, AbortController>>(new Map());
   const activeNormContextKeyRef = useRef<string>("");
+  const [showCyclicFiltersModal, setShowCyclicFiltersModal] = useState(false);
+  const [cyclicLimitsEnabled, setCyclicLimitsEnabled] = useState(false);
+  const [cyclicLimitSelectedSeries, setCyclicLimitSelectedSeries] = useState<Set<string>>(new Set());
+  const tagSelectRef = useRef<HTMLDivElement>(null);
+  const [lastQueriedState, setLastQueriedState] = useState<{
+    equipmentId: number | null;
+    equipmentTitle: string;
+    sectionId: number | null;
+    sectionTitle?: string;
+    variableTypeId: number | null;
+    analysisModel: AnalysisModel;
+    timePeriod: TimePeriod;
+    selectedTagIds: number[];
+    ignoreBadQuality: boolean;
+    timeAnalysisRule: TimeAnalysisRule;
+    mode: TimeSeriesMode;
+    interval: string;
+    resolutionMode: string;
+    filtersEnabled: boolean;
+    filterConfiguration: DataFilterConfiguration;
+    dynamicFilters: Record<number, DynamicAnalysisFilter>;
+    comparison: ComparisonState;
+  } | null>(null);
 
   const [equipments, setEquipments] = useState<Equipment[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
@@ -745,21 +770,31 @@ export function DataVisualizationPage() {
   }, [filters.timePeriod]);
 
   const selectedAssignmentTags = useMemo<AssignmentTag[]>(() => {
+    const tagsById = new Map(tags.map((tag) => [tag.id, tag]));
+    const resolveUnit = (tagId: number, seriesUnit?: string | null) => {
+      const tag = tagsById.get(tagId);
+      return (
+        seriesUnit?.trim() ||
+        tag?.engineering_unit?.trim() ||
+        (tag ? variableTypeMap.get(tag.variable_type_id)?.default_unit?.trim() : null) ||
+        null
+      );
+    };
+
     const visibleSeries = query.timeSeries?.series.filter((series) => !analysisHiddenTagIds.has(series.tag_id));
     if (visibleSeries?.some((series) => series.series_instance_id)) {
       return visibleSeries.map((series) => ({
         tagId: series.tag_id,
         seriesInstanceId: series.series_instance_id ?? undefined,
-        unit: series.unit,
+        unit: resolveUnit(series.tag_id, series.unit),
         numeric: series.points.some((point) => typeof point.value === "number" && Number.isFinite(point.value)),
       }));
     }
-    const tagsById = new Map(tags.map((tag) => [tag.id, tag]));
     return selectedTagIds.flatMap((tagId) => {
       const tag = tagsById.get(tagId);
-      return tag ? [{ tagId, unit: tag.engineering_unit, numeric: tag.data_type === "NUMERIC" }] : [];
+      return tag ? [{ tagId, unit: resolveUnit(tagId), numeric: tag.data_type === "NUMERIC" }] : [];
     });
-  }, [analysisHiddenTagIds, selectedTagIds, tags, query.timeSeries]);
+  }, [analysisHiddenTagIds, selectedTagIds, tags, variableTypeMap, query.timeSeries]);
 
   useEffect(() => {
     if (!lookupsLoaded) return;
@@ -769,13 +804,31 @@ export function DataVisualizationPage() {
   const orderedTimeSeries = useMemo(() => {
     if (!query.timeSeries) return null;
     const source = query.unitAnalysis
-      ? buildProductionUnitTimeSeries(query.unitAnalysis, filters.timeAnalysisRule, selectedTagIds, zoomedRange)
+      ? buildProductionUnitTimeSeries(
+          query.unitAnalysis,
+          filters.timeAnalysisRule,
+          selectedTagIds,
+          zoomedRange,
+          query.unitTimeSeriesPoints,
+          metricConfiguration,
+          filters.ignoreBadQuality,
+        )
       : query.timeSeries;
     return {
       ...source,
       series: resolveSeriesOrder(source.series, seriesAssignments, (series) => series.tag_id, (series) => series.series_instance_id ?? undefined),
     };
-  }, [query.timeSeries, query.unitAnalysis, filters.timeAnalysisRule, selectedTagIds, zoomedRange, seriesAssignments]);
+  }, [
+    query.timeSeries,
+    query.unitAnalysis,
+    query.unitTimeSeriesPoints,
+    filters.timeAnalysisRule,
+    selectedTagIds,
+    zoomedRange,
+    seriesAssignments,
+    metricConfiguration,
+    filters.ignoreBadQuality,
+  ]);
 
   const filterResult = useMemo(() => {
     if (query.unitAnalysis || !filters.filtersEnabled || !orderedTimeSeries || !query.timeSeries) return null;
@@ -924,13 +977,20 @@ export function DataVisualizationPage() {
   );
 
   const metricSeriesOptions = useMemo(() => {
+    if (filters.analysisModel === "unit") {
+      const selected = new Set(selectedTagIds);
+      return tags.filter((tag) => selected.has(tag.id) && tag.data_type === "NUMERIC").map((tag) => ({
+        tag_id: tag.id, tag_name: tag.pi_tag_name, display_name: tag.display_name,
+        equipment: null, section: null, variable_type: null, unit: tag.engineering_unit, points: [],
+      }));
+    }
     if (filteredTimeSeries) return metricNumericSeries;
     const selected = new Set(selectedTagIds);
     return tags.filter((tag) => selected.has(tag.id) && tag.data_type === "NUMERIC").map((tag) => ({
       tag_id: tag.id, tag_name: tag.pi_tag_name, display_name: tag.display_name,
       equipment: null, section: null, variable_type: null, unit: tag.engineering_unit, points: [],
     }));
-  }, [filteredTimeSeries, metricNumericSeries, selectedTagIds, tags]);
+  }, [filters.analysisModel, filteredTimeSeries, metricNumericSeries, selectedTagIds, tags]);
   const metricResults = useMemo(
     () => calculateMetricResults(metricNumericSeries, metricConfiguration, false),
     [metricNumericSeries, metricConfiguration],
@@ -1029,7 +1089,7 @@ export function DataVisualizationPage() {
       };
     });
     const linkedOptions = (Object.entries(analysisTagIds) as Array<["width" | "um" | "thickness" | "steelType", number | null]>)
-      .filter((entry): entry is ["width" | "um" | "thickness", number] => entry[1] !== null)
+      .filter((entry): entry is ["width" | "um" | "thickness" | "steelType", number] => entry[1] !== null)
       .map(([analysisRole, tagId]) => {
         const piTag = tags.find((tag) => tag.id === tagId);
         const resultSeries = query.timeSeries?.series.find((series) => series.tag_id === tagId);
@@ -1054,6 +1114,10 @@ export function DataVisualizationPage() {
 
   const handleEquipmentChange = (id: number | null) => {
     setFilters((prev) => ({ ...prev, equipmentId: id, sectionId: null }));
+    setRawNormResponses({});
+    setNormLimitErrors({});
+    setNormLimitLoading({});
+    setCyclicLimitSelectedSeries(new Set());
   };
 
 
@@ -1136,6 +1200,10 @@ export function DataVisualizationPage() {
     setZoomQuery(INITIAL_ZOOM_QUERY);
     setZoomedRange(null);
 
+    if (analysisModel !== "cyclic") {
+      setShowCyclicFiltersModal(false);
+    }
+
     setFilters((prev) => ({
       ...prev,
       analysisModel,
@@ -1146,6 +1214,49 @@ export function DataVisualizationPage() {
           ? "MEDIA"
           : prev.timeAnalysisRule,
     }));
+  };
+
+  const handleTimeAnalysisRuleChange = (timeAnalysisRule: TimeAnalysisRule) => {
+    if ((timeAnalysisRule === "OOC") !== (filters.timeAnalysisRule === "OOC")) {
+      abortRef.current?.abort();
+      zoomAbortRef.current?.abort();
+      requestSeqRef.current += 1;
+      zoomRequestSeqRef.current += 1;
+      zoomInFlightRef.current = null;
+      zoomCacheRef.current.clear();
+      zoomRejectedRef.current.clear();
+      initialQueryRef.current = null;
+      setQuery(INITIAL_QUERY);
+      setZoomQuery(INITIAL_ZOOM_QUERY);
+      setZoomedRange(null);
+    }
+    setFilters((prev) => ({ ...prev, timeAnalysisRule }));
+    if (!isLegacyProductionUnitRule(timeAnalysisRule)) {
+      setMetricConfiguration((current) => {
+        const next = createMetricConfiguration(timeAnalysisRule as AnalysisMetric);
+        if ("lowerSpecification" in next && current && "lowerSpecification" in current) {
+          next.lowerSpecification = current.lowerSpecification;
+          next.upperSpecification = current.upperSpecification;
+        }
+        if ("lowerControl" in next && current && "lowerControl" in current) {
+          next.lowerControl = current.lowerControl;
+          next.upperControl = current.upperControl;
+        }
+        if ("actualTagId" in next && current && "actualTagId" in current) {
+          next.actualTagId = current.actualTagId;
+          next.referenceTagId = current.referenceTagId;
+          next.actualSeriesInstanceId = current.actualSeriesInstanceId;
+          next.referenceSeriesInstanceId = current.referenceSeriesInstanceId;
+        }
+        if ("actualTagId" in next && next.actualTagId === null && selectedTagIds.length >= 2) {
+          next.actualTagId = selectedTagIds[0];
+          next.referenceTagId = selectedTagIds[1];
+          next.actualSeriesInstanceId = `tag:${selectedTagIds[0]}`;
+          next.referenceSeriesInstanceId = `tag:${selectedTagIds[1]}`;
+        }
+        return next;
+      });
+    }
   };
 
   const handleClear = () => {
@@ -1164,6 +1275,7 @@ export function DataVisualizationPage() {
     setComparison(INITIAL_COMPARISON);
     setVisualRules(INITIAL_VISUAL_RULES);
     scatterInitializedRef.current = false;
+    setLastQueriedState(null);
     setQuery(INITIAL_QUERY);
     setZoomQuery(INITIAL_ZOOM_QUERY);
     setFilterValidationError(null);
@@ -1345,6 +1457,12 @@ export function DataVisualizationPage() {
     const error = computeValidationError();
     if (error) {
       setFilterValidationError(error);
+      if (!selectedTagIds.length) {
+        tagSelectRef.current?.focus?.();
+        if (typeof tagSelectRef.current?.scrollIntoView === "function") {
+          tagSelectRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      }
       return;
     }
     setFilterValidationError(null);
@@ -1398,21 +1516,46 @@ export function DataVisualizationPage() {
     });
 
     try {
-      const unitAnalysis = filters.analysisModel === "unit"
-        ? await productionUnitsApi.analyze({
-            section_id: filters.sectionId ?? undefined, equipment_id: filters.equipmentId!, tag_ids: selectedTagIds,
-            analysis_rule: filters.timeAnalysisRule === "OOC" ? "OOC" : undefined,
-            start_time: resolvedPeriod.startTime, end_time: resolvedPeriod.endTime,
-            filter_configuration: {
-              filtersEnabled: filters.filtersEnabled,
-              quality: filters.filterConfiguration.quality,
-              rules: filters.filtersEnabled ? filters.filterConfiguration.rules.filter((rule) => rule.enabled) : [],
-            },
-            analysis_filters: filters.filtersEnabled ? activeDynamicFilters : [],
-          }, controller.signal)
-        : undefined;
+      let unitAnalysis: ProductionUnitAnalysisResponse | undefined;
+      let unitPoints: TimeSeries | null = null;
+      if (filters.analysisModel === "unit") {
+        unitAnalysis = await productionUnitsApi.analyze({
+          section_id: filters.sectionId ?? undefined, equipment_id: filters.equipmentId!, tag_ids: selectedTagIds,
+          analysis_rule: filters.timeAnalysisRule === "OOC" ? "OOC" : undefined,
+          start_time: resolvedPeriod.startTime, end_time: resolvedPeriod.endTime,
+          filter_configuration: {
+            filtersEnabled: filters.filtersEnabled,
+            quality: filters.filterConfiguration.quality,
+            rules: filters.filtersEnabled ? filters.filterConfiguration.rules.filter((rule) => rule.enabled) : [],
+          },
+          analysis_filters: filters.filtersEnabled ? activeDynamicFilters : [],
+        }, controller.signal);
+
+        if (!isLegacyProductionUnitRule(filters.timeAnalysisRule)) {
+          const raw = await fetchTimeSeriesPeriod(resolvedPeriod, qid, controller.signal);
+          if (filters.filtersEnabled) {
+            const filtered = applyDataFilters(
+              raw,
+              filters.filterConfiguration.rules.filter((r) => r.enabled),
+              activeDynamicFilters,
+              filters.filterConfiguration.quality,
+            );
+            unitPoints = filtered.timeSeries;
+          } else {
+            unitPoints = raw;
+          }
+        }
+      }
       const result = unitAnalysis
-        ? buildProductionUnitTimeSeries(unitAnalysis, filters.timeAnalysisRule, selectedTagIds)
+        ? buildProductionUnitTimeSeries(
+            unitAnalysis,
+            filters.timeAnalysisRule,
+            selectedTagIds,
+            null,
+            unitPoints,
+            metricConfiguration,
+            filters.ignoreBadQuality,
+          )
         : await fetchTimeSeriesPeriod(resolvedPeriod, qid, controller.signal);
       if (mySeq !== requestSeqRef.current) return;
       queryIdRef.current = null;
@@ -1420,6 +1563,7 @@ export function DataVisualizationPage() {
       const initialQueryState: QueryState = {
         timeSeries: result,
         unitAnalysis,
+        unitTimeSeriesPoints: unitPoints,
         unitFiltersActive: unitAnalysis ? filters.filtersEnabled && (activeDynamicFilters.length > 0 || filters.filterConfiguration.rules.some((rule) => rule.enabled)) : undefined,
         loading: false,
         errorMessage: null,
@@ -1432,13 +1576,36 @@ export function DataVisualizationPage() {
         zoomContextKey: qid,
       };
       initialQueryRef.current = initialQueryState;
-      cacheZoomSnapshot(
-        zoomCacheRef.current,
-        zoomCacheKey(new Date(resolvedPeriod.startTime), new Date(resolvedPeriod.endTime)),
-        initialQueryState,
-        zoomCacheKey(new Date(resolvedPeriod.startTime), new Date(resolvedPeriod.endTime)),
-      );
+      const resolvedKey = zoomCacheKey(new Date(resolvedPeriod.startTime), new Date(resolvedPeriod.endTime));
+      cacheZoomSnapshot(zoomCacheRef.current, resolvedKey, initialQueryState, resolvedKey);
+      if (result.query_execution?.effective_end || result.end_time) {
+        const effEnd = result.query_execution?.effective_end ? new Date(result.query_execution.effective_end) : new Date(result.end_time);
+        const effStart = result.query_execution?.effective_start ? new Date(result.query_execution.effective_start) : new Date(result.start_time);
+        const effectiveKey = zoomCacheKey(effStart, effEnd);
+        if (effectiveKey !== resolvedKey) {
+          cacheZoomSnapshot(zoomCacheRef.current, effectiveKey, initialQueryState, effectiveKey);
+        }
+      }
       setQuery(initialQueryState);
+      setLastQueriedState({
+        equipmentId: filters.equipmentId,
+        equipmentTitle: selectedEquipment?.code ?? "Máquina",
+        sectionId: filters.sectionId,
+        sectionTitle: filters.sectionId ? (sectionMap.get(filters.sectionId)?.name ?? `Seção ${filters.sectionId}`) : undefined,
+        variableTypeId: filters.variableTypeId,
+        analysisModel: filters.analysisModel,
+        timePeriod: JSON.parse(JSON.stringify(filters.timePeriod)),
+        selectedTagIds: [...selectedTagIds],
+        ignoreBadQuality: filters.ignoreBadQuality,
+        timeAnalysisRule: filters.timeAnalysisRule,
+        mode: filters.mode,
+        interval: filters.interval,
+        resolutionMode: filters.resolutionMode,
+        filtersEnabled: filters.filtersEnabled,
+        filterConfiguration: JSON.parse(JSON.stringify(filters.filterConfiguration)),
+        dynamicFilters: JSON.parse(JSON.stringify(dynamicFilters)),
+        comparison: JSON.parse(JSON.stringify(comparison)),
+      });
     } catch (err) {
       if (mySeq !== requestSeqRef.current) return;
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -1506,7 +1673,14 @@ export function DataVisualizationPage() {
         new Date(initial.resolvedPeriod.startTime),
         new Date(initial.resolvedPeriod.endTime),
       );
-      setZoomedRange(targetKey === baseKey ? null : { start: effectiveStart, end: effectiveEnd });
+      const effectiveBaseKey = initial.timeSeries?.query_execution?.effective_end
+        ? zoomCacheKey(
+            new Date(initial.timeSeries.query_execution.effective_start ?? initial.resolvedPeriod.startTime),
+            new Date(initial.timeSeries.query_execution.effective_end),
+          )
+        : baseKey;
+      const isBase = targetKey === baseKey || targetKey === effectiveBaseKey;
+      setZoomedRange(isBase ? null : { start: effectiveStart, end: effectiveEnd });
       setQuery((current) => ({
         ...current,
         timeSeries: snapshot.timeSeries,
@@ -1713,47 +1887,312 @@ export function DataVisualizationPage() {
     ? equipmentMap.get(filters.equipmentId) ?? null
     : null;
 
+  const isResultOutdated = useMemo(() => {
+    if (!lastQueriedState || !query.timeSeries) return false;
+    if (filters.equipmentId !== lastQueriedState.equipmentId) return true;
+    if (filters.sectionId !== lastQueriedState.sectionId) return true;
+    if (filters.analysisModel !== lastQueriedState.analysisModel) return true;
+    if (JSON.stringify(filters.timePeriod) !== JSON.stringify(lastQueriedState.timePeriod)) return true;
+    const currentTags = [...selectedTagIds].sort((a, b) => a - b);
+    const prevTags = [...lastQueriedState.selectedTagIds].sort((a, b) => a - b);
+    if (currentTags.length !== prevTags.length || currentTags.some((id, idx) => id !== prevTags[idx])) return true;
+    if (filters.ignoreBadQuality !== lastQueriedState.ignoreBadQuality) return true;
+    if (filters.timeAnalysisRule !== lastQueriedState.timeAnalysisRule) return true;
+    if (filters.mode !== lastQueriedState.mode) return true;
+    if (filters.interval !== lastQueriedState.interval) return true;
+    if (filters.resolutionMode !== lastQueriedState.resolutionMode) return true;
+    if (filters.filtersEnabled !== lastQueriedState.filtersEnabled) return true;
+    if (JSON.stringify(filters.filterConfiguration) !== JSON.stringify(lastQueriedState.filterConfiguration)) return true;
+    if (JSON.stringify(dynamicFilters) !== JSON.stringify(lastQueriedState.dynamicFilters)) return true;
+    if (JSON.stringify(comparison) !== JSON.stringify(lastQueriedState.comparison)) return true;
+    return false;
+  }, [
+    filters.equipmentId,
+    filters.sectionId,
+    filters.analysisModel,
+    filters.timePeriod,
+    selectedTagIds,
+    filters.ignoreBadQuality,
+    filters.timeAnalysisRule,
+    filters.mode,
+    filters.interval,
+    filters.resolutionMode,
+    filters.filtersEnabled,
+    filters.filterConfiguration,
+    dynamicFilters,
+    comparison,
+    lastQueriedState,
+    Boolean(query.timeSeries),
+  ]);
+
+  const previousQueryContext = useMemo(() => {
+    if (!lastQueriedState) return "";
+    const parts: string[] = [lastQueriedState.equipmentTitle];
+    if (lastQueriedState.sectionTitle) {
+      parts.push(lastQueriedState.sectionTitle);
+    }
+    parts.push(lastQueriedState.analysisModel === "unit" ? "Base Unidade" : "Geral");
+    const count = lastQueriedState.selectedTagIds.length;
+    if (count > 0) {
+      parts.push(`${count} ${count === 1 ? "tag" : "tags"}`);
+    }
+    return parts.join(" · ");
+  }, [lastQueriedState]);
+
   const piConfigured = (selectedTagIds.length > 0 && queryTagIds.every((id) => id < 0)) || piHealth?.status !== "not_configured";
 
   const durationMs =
     query.finishedAt && query.startedAt ? query.finishedAt - query.startedAt : null;
 
   const resolvedForResult = query.resolvedPeriod;
-  const resolvedLabels = resolvedForResult
-    ? formatResolvedTimePeriod(resolvedForResult).split(" até ")
-    : ["—", "—"];
-  const baseStart = resolvedForResult ? new Date(resolvedForResult.startTime) : new Date(0);
-  const baseEnd = resolvedForResult ? new Date(resolvedForResult.endTime) : new Date(0);
+
+  const initialBase = initialQueryRef.current ?? query;
+  const initialExecution = initialBase.timeSeries?.query_execution ?? query.timeSeries?.query_execution;
+
+  const isDifferentInstant = (a?: string | null, b?: string | null): boolean => {
+    if (!a || !b) return false;
+    const tA = new Date(a).getTime();
+    const tB = new Date(b).getTime();
+    if (Number.isNaN(tA) || Number.isNaN(tB)) return false;
+    return tA !== tB;
+  };
+
+  const requestedEndIso = initialExecution?.requested_end ?? resolvedForResult?.endTime;
+  const effectiveEndIso = initialExecution?.effective_end ?? (initialExecution?.requested_end ? initialBase.timeSeries?.end_time : undefined);
+  const requestedStartIso = initialExecution?.requested_start ?? resolvedForResult?.startTime;
+  const effectiveStartIso = initialExecution?.effective_start ?? (initialExecution?.requested_start ? initialBase.timeSeries?.start_time : undefined);
+
+  const isPeriodAdjusted = Boolean(
+    (initialExecution?.requested_end && initialExecution?.effective_end && isDifferentInstant(initialExecution.requested_end, initialExecution.effective_end)) ||
+    (initialExecution?.requested_start && initialExecution?.effective_start && isDifferentInstant(initialExecution.requested_start, initialExecution.effective_start)) ||
+    (initialExecution?.data_available_until && initialBase.timeSeries?.end_time && isDifferentInstant(resolvedForResult?.endTime, initialBase.timeSeries.end_time))
+  );
+
+  const effectiveStartDate: Date | null = useMemo(() => {
+    if (effectiveStartIso && isPeriodAdjusted) {
+      return new Date(effectiveStartIso);
+    }
+    if (resolvedForResult) {
+      return new Date(resolvedForResult.startTime);
+    }
+    if (initialBase.timeSeries?.start_time) {
+      return new Date(initialBase.timeSeries.start_time);
+    }
+    return null;
+  }, [effectiveStartIso, isPeriodAdjusted, resolvedForResult, initialBase.timeSeries]);
+
+  const effectiveEndDate: Date | null = useMemo(() => {
+    if (effectiveEndIso && isPeriodAdjusted) {
+      return new Date(effectiveEndIso);
+    }
+    if (resolvedForResult) {
+      return new Date(resolvedForResult.endTime);
+    }
+    if (initialBase.timeSeries?.end_time) {
+      return new Date(initialBase.timeSeries.end_time);
+    }
+    return null;
+  }, [effectiveEndIso, isPeriodAdjusted, resolvedForResult, initialBase.timeSeries]);
+
+  const effectiveStartLocal = useMemo(() => {
+    return effectiveStartDate ? formatDateTimeLocal(effectiveStartDate, APPLICATION_TIMEZONE) : "—";
+  }, [effectiveStartDate]);
+
+  const effectiveEndLocal = useMemo(() => {
+    return effectiveEndDate ? formatDateTimeLocal(effectiveEndDate, APPLICATION_TIMEZONE) : "—";
+  }, [effectiveEndDate]);
+
+  const requestedStartLocal = useMemo(() => {
+    if (requestedStartIso) {
+      return formatDateTimeLocal(requestedStartIso, APPLICATION_TIMEZONE);
+    }
+    return resolvedForResult ? formatDateTimeLocal(resolvedForResult.startTime, APPLICATION_TIMEZONE) : "—";
+  }, [requestedStartIso, resolvedForResult]);
+
+  const requestedEndLocal = useMemo(() => {
+    if (requestedEndIso) {
+      return formatDateTimeLocal(requestedEndIso, APPLICATION_TIMEZONE);
+    }
+    return resolvedForResult ? formatDateTimeLocal(resolvedForResult.endTime, APPLICATION_TIMEZONE) : "—";
+  }, [requestedEndIso, resolvedForResult]);
+
+  const baseStart = effectiveStartDate ?? (resolvedForResult ? new Date(resolvedForResult.startTime) : new Date(0));
+  const baseEnd = effectiveEndDate ?? (resolvedForResult ? new Date(resolvedForResult.endTime) : new Date(0));
+
   const chartStart = zoomedRange ? zoomedRange.start : baseStart;
   const chartEnd = zoomedRange ? zoomedRange.end : baseEnd;
   const zoomedLabels = zoomedRange
     ? [
-        zoomedRange.start.toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE }),
-        zoomedRange.end.toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE }),
+        formatDateTimeLocal(zoomedRange.start, APPLICATION_TIMEZONE),
+        formatDateTimeLocal(zoomedRange.end, APPLICATION_TIMEZONE),
       ]
     : null;
 
   const selectedSeriesInstanceId = visualRules.selectedSeriesInstanceId;
   const selectedPiTagForNorm = selectedSeriesInstanceId ? seriesToPiTag.get(selectedSeriesInstanceId) ?? null : null;
 
+  const handleFiltersEnabledChange = useCallback((enabled: boolean) => {
+    setFilters((prev) => ({ ...prev, filtersEnabled: enabled }));
+    if (enabled && filters.analysisModel === "cyclic") {
+      setShowCyclicFiltersModal(true);
+    }
+  }, [filters.analysisModel]);
+
+  const cyclicLimitVariables = useMemo<CyclicLimitVariableOption[]>(() => {
+    if (filters.analysisModel !== "cyclic") return [];
+
+    if (numericChart && numericChart.series.length > 0) {
+      return numericChart.series.map((s) => {
+        const instanceId = s.seriesInstanceId ?? `tag:${s.tagId}`;
+        const piTag = seriesToPiTag.get(instanceId) ?? piTagById.get(s.tagId);
+        const axisIndex = s.yAxisIndex ?? 0;
+        const axisUnit = numericChart.yAxisLabels[axisIndex] ?? s.unit ?? "";
+        const axisText = `Eixo ${axisIndex + 1}${axisUnit ? ` (${axisUnit})` : ""}`;
+        const lowerLimitTag = piTag?.lower_limit_tag?.trim() || null;
+        const upperLimitTag = piTag?.upper_limit_tag?.trim() || null;
+        const hasLimits = Boolean(lowerLimitTag || upperLimitTag);
+        return {
+          seriesInstanceId: instanceId,
+          tagId: s.tagId,
+          displayName: s.displayName || piTag?.display_name || `Tag ${s.tagId}`,
+          unit: s.unit || piTag?.engineering_unit || undefined,
+          axisIndex,
+          axisText,
+          lowerLimitTag,
+          upperLimitTag,
+          hasLimits,
+        };
+      });
+    }
+
+    const tagsById = new Map(tags.map((t) => [t.id, t]));
+    const distinctUnits: string[] = [];
+    return selectedTagIds.map((tagId) => {
+      const tag = tagsById.get(tagId);
+      const unit = tag?.engineering_unit?.trim() || (tag ? variableTypeMap.get(tag.variable_type_id)?.default_unit?.trim() : "") || "";
+      let axisIndex = 0;
+      if (unit) {
+        let uIdx = distinctUnits.indexOf(unit);
+        if (uIdx === -1) {
+          distinctUnits.push(unit);
+          uIdx = distinctUnits.length - 1;
+        }
+        axisIndex = uIdx;
+      }
+      const axisText = `Eixo ${axisIndex + 1}${unit ? ` (${unit})` : ""}`;
+      const lowerLimitTag = tag?.lower_limit_tag?.trim() || null;
+      const upperLimitTag = tag?.upper_limit_tag?.trim() || null;
+      const hasLimits = Boolean(lowerLimitTag || upperLimitTag);
+      return {
+        seriesInstanceId: `tag:${tagId}`,
+        tagId,
+        displayName: tag?.display_name || `Tag ${tagId}`,
+        unit: unit || undefined,
+        axisIndex,
+        axisText,
+        lowerLimitTag,
+        upperLimitTag,
+        hasLimits,
+      };
+    });
+  }, [filters.analysisModel, numericChart, seriesToPiTag, piTagById, tags, selectedTagIds, variableTypeMap]);
+
+  const handleToggleCyclicLimitSeries = useCallback((instanceId: string, enabled: boolean) => {
+    setCyclicLimitSelectedSeries((prev) => {
+      const next = new Set(prev);
+      if (enabled) {
+        next.add(instanceId);
+      } else {
+        next.delete(instanceId);
+      }
+      return next;
+    });
+    if (enabled) {
+      setVisualRules((current) => {
+        const cfg = current.bySeries[instanceId] ?? EMPTY_VISUAL_CONFIGURATION(instanceId);
+        if (cfg.normLimit?.enabled) return current;
+        return {
+          ...current,
+          bySeries: {
+            ...current.bySeries,
+            [instanceId]: { ...cfg, normLimit: defaultNormLimitConfig() },
+          },
+        };
+      });
+    }
+  }, []);
+
+  const handleSelectAllCyclicLimits = useCallback(() => {
+    const allWithLimits = cyclicLimitVariables
+      .filter((v) => v.hasLimits)
+      .map((v) => v.seriesInstanceId);
+    setCyclicLimitSelectedSeries(new Set(allWithLimits));
+    for (const id of allWithLimits) {
+      setVisualRules((current) => {
+        const cfg = current.bySeries[id] ?? EMPTY_VISUAL_CONFIGURATION(id);
+        if (cfg.normLimit?.enabled) return current;
+        return {
+          ...current,
+          bySeries: {
+            ...current.bySeries,
+            [id]: { ...cfg, normLimit: defaultNormLimitConfig() },
+          },
+        };
+      });
+    }
+  }, [cyclicLimitVariables]);
+
+  const handleClearAllCyclicLimits = useCallback(() => {
+    setCyclicLimitSelectedSeries(new Set());
+  }, []);
+
+  const cyclicNormEnabledList = useMemo(() => {
+    if (filters.analysisModel !== "cyclic" || !filters.filtersEnabled || !cyclicLimitsEnabled) {
+      return [];
+    }
+    const list: string[] = [];
+    for (const instanceId of cyclicLimitSelectedSeries) {
+      if (seriesToPiTag.has(instanceId)) {
+        list.push(instanceId);
+      }
+    }
+    return list.sort();
+  }, [filters.analysisModel, filters.filtersEnabled, cyclicLimitsEnabled, cyclicLimitSelectedSeries, seriesToPiTag]);
+
   const normEnabledSeriesKey = useMemo(() => {
     if (!visualRules.enabled) return "";
     const list: string[] = [];
     for (const [instanceId, cfg] of Object.entries(visualRules.bySeries)) {
-      if (cfg.normLimit?.enabled) list.push(instanceId);
+      if (cfg.normLimit?.enabled && seriesToPiTag.has(instanceId)) list.push(instanceId);
     }
     return list.sort().join(",");
-  }, [visualRules.enabled, visualRules.bySeries]);
+  }, [visualRules.enabled, visualRules.bySeries, seriesToPiTag]);
 
-  // Conjunto final de séries com limites de norma ativos. Reflete estritamente
-  // o que o usuário habilitou manualmente no painel visual. OOC por UM usa
-  // limites históricos no cálculo, sem linhas manuais no eixo percentual.
-  const effectiveNormEnabledKey = filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC" ? "" : normEnabledSeriesKey;
+  // Conjunto final de séries com limites de norma ativos.
+  const effectiveNormEnabledKey = useMemo(() => {
+    if (filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC") {
+      return "";
+    }
+    if (filters.analysisModel === "cyclic") {
+      const set = new Set<string>();
+      if (filters.filtersEnabled && cyclicLimitsEnabled) {
+        for (const id of cyclicNormEnabledList) set.add(id);
+      }
+      if (normEnabledSeriesKey) {
+        for (const id of normEnabledSeriesKey.split(",").filter(Boolean)) set.add(id);
+      }
+      return Array.from(set).sort().join(",");
+    }
+    return normEnabledSeriesKey;
+  }, [filters.analysisModel, filters.timeAnalysisRule, cyclicNormEnabledList, filters.filtersEnabled, cyclicLimitsEnabled, normEnabledSeriesKey]);
 
   const effectiveNormEnabledSeries = useMemo(() => {
     if ((filters.analysisModel === "unit" && filters.timeAnalysisRule === "OOC") || !effectiveNormEnabledKey) return new Set<string>();
-    return new Set<string>(effectiveNormEnabledKey.split(","));
-  }, [effectiveNormEnabledKey, filters.analysisModel, filters.timeAnalysisRule]);
+    const valid = effectiveNormEnabledKey
+      .split(",")
+      .filter((id) => seriesToPiTag.has(id) && numericChart?.series.some((s) => (s.seriesInstanceId ?? `tag:${s.tagId}`) === id));
+    return new Set<string>(valid);
+  }, [effectiveNormEnabledKey, filters.analysisModel, filters.timeAnalysisRule, seriesToPiTag, numericChart]);
 
   // Constrói a série da UM a partir do chartTimeSeries original somente quando
   // a tag da UM estiver explicitamente marcada/selecionada pelo usuário em selectedTagIds.
@@ -2035,7 +2474,8 @@ export function DataVisualizationPage() {
       const targetSeries = numericChart?.series.find(
         (s) => (s.seriesInstanceId ?? `tag:${s.tagId}`) === instanceId,
       );
-      const yAxisIndex = targetSeries?.yAxisIndex ?? 0;
+      if (!targetSeries) continue;
+      const yAxisIndex = targetSeries.yAxisIndex ?? 0;
       out.push(
         buildNormLimitSeries({
           seriesInstanceId: instanceId,
@@ -2112,6 +2552,7 @@ export function DataVisualizationPage() {
   }, [allPimsTagLimits]);
 
   const equipmentTitle = selectedEquipment?.code ?? "Máquina";
+  const chartEquipmentTitle = isResultOutdated && lastQueriedState ? lastQueriedState.equipmentTitle : equipmentTitle;
 
   const handleCsvComplete = useCallback(async () => {
     if (!query.resolvedPeriod || selectedTagIds.length === 0) return;
@@ -2188,7 +2629,7 @@ export function DataVisualizationPage() {
               id="filters-enabled-switch"
               label="Filtros"
               checked={filters.filtersEnabled}
-              onChange={(event) => setFilters((prev) => ({ ...prev, filtersEnabled: event.target.checked }))}
+              onChange={(event) => handleFiltersEnabledChange(event.target.checked)}
               className="small mb-0"
               data-testid="filters-enabled-switch"
             />
@@ -2266,26 +2707,25 @@ export function DataVisualizationPage() {
                 timePeriod={filters.timePeriod}
                 onTimePeriodChange={(timePeriod) => setFilters((prev) => ({ ...prev, timePeriod }))}
                 timePeriodError={periodPreview.error}
-                timePeriodSummary={periodPreview.resolved ? formatResolvedTimePeriod(periodPreview.resolved) : null}
+                timePeriodSummary={
+                  query.resolvedPeriod && !isResultOutdated
+                    ? formatResolvedTimePeriod(query.resolvedPeriod)
+                    : periodPreview.resolved
+                    ? formatResolvedTimePeriod(periodPreview.resolved)
+                    : null
+                }
+                tagSelectRef={tagSelectRef}
+                filtersEnabled={filters.filtersEnabled}
+                onFiltersEnabledChange={handleFiltersEnabledChange}
+                onOpenCyclicFiltersModal={() => setShowCyclicFiltersModal(true)}
+                isCyclicModalOpen={showCyclicFiltersModal}
                 analysisModel={filters.analysisModel}
                 onAnalysisModelChange={handleAnalysisModelChange}
                 timeAnalysisRule={filters.timeAnalysisRule}
-                onTimeAnalysisRuleChange={(timeAnalysisRule) => {
-                  if ((timeAnalysisRule === "OOC") !== (filters.timeAnalysisRule === "OOC")) {
-                    abortRef.current?.abort();
-                    zoomAbortRef.current?.abort();
-                    requestSeqRef.current += 1;
-                    zoomRequestSeqRef.current += 1;
-                    zoomInFlightRef.current = null;
-                    zoomCacheRef.current.clear();
-                    zoomRejectedRef.current.clear();
-                    initialQueryRef.current = null;
-                    setQuery(INITIAL_QUERY);
-                    setZoomQuery(INITIAL_ZOOM_QUERY);
-                    setZoomedRange(null);
-                  }
-                  setFilters((prev) => ({ ...prev, timeAnalysisRule }));
-                }}
+                onTimeAnalysisRuleChange={handleTimeAnalysisRuleChange}
+                metricConfigurationState={metricConfiguration}
+                onMetricConfigurationChange={setMetricConfiguration}
+                metricSeriesOptions={metricSeriesOptions}
                 mode={filters.mode}
                 onModeChange={(mode) => setFilters((prev) => ({ ...prev, mode }))}
                 interval={filters.interval}
@@ -2346,12 +2786,11 @@ export function DataVisualizationPage() {
                   />
                 }
                 metricConfiguration={
-                  filters.analysisModel === "unit" ? <div className="small text-muted">As estatísticas por UM são apresentadas no gráfico. Para alterar os filtros, execute novamente a análise.</div> :
-                  <MetricConfigurationPanel
-                    configuration={metricConfiguration}
-                    series={metricSeriesOptions}
-                    onChange={setMetricConfiguration}
-                  />
+                  filters.analysisModel === "unit" ? (
+                    <div className="small text-muted">
+                      As estatísticas por UM são apresentadas no gráfico. Para alterar os filtros, execute novamente a análise.
+                    </div>
+                  ) : null
                 }
                 advancedFilters={
                   <AdvancedFiltersPanel
@@ -2401,10 +2840,17 @@ export function DataVisualizationPage() {
         <Col xs={12} lg={8} xl={9}>
           <Card className="piad-card mb-3">
             <Card.Body ref={chartContainerRef}>
-              {query.timeSeries?.query_execution?.data_available_until && query.timeSeries.query_execution.effective_end &&
-              query.timeSeries.query_execution.requested_end !== query.timeSeries.query_execution.effective_end ? (
+              {isResultOutdated && lastQueriedState ? (
+                <Alert variant="warning" data-testid="outdated-result-warning" className="py-2 mb-3">
+                  <div className="fw-semibold">Resultado da consulta anterior ({previousQueryContext})</div>
+                  <div>
+                    Os parâmetros foram alterados. Os dados e indicadores exibidos pertencem à consulta anterior. Clique em <strong>Consultar</strong> para atualizar a visualização.
+                  </div>
+                </Alert>
+              ) : null}
+              {query.timeSeries?.query_execution?.data_available_until && isPeriodAdjusted ? (
                 <Alert variant="info" data-testid="data-available-until">
-                  Dados disponíveis até: {new Date(query.timeSeries.query_execution.data_available_until).toLocaleString("pt-BR", { timeZone: APPLICATION_TIMEZONE })}
+                  O período solicitado foi ajustado até o limite dos dados disponíveis ({formatDateTimeLocal(query.timeSeries.query_execution.data_available_until, APPLICATION_TIMEZONE)}). Intervalo efetivo: {effectiveStartLocal} até {effectiveEndLocal}.
                 </Alert>
               ) : null}
               {zoomQuery.errorMessage && query.timeSeries ? (
@@ -2511,7 +2957,7 @@ export function DataVisualizationPage() {
                       ) : null}
                       <TimeSeriesChart
                         chart={numericChart}
-                        equipment={equipmentTitle}
+                        equipment={chartEquipmentTitle}
                         start={chartStart}
                         end={chartEnd}
                         baseStart={baseStart}
@@ -2605,7 +3051,7 @@ export function DataVisualizationPage() {
                       ) : null}
                       <TimeSeriesChart
                         chart={textualChart}
-                        equipment={equipmentTitle}
+                        equipment={chartEquipmentTitle}
                         start={chartStart}
                         end={chartEnd}
                         baseStart={baseStart}
@@ -2697,13 +3143,15 @@ export function DataVisualizationPage() {
               ) : null}
             </Card.Body>
           </Card>
-          {query.timeSeries && !query.unitAnalysis ? <MetricResults results={metricResults} series={metricNumericSeries} /> : null}
           {query.timeSeries ? (
             <div className="mb-3">
               <QuerySummary
                 chart={chart}
-                startLocal={resolvedLabels[0]}
-                endLocal={resolvedLabels[1]}
+                startLocal={effectiveStartLocal}
+                endLocal={effectiveEndLocal}
+                requestedStartLocal={requestedStartLocal}
+                requestedEndLocal={requestedEndLocal}
+                isAdjusted={isPeriodAdjusted}
                 zoomedStartLocal={zoomedLabels ? zoomedLabels[0] : undefined}
                 zoomedEndLocal={zoomedLabels ? zoomedLabels[1] : undefined}
                 durationMs={durationMs}
@@ -2737,6 +3185,30 @@ export function DataVisualizationPage() {
           ) : null}
         </Col>
       </Row>
+
+      <CyclicFiltersModal
+        show={showCyclicFiltersModal}
+        onClose={() => setShowCyclicFiltersModal(false)}
+        filterConfiguration={filters.filterConfiguration}
+        onFilterConfigurationChange={handleFilterConfigurationChange}
+        filterTagOptions={advancedFilterTagOptions}
+        filterSummary={filterResult?.summary ?? null}
+        ruleResults={filterResult?.ruleResults ?? []}
+        hasData={query.timeSeries !== null}
+        analysisTags={extraAnalysisTags}
+        conflictedVariables={conflictedVariables}
+        dynamicFilters={dynamicFilters}
+        onDynamicFilterChange={setDynamicFilters}
+        limitsEnabled={cyclicLimitsEnabled}
+        onLimitsEnabledChange={setCyclicLimitsEnabled}
+        selectedLimitSeriesIds={cyclicLimitSelectedSeries}
+        onToggleLimitSeries={handleToggleCyclicLimitSeries}
+        onSelectAllLimits={handleSelectAllCyclicLimits}
+        onClearAllLimits={handleClearAllCyclicLimits}
+        limitVariables={cyclicLimitVariables}
+        onSubmit={handleSubmit}
+        queryLoading={query.loading}
+      />
     </div>
   );
 }

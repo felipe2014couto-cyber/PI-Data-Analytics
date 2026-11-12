@@ -1310,7 +1310,7 @@ describe("Data visualization page", () => {
     expect(model.options[3].disabled).toBe(true);
     expect(model.options[4].disabled).toBe(true);
     expect(screen.getByLabelText("Máquina")).toBe(screen.getByTestId("equipment-select"));
-    expect(screen.getByLabelText(/Métrica de análise/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Métrica de análise/i)).not.toBeInTheDocument();
 
     // Base Cíclica é o estado inicial e oculta a regra de análise.
     expect(screen.queryByTestId("time-analysis-rule-select")).toBeNull();
@@ -1439,65 +1439,45 @@ describe("Data visualization page", () => {
     expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
   });
 
-  it("offers the neutral option and exactly twenty analysis metrics", async () => {
+  it("removes metrics display from Base Cíclica and provides them in Base Unidade", async () => {
     apiMock.listPiTags.mockResolvedValue(paginated([piTagFixture]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
     renderAt("/analises/visualizacao");
-    const select = await screen.findByTestId("analysis-metric") as HTMLSelectElement;
-    expect(select.options).toHaveLength(21);
-    expect(select.options[0]).toHaveTextContent("Nenhuma métrica");
-    expect(select.value).toBe("");
+    expect(screen.queryByTestId("analysis-metric")).not.toBeInTheDocument();
     expect(screen.queryByTestId("metric-results")).not.toBeInTheDocument();
+
+    const model = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
+    fireEvent.change(model, { target: { value: "unit" } });
+    const ruleSelect = (await screen.findByTestId("time-analysis-rule-select")) as HTMLSelectElement;
+    expect(ruleSelect).toBeInTheDocument();
+    expect(ruleSelect.options).toHaveLength(21);
+    expect(Array.from(ruleSelect.options).map((o) => o.value)).toEqual([
+      "MEDIA", "MAXIMO", "MIN", "OOC",
+      "count", "total", "standardDeviation",
+      "cp", "cpk", "pc", "ooc",
+      "meanError", "minimumError", "maximumError",
+      "meanAbsoluteError", "meanSquaredError", "rootMeanSquaredError",
+      "standardDeviationError", "cpkError", "oocMaeMaximum", "oocMaeMean",
+    ]);
   });
 
-  it("calculates cards from the last response without changing charts, CSV, summary or calling the API again", async () => {
+  it("shows accessible metric validation in Base Unidade when configuration is incomplete", async () => {
     const tag = { ...piTagFixture, validation_status: "VALID" as const };
     apiMock.listPiTags.mockResolvedValue(paginated([tag]));
     apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
-    apiMock.timeSeriesQuery.mockResolvedValue({
-      ...TIME_SERIES,
-      series: [{ ...TIME_SERIES.series[0], points: [
-        { timestamp: "2026-07-15T00:00:00Z", value: 2, good: true, questionable: false, substituted: false },
-        { timestamp: "2026-07-15T00:01:00Z", value: 100, good: false, questionable: false, substituted: false },
-        { timestamp: "2026-07-15T00:02:00Z", value: "600", good: false, questionable: false, substituted: false },
-      ] }],
-    });
     renderAt("/analises/visualizacao");
-    await submitFirstAvailableTag();
-    await screen.findByTestId("numeric-chart");
-    const summary = screen.getByTestId("query-summary").textContent;
-    fireEvent.change(screen.getByTestId("analysis-metric"), { target: { value: "mean" } });
-    expect(await screen.findByTestId("metric-results")).toBeInTheDocument();
-    expect(screen.getByTestId("metric-value")).toHaveTextContent("2");
-    // Bad quality points are pre-filtered by the filter pipeline; only 1 valid point remains
-    expect(screen.getByTestId("metric-result-card")).toHaveTextContent("Amostras/pares: 1 · Ignorados: 0");
-    expect(screen.getByTestId("numeric-chart")).toBeInTheDocument();
-    expect(screen.getByTestId("query-summary").textContent).toBe(summary);
-    expect(screen.getByTestId("download-csv")).not.toBeDisabled();
-    expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByTestId("ignore-bad-quality"));
-    expect(screen.getByTestId("metric-value")).toHaveTextContent("51");
-    expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows accessible metric validation without blocking the PI query", async () => {
-    const tag = { ...piTagFixture, validation_status: "VALID" as const };
-    apiMock.listPiTags.mockResolvedValue(paginated([tag]));
-    apiMock.piHealth.mockResolvedValue(connectedHealthFixture);
-    apiMock.timeSeriesQuery.mockResolvedValue(TIME_SERIES);
-    renderAt("/analises/visualizacao");
+    const model = (await screen.findByTestId("analysis-model")) as HTMLSelectElement;
+    fireEvent.change(model, { target: { value: "unit" } });
     const equipment = await screen.findByTestId("equipment-select");
     fireEvent.change(equipment, { target: { value: "1" } });
     const list = await screen.findByTestId("tag-multi-select");
     fireEvent.click(within(list).getByTestId("tag-option-1"));
-    fireEvent.change(screen.getByTestId("analysis-metric"), { target: { value: "cp" } });
+
+    const ruleSelect = screen.getByTestId("time-analysis-rule-select");
+    fireEvent.change(ruleSelect, { target: { value: "cp" } });
+
     expect(screen.getByTestId("metric-validation")).toHaveAttribute("role", "alert");
-    expect(screen.getByTestId("filters-submit")).not.toBeDisabled();
-    fireEvent.click(screen.getByTestId("filters-submit"));
-    await screen.findByTestId("numeric-chart");
-    expect(apiMock.timeSeriesQuery).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("metric-results")).toHaveTextContent("Informe LIE e LSE");
+    expect(screen.getByTestId("metric-validation")).toHaveTextContent("Informe LIE e LSE");
   });
 
   it("temporarily hides comparison and axis-choice controls", async () => {
@@ -1566,7 +1546,11 @@ describe("Data visualization page", () => {
     expect(ruleSelect.value).toBe("MEDIA");
 
     const optionValues = Array.from(ruleSelect.options).map((opt) => opt.value);
-    expect(optionValues).toEqual(["MEDIA", "MAXIMO", "MIN", "OOC"]);
+    expect(optionValues).toContain("MEDIA");
+    expect(optionValues).toContain("MAXIMO");
+    expect(optionValues).toContain("MIN");
+    expect(optionValues).toContain("OOC");
+    expect(optionValues).toHaveLength(21);
 
     // Alterar para MAXIMO sem disparar nova consulta
     fireEvent.change(ruleSelect, { target: { value: "MAXIMO" } });

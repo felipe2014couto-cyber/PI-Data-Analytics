@@ -158,6 +158,7 @@ export const apiMock = {
   validatePiTag: vi.fn(),
   validateBatchPiTags: vi.fn(),
   getDistinctValues: vi.fn().mockResolvedValue([]),
+  getNormLimits: vi.fn(),
   timeSeriesQuery: vi.fn(),
   productionUnitsAnalyze: vi.fn(),
   timeSeriesCompare: vi.fn(),
@@ -213,6 +214,7 @@ export function mockApiModule() {
       validate: apiMock.validatePiTag,
       validateBatch: apiMock.validateBatchPiTags,
       getDistinctValues: apiMock.getDistinctValues,
+      getNormLimits: apiMock.getNormLimits,
     },
     timeSeriesApi: {
       query: apiMock.timeSeriesQuery,

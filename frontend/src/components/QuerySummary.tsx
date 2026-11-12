@@ -7,6 +7,9 @@ interface QuerySummaryProps {
   chart: ChartBuildResult | null;
   startLocal: string;
   endLocal: string;
+  requestedStartLocal?: string;
+  requestedEndLocal?: string;
+  isAdjusted?: boolean;
   zoomedStartLocal?: string;
   zoomedEndLocal?: string;
   durationMs: number | null;
@@ -18,12 +21,36 @@ interface QuerySummaryProps {
   seriesMeta?: TimeSeriesSeries[];
 }
 
-function Metric({ label, value, testId }: { label: string; value: string; testId?: string }) {
+function Metric({
+  label,
+  value,
+  note,
+  badge,
+  testId,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  badge?: string;
+  testId?: string;
+}) {
   return (
     <Card className="piad-card h-100" data-testid={testId}>
       <Card.Body>
-        <div className="text-muted small">{label}</div>
+        <div className="d-flex justify-content-between align-items-center mb-1">
+          <div className="text-muted small">{label}</div>
+          {badge ? (
+            <span className="badge bg-info text-dark" style={{ fontSize: "0.68rem" }}>
+              {badge}
+            </span>
+          ) : null}
+        </div>
         <div className="fs-5 fw-semibold">{value}</div>
+        {note ? (
+          <div className="text-muted small mt-1" style={{ fontSize: "0.75rem" }} data-testid={testId ? `${testId}-note` : undefined}>
+            {note}
+          </div>
+        ) : null}
       </Card.Body>
     </Card>
   );
@@ -33,6 +60,9 @@ export function QuerySummary({
   chart,
   startLocal,
   endLocal,
+  requestedStartLocal,
+  requestedEndLocal,
+  isAdjusted,
   zoomedStartLocal,
   zoomedEndLocal,
   durationMs,
@@ -43,6 +73,12 @@ export function QuerySummary({
   queryExecution,
   seriesMeta,
 }: QuerySummaryProps) {
+  const periodAdjusted = Boolean(
+    isAdjusted ||
+      (requestedStartLocal &&
+        requestedEndLocal &&
+        (requestedStartLocal !== startLocal || requestedEndLocal !== endLocal))
+  );
   const totalSeries = chart?.totalSeries ?? seriesCount;
   const totalPoints = filterSummary?.receivedPoints ?? chart?.totalPoints ?? 0;
   const numericPoints = chart?.totalNumericPoints ?? 0;
@@ -110,7 +146,15 @@ export function QuerySummary({
           <Col xs={12} md={6}><Metric label="Estratégia" value={strategy} testId="metric-strategy" /></Col>
           <Col xs={6} md={3}><Metric label="Fonte" value="Agregados por UM sobre RECORDED" testId="metric-source" /></Col>
           <Col xs={6} md={3}><Metric label="Duração" value={duration} testId="metric-duration" /></Col>
-          <Col xs={12} md={6}><Metric label="Período" value={startLocal + " -> " + endLocal} testId="metric-period" /></Col>
+          <Col xs={12} md={6}>
+            <Metric
+              label="Período"
+              value={startLocal + " -> " + endLocal}
+              badge={periodAdjusted ? "Efetivo" : undefined}
+              note={periodAdjusted && requestedStartLocal && requestedEndLocal ? `Solicitado: ${requestedStartLocal} -> ${requestedEndLocal}` : undefined}
+              testId="metric-period"
+            />
+          </Col>
           {zoomedStartLocal && zoomedEndLocal ? <Col xs={12} md={6}><Metric label="Janela zoom" value={zoomedStartLocal + " -> " + zoomedEndLocal} testId="metric-zoomed-period" /></Col> : null}
         </Row>
         <div className="mt-2 p-2 border rounded bg-success bg-opacity-10 small" data-testid="unit-source-info">
@@ -141,8 +185,14 @@ export function QuerySummary({
         <Col xs={6} md={4} lg={2}>
           <Metric label="Nao numericos" value={String(nonNumericPoints)} testId="metric-nonnumeric" />
         </Col>
-        <Col xs={6} md={4} lg={2}>
-          <Metric label="Periodo" value={startLocal + " -> " + endLocal} testId="metric-period" />
+        <Col xs={6} md={4} lg={periodAdjusted ? 3 : 2}>
+          <Metric
+            label="Periodo"
+            value={startLocal + " -> " + endLocal}
+            badge={periodAdjusted ? "Efetivo" : undefined}
+            note={periodAdjusted && requestedStartLocal && requestedEndLocal ? `Solicitado: ${requestedStartLocal} -> ${requestedEndLocal}` : undefined}
+            testId="metric-period"
+          />
         </Col>
         {zoomedStartLocal && zoomedEndLocal ? (
           <Col xs={6} md={4} lg={2}>

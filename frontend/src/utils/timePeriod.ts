@@ -88,17 +88,54 @@ export function civilToUtc(civil: CivilDateTime): Date {
   return resolved;
 }
 
+export function normalizeDateTimeInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+
+  // 1. Brazilian format: DD/MM/YYYY[ ,T]HH:mm(:ss)?
+  const brMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ ,T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(trimmed);
+  if (brMatch) {
+    const day = brMatch[1].padStart(2, "0");
+    const month = brMatch[2].padStart(2, "0");
+    const year = brMatch[3];
+    const hour = (brMatch[4] ?? "00").padStart(2, "0");
+    const minute = (brMatch[5] ?? "00").padStart(2, "0");
+    const second = brMatch[6] !== undefined ? brMatch[6].padStart(2, "0") : undefined;
+    return second !== undefined
+      ? `${year}-${month}-${day}T${hour}:${minute}:${second}`
+      : `${year}-${month}-${day}T${hour}:${minute}`;
+  }
+
+  // 2. ISO with space instead of T: YYYY-MM-DD HH:mm(:ss)?
+  const isoSpaceMatch = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed);
+  if (isoSpaceMatch) {
+    const second = isoSpaceMatch[6];
+    return second !== undefined
+      ? `${isoSpaceMatch[1]}-${isoSpaceMatch[2]}-${isoSpaceMatch[3]}T${isoSpaceMatch[4]}:${isoSpaceMatch[5]}:${second}`
+      : `${isoSpaceMatch[1]}-${isoSpaceMatch[2]}-${isoSpaceMatch[3]}T${isoSpaceMatch[4]}:${isoSpaceMatch[5]}`;
+  }
+
+  // 3. ISO with trailing 'Z' or milliseconds: YYYY-MM-DDTHH:mm(:ss)?(\.\d+)?Z?
+  const isoFullMatch = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?Z?$/.exec(trimmed);
+  if (isoFullMatch) {
+    return isoFullMatch[1];
+  }
+
+  return trimmed;
+}
+
 function parseCivil(value: string, label: "inicial" | "final"): CivilDateTime {
   if (!value.trim()) throw new TimePeriodError(`Informe a data e hora ${label}.`);
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  const normalized = normalizeDateTimeInput(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(normalized);
   if (!match) throw new TimePeriodError(`A data informada não existe no fuso ${APPLICATION_TIMEZONE}.`);
   const civil: CivilDateTime = {
     year: Number(match[1]), month: Number(match[2]), day: Number(match[3]),
     hour: Number(match[4]), minute: Number(match[5]), second: Number(match[6] ?? 0), millisecond: 0,
   };
-  const normalized = new Date(utcGuess(civil));
-  if (normalized.getUTCFullYear() !== civil.year || normalized.getUTCMonth() + 1 !== civil.month ||
-      normalized.getUTCDate() !== civil.day || civil.hour > 23 || civil.minute > 59 || civil.second > 59) {
+  const parsed = new Date(utcGuess(civil));
+  if (parsed.getUTCFullYear() !== civil.year || parsed.getUTCMonth() + 1 !== civil.month ||
+      parsed.getUTCDate() !== civil.day || civil.hour > 23 || civil.minute > 59 || civil.second > 59) {
     throw new TimePeriodError(`A data informada não existe no fuso ${APPLICATION_TIMEZONE}.`);
   }
   return civil;
@@ -164,12 +201,24 @@ export function timePeriodError(period: TimePeriod, now?: Date): string | null {
   catch (error) { return error instanceof Error ? error.message : "Período inválido."; }
 }
 
-export function formatResolvedTimePeriod(resolved: ResolvedTimePeriod): string {
+export function formatDateTimeLocal(date: Date | string, timezone: string = APPLICATION_TIMEZONE): string {
+  const d = typeof date === "string" ? new Date(date) : date;
+  if (!Number.isFinite(d.getTime())) return "—";
   const formatter = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: resolved.timezone, day: "2-digit", month: "2-digit", year: "numeric",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    timeZone: timezone,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
   });
-  return `${formatter.format(new Date(resolved.startTime))} até ${formatter.format(new Date(resolved.endTime))}`;
+  return formatter.format(d);
+}
+
+export function formatResolvedTimePeriod(resolved: ResolvedTimePeriod): string {
+  return `${formatDateTimeLocal(resolved.startTime, resolved.timezone)} até ${formatDateTimeLocal(resolved.endTime, resolved.timezone)}`;
 }
 
 export const TIME_PRESET_OPTIONS: Array<{ value: TimePreset; label: string }> = [

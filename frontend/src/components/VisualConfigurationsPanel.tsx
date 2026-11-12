@@ -33,6 +33,7 @@ export function VisualConfigurationsPanel({ document, onOpen }: Props) {
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const versionRequestRef = useRef(0);
+  const openedSnapshotRef = useRef<string | null>(null);
 
   const loadList = async () => { try { setItems(await visualConfigurationsApi.list()); } catch { setError("Não foi possível listar as configurações visuais."); } };
   useEffect(() => { void loadList(); }, []);
@@ -70,14 +71,15 @@ export function VisualConfigurationsPanel({ document, onOpen }: Props) {
     const version = selectedVersion ?? item.current_version;
     const selectedDocument = version === item.current_version ? item.document : (await visualConfigurationsApi.getVersion(selectedId, version)).document;
     if (!selectedDocument) return;
+    openedSnapshotRef.current = JSON.stringify(selectedDocument);
     setCurrent(item); setOpened({ id: item.id, name: item.name, version }); setName(item.name); openDocument(selectedDocument, onOpen); setMessage(`Configuração ${item.name}, versão ${version}, aberta.`);
   });
-  const create = () => run(async () => { const item = await visualConfigurationsApi.create(name, document); setCurrent(item); setOpened({ id: item.id, name: item.name, version: item.current_version }); setSelectedId(item.id); setSelectedVersion(item.current_version); setVersions([]); setMessage("Configuração salva."); setNameAction(null); await loadList(); });
-  const save = () => run(async () => { if (!current) return; const item = await visualConfigurationsApi.update(current.id, current.current_version, document); setCurrent(item); setOpened({ id: item.id, name: item.name, version: item.current_version }); setSelectedVersion(item.current_version); setMessage("Nova versão salva."); await Promise.all([loadList(), loadVersions(item.id, item.current_version)]); });
+  const create = () => run(async () => { const item = await visualConfigurationsApi.create(name, document); openedSnapshotRef.current = JSON.stringify(document); setCurrent(item); setOpened({ id: item.id, name: item.name, version: item.current_version }); setSelectedId(item.id); setSelectedVersion(item.current_version); setVersions([]); setMessage("Configuração salva."); setNameAction(null); await loadList(); });
+  const save = () => run(async () => { if (!current) return; const item = await visualConfigurationsApi.update(current.id, current.current_version, document); openedSnapshotRef.current = JSON.stringify(document); setCurrent(item); setOpened({ id: item.id, name: item.name, version: item.current_version }); setSelectedVersion(item.current_version); setMessage("Nova versão salva."); await Promise.all([loadList(), loadVersions(item.id, item.current_version)]); });
   const rename = () => run(async () => { if (!current) return; const item = await visualConfigurationsApi.rename(current.id, current.current_version, name); setCurrent(item); setOpened((value) => value?.id === item.id ? { ...value, name: item.name } : value); setSelectedVersion(item.current_version); setMessage("Configuração renomeada e versionada."); setNameAction(null); await Promise.all([loadList(), loadVersions(item.id, item.current_version)]); });
   const showHistory = () => run(async () => { if (current) setHistory(await visualConfigurationsApi.history(current.id)); });
-  const openHistoryVersion = (version: number) => run(async () => { if (!selectedId) return; const [item, historical] = await Promise.all([visualConfigurationsApi.get(selectedId), visualConfigurationsApi.getVersion(selectedId, version)]); setCurrent(item); setOpened({ id: item.id, name: item.name, version }); setSelectedVersion(version); openDocument(historical.document, onOpen); setHistory(null); setMessage(`Configuração ${item.name}, versão ${version}, aberta.`); });
-  const restore = (version: number) => run(async () => { if (!current) return; const item = await visualConfigurationsApi.restore(current.id, current.current_version, version); setCurrent(item); setOpened({ id: item.id, name: item.name, version: item.current_version }); setSelectedVersion(item.current_version); openDocument(item.document, onOpen); setHistory(null); setMessage(`Versão ${version} restaurada como versão ${item.current_version}.`); await Promise.all([loadList(), loadVersions(item.id, item.current_version)]); });
+  const openHistoryVersion = (version: number) => run(async () => { if (!selectedId) return; const [item, historical] = await Promise.all([visualConfigurationsApi.get(selectedId), visualConfigurationsApi.getVersion(selectedId, version)]); openedSnapshotRef.current = JSON.stringify(historical.document); setCurrent(item); setOpened({ id: item.id, name: item.name, version }); setSelectedVersion(version); openDocument(historical.document, onOpen); setHistory(null); setMessage(`Configuração ${item.name}, versão ${version}, aberta.`); });
+  const restore = (version: number) => run(async () => { if (!current) return; const item = await visualConfigurationsApi.restore(current.id, current.current_version, version); openedSnapshotRef.current = JSON.stringify(item.document); setCurrent(item); setOpened({ id: item.id, name: item.name, version: item.current_version }); setSelectedVersion(item.current_version); openDocument(item.document, onOpen); setHistory(null); setMessage(`Versão ${version} restaurada como versão ${item.current_version}.`); await Promise.all([loadList(), loadVersions(item.id, item.current_version)]); });
   const remove = async () => {
     if (!deleteTarget || deleting) return;
     setDeleting(true); setDeleteError(null);
@@ -86,7 +88,7 @@ export function VisualConfigurationsPanel({ document, onOpen }: Props) {
       setItems((loaded) => loaded.filter((item) => item.id !== deleteTarget.id));
       setSelectedId(""); setSelectedVersion(null); setVersions([]);
       if (current?.id === deleteTarget.id) { setCurrent(null); setName(""); }
-      if (opened?.id === deleteTarget.id) setOpened(null);
+      if (opened?.id === deleteTarget.id) { setOpened(null); openedSnapshotRef.current = null; }
       setError(null); setMessage("Configuração excluída."); setDeleteTarget(null);
     } catch (reason) {
       setDeleteError(reason instanceof ApiError ? reason.message : "Não foi possível excluir a configuração. Tente novamente.");
@@ -99,6 +101,8 @@ export function VisualConfigurationsPanel({ document, onOpen }: Props) {
     return term ? items.filter((item) => item.name.toLocaleLowerCase().includes(term)) : items;
   }, [items, search]);
   const startNameAction = (action: Exclude<NameAction, null>) => { setName(action === "rename" ? current?.name ?? "" : ""); setNameAction(action); };
+
+  const isDirty = Boolean(opened && openedSnapshotRef.current && openedSnapshotRef.current !== JSON.stringify(document));
 
   return <div className="visual-config-control" data-testid="visual-config-control">
     <div className="visual-config-control__main">
@@ -125,7 +129,25 @@ export function VisualConfigurationsPanel({ document, onOpen }: Props) {
         </Dropdown.Menu>
       </Dropdown>
     </div>
-    {opened ? <small className="visual-config-control__current">Aberta: {opened.name}, versão {opened.version}</small> : selected ? <small className="visual-config-control__current">Selecionada: {selected.name}, versão {selectedVersion ?? selected.current_version}</small> : null}
+    {opened ? (
+      <small className="visual-config-control__current d-flex align-items-center gap-1 flex-wrap" data-testid="visual-config-current-status">
+        <span className={`badge ${isDirty ? "bg-warning text-dark" : "bg-success"}`}>
+          {isDirty ? "Rascunho com alterações" : "Configuração salva"}
+        </span>
+        <span>Aberta: {opened.name}, versão {opened.version}</span>
+        {isDirty ? <span className="text-muted small">(alterações não salvas)</span> : null}
+      </small>
+    ) : selected ? (
+      <small className="visual-config-control__current d-flex align-items-center gap-1 flex-wrap" data-testid="visual-config-current-status">
+        <span className="badge bg-secondary">Rascunho atual</span>
+        <span>Selecionada: {selected.name}, versão {selectedVersion ?? selected.current_version}</span>
+      </small>
+    ) : (
+      <small className="visual-config-control__current text-muted d-flex align-items-center gap-1" data-testid="visual-config-current-status">
+        <span className="badge bg-secondary">Rascunho</span>
+        <span>Estado: Rascunho atual (não salvo)</span>
+      </small>
+    )}
     {error ? <Alert variant="danger" className="visual-config-control__feedback">{error}</Alert> : null}
     {message ? <Alert variant="success" className="visual-config-control__feedback">{message}</Alert> : null}
 

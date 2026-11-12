@@ -4,6 +4,7 @@ import type { TimePeriod, TimePreset } from "../src/types";
 import {
   APPLICATION_TIMEZONE,
   formatResolvedTimePeriod,
+  normalizeDateTimeInput,
   resolveTimePeriod,
   timePeriodError,
 } from "../src/utils/timePeriod";
@@ -45,6 +46,39 @@ describe("advanced time period resolver", () => {
   it("accepts seconds in absolute input", () => {
     const result = resolveTimePeriod({ kind: "absolute", start: "2026-01-10T08:00:30", end: "2026-01-10T08:01:31", timezone: APPLICATION_TIMEZONE }, NOW);
     expect(result.startTime).toBe("2026-01-10T11:00:30.000Z");
+  });
+
+  it("normalizes Brazilian and varied ISO datetime inputs correctly", () => {
+    expect(normalizeDateTimeInput("11/11/2026 10:04:54")).toBe("2026-11-11T10:04:54");
+    expect(normalizeDateTimeInput("11/11/2026, 10:04:54")).toBe("2026-11-11T10:04:54");
+    expect(normalizeDateTimeInput("11/11/2026 10:04")).toBe("2026-11-11T10:04");
+    expect(normalizeDateTimeInput("2026-11-11 10:04:54")).toBe("2026-11-11T10:04:54");
+    expect(normalizeDateTimeInput("2026-11-11T10:04:54.000Z")).toBe("2026-11-11T10:04:54");
+    expect(normalizeDateTimeInput("2026-11-11T10:04:54Z")).toBe("2026-11-11T10:04:54");
+    expect(normalizeDateTimeInput("")).toBe("");
+  });
+
+  it("resolves target Brazilian date/time interval (11/11/2026 10:04:54 to 10:19:54) respecting America/Sao_Paulo without losing seconds", () => {
+    const result = resolveTimePeriod({
+      kind: "absolute",
+      start: "11/11/2026 10:04:54",
+      end: "11/11/2026 10:19:54",
+      timezone: APPLICATION_TIMEZONE,
+    }, NOW);
+    expect(result.startTime).toBe("2026-11-11T13:04:54.000Z");
+    expect(result.endTime).toBe("2026-11-11T13:19:54.000Z");
+    expect(result.timezone).toBe(APPLICATION_TIMEZONE);
+  });
+
+  it("resolves target ISO date/time interval (2026-11-11T10:04:54 to 2026-11-11T10:19:54) exactly in America/Sao_Paulo", () => {
+    const result = resolveTimePeriod({
+      kind: "absolute",
+      start: "2026-11-11T10:04:54",
+      end: "2026-11-11T10:19:54",
+      timezone: APPLICATION_TIMEZONE,
+    }, NOW);
+    expect(result.startTime).toBe("2026-11-11T13:04:54.000Z");
+    expect(result.endTime).toBe("2026-11-11T13:19:54.000Z");
   });
 
   it.each<[string, string]>([

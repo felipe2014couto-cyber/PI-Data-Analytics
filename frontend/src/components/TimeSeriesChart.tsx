@@ -318,15 +318,12 @@ function buildTooltip(
         dataIndex?: number;
         marker?: string;
       }>) {
-        const seriesId = entry.seriesId ?? "";
-        if (!seriesId || seen.has(seriesId)) continue;
-        seen.add(seriesId);
-
-        let series = bySeriesId.get(seriesId);
-        if (!series) {
-          series = Array.from(bySeriesId.values()).find((s) => s.displayName === entry.seriesName);
-        }
+        let series = (entry.seriesId ? bySeriesId.get(entry.seriesId) : undefined) ||
+          Array.from(bySeriesId.values()).find((s) => s.displayName === entry.seriesName);
         if (!series) continue;
+        const seriesId = series.seriesId;
+        if (seen.has(seriesId)) continue;
+        seen.add(seriesId);
 
         if (series.categoricalCode && umSeries) {
           let umText = "(sem dado)";
@@ -398,7 +395,10 @@ function buildTooltip(
           }
         } else if (rawVal !== null && rawVal !== undefined && rawVal !== "") {
           if (typeof rawVal === "number") {
-            valueText = Number.isFinite(rawVal) ? formatNumericValue(rawVal) : "(sem dado)";
+            const formatted = Number.isFinite(rawVal) ? formatNumericValue(rawVal) : "(sem dado)";
+            valueText = rawVal <= -999 && (series.displayName.toLowerCase().includes("limite") || String(series.tagName).toLowerCase().includes("lim"))
+              ? `${formatted} (Sem limite ativo / Parada)`
+              : formatted;
           } else {
             valueText = formatNumericValue(String(rawVal));
           }
@@ -614,7 +614,10 @@ function buildStateOption(props: TimeSeriesChartProps): EChartsOption {
 
 function normLimitDisplayName(entry: NormLimitSeries, kind: "lower" | "upper"): string {
   const base = entry.mainDisplayName?.trim() || entry.tagName?.trim() || "Principal";
-  return kind === "lower" ? `Limite inferior — ${base}` : `Limite superior — ${base}`;
+  const gaps = kind === "lower" ? entry.lowerCoverageGaps : entry.upperCoverageGaps;
+  const isPartial = Boolean(gaps && gaps.length > 0);
+  const suffix = isPartial ? " (cobertura parcial)" : "";
+  return kind === "lower" ? `Limite inferior — ${base}${suffix}` : `Limite superior — ${base}${suffix}`;
 }
 
 /** Categorical strip: identifiers have no Y value or numeric mapping. */
@@ -646,7 +649,10 @@ export function buildTimeSeriesChartOption(props: TimeSeriesChartProps, getUnitH
   // OOC values are percentages. Keep manual norm selections in page state,
   // but never place their physical limits on the 0–100% axis.
   const isOocChart = chart.series.some((series) => series.unitAggregation?.rule === "OOC");
-  const visibleNormLimits = props.hidePhysicalNormLimits || isOocChart ? [] : props.normLimitSeries ?? [];
+  const rawNormLimits = props.hidePhysicalNormLimits || isOocChart ? [] : props.normLimitSeries ?? [];
+  const visibleNormLimits = rawNormLimits.filter((entry) =>
+    chart.series.some((s) => (s.seriesInstanceId ?? `tag:${s.tagId}`) === entry.seriesInstanceId)
+  );
   // Pure-textual/categorical charts without any numeric or STRING-typed series
   // still use the dedicated state renderer. Mixed charts with STRING series
   // are handled below as combined numeric+categorical charts.
@@ -964,7 +970,8 @@ function buildTooltipState(
         value: (point) => {
           const v = point.value;
           if (v === null || v === undefined || v === "") return "(sem dado)";
-          return formatNumericValue(typeof v === "number" ? v : String(v));
+          const formatted = formatNumericValue(typeof v === "number" ? v : String(v));
+          return typeof v === "number" && v <= -999 ? `${formatted} (Sem limite ativo / Parada)` : formatted;
         },
       });
     }
@@ -977,7 +984,8 @@ function buildTooltipState(
         value: (point) => {
           const v = point.value;
           if (v === null || v === undefined || v === "") return "(sem dado)";
-          return formatNumericValue(typeof v === "number" ? v : String(v));
+          const formatted = formatNumericValue(typeof v === "number" ? v : String(v));
+          return typeof v === "number" && v <= -999 ? `${formatted} (Sem limite ativo / Parada)` : formatted;
         },
       });
     }
@@ -1484,13 +1492,12 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       } as never);
       suppressZoomHistoryRef.current = true;
       currentZoomRef.current = previous;
-      const action: Record<string, unknown> = {
+      inst.dispatchAction({
         type: "dataZoom",
         dataZoomIndex: 0,
         start: previous.start,
         end: previous.end,
-      };
-      inst.dispatchAction(action as never);
+      } as never);
     } catch {
       // The visual domain has not changed yet, so clearing the candidate is sufficient.
     }
@@ -1501,7 +1508,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
   useEffect(() => {
     if (!instance) return;
     let active = true;
-    const dispatchZoom = (range: ZoomRange) => {
+    const dispatchZoom = (range: ZoomRange, includeValues = false) => {
       suppressZoomHistoryRef.current = true;
       currentZoomRef.current = range;
       const action: Record<string, unknown> = {
@@ -1509,6 +1516,8 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
         dataZoomIndex: 0,
         start: range.start,
         end: range.end,
+        ...(includeValues && range.startValue !== undefined ? { startValue: range.startValue } : {}),
+        ...(includeValues && range.endValue !== undefined ? { endValue: range.endValue } : {}),
       };
       instance.dispatchAction(action as never);
     };
@@ -1562,7 +1571,7 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
       }
       const current = currentZoomRef.current;
       setHasZoomHistory(zoomHistoryRef.current.length > 0);
-      dispatchZoom(previous);
+      dispatchZoom(previous, true);
       const startValue = previous.startValue;
       const endValue = previous.endValue;
       requestVisibleWindow(
@@ -2125,7 +2134,9 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
               );
               normLimitValues.push({
                 kind: "lower",
-                text: limitValue === null ? "indisponível" : `${formatNumericValue(limitValue)}${s.unit ? ` ${s.unit}` : ""}`,
+                text: limitValue === null
+                  ? "indisponível"
+                  : `${formatNumericValue(limitValue)}${s.unit ? ` ${s.unit}` : ""}${limitValue <= -999 ? " (Sem limite ativo / Parada)" : ""}`,
                 color: normEntry.lowerColor,
               });
             }
@@ -2137,7 +2148,9 @@ export function TimeSeriesChart(props: TimeSeriesChartProps) {
               );
               normLimitValues.push({
                 kind: "upper",
-                text: limitValue === null ? "indisponível" : `${formatNumericValue(limitValue)}${s.unit ? ` ${s.unit}` : ""}`,
+                text: limitValue === null
+                  ? "indisponível"
+                  : `${formatNumericValue(limitValue)}${s.unit ? ` ${s.unit}` : ""}${limitValue <= -999 ? " (Sem limite ativo / Parada)" : ""}`,
                 color: normEntry.upperColor,
               });
             }

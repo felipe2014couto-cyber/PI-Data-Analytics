@@ -371,7 +371,28 @@ export interface PiTagValidationBatchResponse {
 }
 
 export type TimeSeriesMode = "recorded";
-export type TimeAnalysisRule = "DEFAULT" | "MEDIA" | "MAXIMO" | "MIN" | "OOC";
+export type ProductionUnitLegacyRule = "MEDIA" | "MIN" | "MAXIMO" | "OOC";
+export type ProductionUnitRule =
+  | ProductionUnitLegacyRule
+  | "cp"
+  | "cpk"
+  | "cpkError"
+  | "count"
+  | "standardDeviation"
+  | "standardDeviationError"
+  | "meanAbsoluteError"
+  | "meanSquaredError"
+  | "maximumError"
+  | "meanError"
+  | "minimumError"
+  | "ooc"
+  | "oocMaeMaximum"
+  | "oocMaeMean"
+  | "pc"
+  | "rootMeanSquaredError"
+  | "total";
+
+export type TimeAnalysisRule = "DEFAULT" | ProductionUnitRule;
 export type ComparisonType = "periods" | "equipments" | "categories";
 
 export type TimezoneId = "America/Sao_Paulo";
@@ -557,12 +578,12 @@ export type MetricResult = MetricResultBase & (
   | { status: Exclude<MetricResultStatus, "ok">; value: null }
 );
 
-export type ProductionUnitRule = "MEDIA" | "MIN" | "MAXIMO" | "OOC";
-
 /** Visual aggregate intervals, not PI measurements. The end is exclusive. */
 export interface ProductionUnitAggregateInterval {
   eligibleSampleCount?: number;
   attendedSampleCount?: number;
+  oocCount?: number;
+  message?: string;
   start: number;
   end: number;
   um: string | null;
@@ -682,6 +703,8 @@ export interface QueryExecutionMetadata {
   processing_ms?: number | null;
   total_ms?: number | null;
   query_id?: string | null;
+  requested_start?: string | null;
+  effective_start?: string | null;
   requested_end?: string | null;
   effective_end?: string | null;
   data_available_until?: string | null;

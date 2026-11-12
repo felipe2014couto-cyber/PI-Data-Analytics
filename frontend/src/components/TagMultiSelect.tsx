@@ -24,13 +24,16 @@ interface TagMultiSelectProps {
   disabled?: boolean;
   emptyMessage?: string;
   testId?: string;
+  isInvalid?: boolean;
+  errorMessage?: string | null;
+  inputRef?: React.Ref<HTMLDivElement>;
 }
 
 export function buildTagOption(
   tag: PiTag,
   equipment: { code: string } | undefined,
   section: { code: string } | undefined,
-  variableType: { code: string } | undefined,
+  variableType: { code: string; default_unit?: string | null } | undefined,
 ): TagOption {
   return {
     id: tag.id,
@@ -40,7 +43,7 @@ export function buildTagOption(
     sectionId: tag.section_id,
     sectionCode: section?.code ?? (tag.section_id === null ? "EQUIPAMENTO" : `SEC-${tag.section_id}`),
     variableTypeCode: variableType?.code ?? `VT-${tag.variable_type_id}`,
-    unit: tag.engineering_unit,
+    unit: tag.engineering_unit?.trim() || variableType?.default_unit?.trim() || null,
     validationStatus: tag.validation_status,
     active: tag.active,
     dataType: tag.data_type,
@@ -60,6 +63,9 @@ export function TagMultiSelect({
   disabled,
   emptyMessage = "Nenhuma tag disponivel para os filtros selecionados.",
   testId = "tag-multi-select",
+  isInvalid = false,
+  errorMessage = null,
+  inputRef,
 }: TagMultiSelectProps) {
   const selected = new Set(selectedIds);
   const toggle = (id: number) => {
@@ -73,11 +79,23 @@ export function TagMultiSelect({
   };
 
   return (
-    <div data-testid={testId}>
+    <div
+      ref={inputRef}
+      tabIndex={isInvalid ? -1 : undefined}
+      data-testid={testId}
+      className={isInvalid ? "border border-danger rounded p-1" : undefined}
+      aria-invalid={isInvalid}
+      aria-describedby={isInvalid && errorMessage ? "tag-selection-error" : undefined}
+    >
       {options.length === 0 ? (
         <div className="text-muted small py-3 text-center">{emptyMessage}</div>
       ) : (
-        <ListGroup className="tag-multi-select-list" style={{ maxHeight: 260, overflowY: "auto" }}>
+        <ListGroup
+          className={`tag-multi-select-list ${isInvalid ? "is-invalid" : ""}`}
+          style={{ maxHeight: 260, overflowY: "auto" }}
+          role="group"
+          aria-label="Seleção de tags"
+        >
           {options.map((option) => {
             const selectable = isSelectable(option);
             const isSelected = selected.has(option.id);
@@ -118,6 +136,11 @@ export function TagMultiSelect({
           })}
         </ListGroup>
       )}
+      {isInvalid && errorMessage ? (
+        <div id="tag-selection-error" className="text-danger small mt-1" role="alert" data-testid="tag-selection-error">
+          {errorMessage}
+        </div>
+      ) : null}
     </div>
   );
 }

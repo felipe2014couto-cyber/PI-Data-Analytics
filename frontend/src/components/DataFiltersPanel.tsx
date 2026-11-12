@@ -2,9 +2,11 @@ import { Accordion, Form, Row, Col, Button, Alert, Collapse } from "react-bootst
 import { useState, type ReactNode } from "react";
 
 import { TagMultiSelect, type TagOption } from "./TagMultiSelect";
-import { APPLICATION_TIMEZONE, TIME_PRESET_OPTIONS } from "../utils/timePeriod";
-import type { AnalysisModel, TimeAnalysisRule, TimePeriod, TimePreset, TimeSeriesMode, VisualizationType } from "../types";
+import { APPLICATION_TIMEZONE, TIME_PRESET_OPTIONS, normalizeDateTimeInput } from "../utils/timePeriod";
+import type { AnalysisModel, AnalysisMetric, MetricConfiguration, TimeAnalysisRule, TimePeriod, TimePreset, TimeSeriesMode, TimeSeriesSeries, VisualizationType } from "../types";
 import { ANALYSIS_MODEL_OPTIONS } from "../constants/analysisModels";
+import { isLegacyProductionUnitRule } from "../utils/productionUnitChart";
+import { METRIC_BY_ID, validateMetricConfiguration } from "../utils/analysisMetrics";
 
 export type { TagOption };
 
@@ -80,11 +82,21 @@ interface DataFiltersPanelProps {
 
   piConfigured: boolean;
 
+  metricConfigurationState?: MetricConfiguration | null;
+  onMetricConfigurationChange?: (config: MetricConfiguration) => void;
+  metricSeriesOptions?: readonly TimeSeriesSeries[];
+
+  filtersEnabled?: boolean;
+  onFiltersEnabledChange?: (enabled: boolean) => void;
+  onOpenCyclicFiltersModal?: () => void;
+  isCyclicModalOpen?: boolean;
+
   onClear: () => void;
   onSubmit: () => void;
   submitting: boolean;
   cancelling?: boolean;
   errorMessage?: string | null;
+  tagSelectRef?: React.Ref<HTMLDivElement>;
 }
 
 export function DataFiltersPanel(props: DataFiltersPanelProps) {
@@ -120,11 +132,19 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
     comparisonConfiguration,
     visualConfiguration,
     piConfigured,
+    metricConfigurationState,
+    onMetricConfigurationChange,
+    metricSeriesOptions,
+    filtersEnabled,
+    onFiltersEnabledChange,
+    onOpenCyclicFiltersModal,
+    isCyclicModalOpen,
     onClear,
     onSubmit,
     submitting,
     cancelling,
     errorMessage,
+    tagSelectRef,
     onCancel,
     csvCompleteLoading,
     onCsvComplete,
@@ -133,6 +153,31 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
   const sectionsForEquipment = selectedEquipmentId
     ? sectionOptions.filter((section) => section.equipmentId === selectedEquipmentId)
     : [];
+
+  const unitMetricKey = !isLegacyProductionUnitRule(timeAnalysisRule) ? (timeAnalysisRule as AnalysisMetric) : null;
+  const unitMetricDefinition = unitMetricKey ? METRIC_BY_ID.get(unitMetricKey) : null;
+  const unitMetricErrors =
+    metricConfigurationState && !isLegacyProductionUnitRule(timeAnalysisRule) && metricConfigurationState.kind !== "none"
+      ? validateMetricConfiguration(metricConfigurationState, metricSeriesOptions ?? [])
+      : [];
+
+  const selectUnitSeries = (role: "actual" | "reference", selectedIdentity: string) => {
+    if (!metricConfigurationState || !("actualTagId" in metricConfigurationState) || !onMetricConfigurationChange) return;
+    const selected = metricSeriesOptions?.find((entry) => (entry.series_instance_id ?? `tag:${entry.tag_id}`) === selectedIdentity);
+    if (role === "actual") {
+      onMetricConfigurationChange({
+        ...metricConfigurationState,
+        actualTagId: selected?.tag_id ?? null,
+        actualSeriesInstanceId: selected ? (selected.series_instance_id ?? `tag:${selected.tag_id}`) : null,
+      });
+    } else {
+      onMetricConfigurationChange({
+        ...metricConfigurationState,
+        referenceTagId: selected?.tag_id ?? null,
+        referenceSeriesInstanceId: selected ? (selected.series_instance_id ?? `tag:${selected.tag_id}`) : null,
+      });
+    }
+  };
 
   return (
     <div data-testid="data-filters-panel" className="d-flex flex-column gap-3">
@@ -186,8 +231,32 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
               <Form.Label>Data e hora inicial</Form.Label>
               <Form.Control
                 type="datetime-local"
+                step="1"
                 value={timePeriod.start}
-                onChange={(event) => onTimePeriodChange({ ...timePeriod, start: event.target.value })}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  const normalized = normalizeDateTimeInput(val) || val;
+                  onTimePeriodChange({ ...timePeriod, start: normalized });
+                }}
+                onBlur={(event) => {
+                  const val = event.target.value;
+                  if (val) {
+                    const normalized = normalizeDateTimeInput(val) || val;
+                    if (normalized !== timePeriod.start) {
+                      onTimePeriodChange({ ...timePeriod, start: normalized });
+                    }
+                  }
+                }}
+                onPaste={(event) => {
+                  const text = event.clipboardData?.getData("text");
+                  if (text) {
+                    const normalized = normalizeDateTimeInput(text);
+                    if (normalized) {
+                      event.preventDefault();
+                      onTimePeriodChange({ ...timePeriod, start: normalized });
+                    }
+                  }
+                }}
                 data-testid="absolute-start"
                 aria-describedby="time-period-help time-period-error"
                 aria-invalid={Boolean(timePeriodError)}
@@ -199,8 +268,32 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
               <Form.Label>Data e hora final</Form.Label>
               <Form.Control
                 type="datetime-local"
+                step="1"
                 value={timePeriod.end}
-                onChange={(event) => onTimePeriodChange({ ...timePeriod, end: event.target.value })}
+                onChange={(event) => {
+                  const val = event.target.value;
+                  const normalized = normalizeDateTimeInput(val) || val;
+                  onTimePeriodChange({ ...timePeriod, end: normalized });
+                }}
+                onBlur={(event) => {
+                  const val = event.target.value;
+                  if (val) {
+                    const normalized = normalizeDateTimeInput(val) || val;
+                    if (normalized !== timePeriod.end) {
+                      onTimePeriodChange({ ...timePeriod, end: normalized });
+                    }
+                  }
+                }}
+                onPaste={(event) => {
+                  const text = event.clipboardData?.getData("text");
+                  if (text) {
+                    const normalized = normalizeDateTimeInput(text);
+                    if (normalized) {
+                      event.preventDefault();
+                      onTimePeriodChange({ ...timePeriod, end: normalized });
+                    }
+                  }
+                }}
                 data-testid="absolute-end"
                 aria-describedby="time-period-help time-period-error"
                 aria-invalid={Boolean(timePeriodError)}
@@ -270,22 +363,202 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
         <Form.Text className="text-muted">Modelos disponíveis: Base Cíclica e Base Unidade.</Form.Text>
       </Form.Group>
 
+      {analysisModel === "cyclic" && onFiltersEnabledChange ? (
+        <div className="border rounded p-2 bg-light d-flex flex-column gap-2" data-testid="cyclic-filters-controls">
+          <div className="d-flex align-items-center justify-content-between">
+            <Form.Check id="cyclic-filters-switch">
+              <Form.Check.Input
+                type="checkbox"
+                checked={Boolean(filtersEnabled)}
+                onChange={(event) => onFiltersEnabledChange(event.target.checked)}
+                data-testid="cyclic-filters-switch"
+              />
+              <Form.Check.Label className="fw-semibold">Ativar filtros</Form.Check.Label>
+            </Form.Check>
+            {filtersEnabled && onOpenCyclicFiltersModal ? (
+              <Button
+                variant="outline-primary"
+                size="sm"
+                onClick={onOpenCyclicFiltersModal}
+                data-testid="open-cyclic-filters-modal-btn"
+                className="py-0 px-2"
+              >
+                <i className="bi bi-sliders me-1" /> Configurar
+              </Button>
+            ) : null}
+          </div>
+          <div className="small text-muted" style={{ fontSize: "0.8rem" }}>
+            {filtersEnabled
+              ? "Filtros e limites configuráveis via pop-up."
+              : "Ative para configurar filtros de consulta e limites das tags."}
+          </div>
+        </div>
+      ) : null}
+
       {analysisModel === "unit" ? (
-        <Form.Group controlId="time-analysis-rule">
-          <Form.Label>Regra de análise</Form.Label>
-          <Form.Select
-            value={timeAnalysisRule}
-            onChange={(event) =>
-              onTimeAnalysisRuleChange(event.target.value as TimeAnalysisRule)
-            }
-            data-testid="time-analysis-rule-select"
-          >
-            <option value="MEDIA">Média</option>
-            <option value="MAXIMO">Máximo</option>
-            <option value="MIN">Mínimo</option>
-            <option value="OOC">OOC</option>
-          </Form.Select>
-        </Form.Group>
+        <>
+          <Form.Group controlId="time-analysis-rule">
+            <Form.Label>Regra de análise</Form.Label>
+            <Form.Select
+              value={timeAnalysisRule}
+              onChange={(event) =>
+                onTimeAnalysisRuleChange(event.target.value as TimeAnalysisRule)
+              }
+              data-testid="time-analysis-rule-select"
+            >
+              <optgroup label="Regras Básicas da Base Unidade">
+                <option value="MEDIA">Média</option>
+                <option value="MAXIMO">Máximo</option>
+                <option value="MIN">Mínimo</option>
+                <option value="OOC">OOC</option>
+              </optgroup>
+              <optgroup label="Estatísticas Gerais">
+                <option value="count">Contagem</option>
+                <option value="total">Total</option>
+                <option value="standardDeviation">Desvio-padrão</option>
+              </optgroup>
+              <optgroup label="Capacidade e Controle">
+                <option value="cp">Cp</option>
+                <option value="cpk">Cpk</option>
+                <option value="pc">Percentual conforme</option>
+                <option value="ooc">Fora de controle</option>
+              </optgroup>
+              <optgroup label="Métricas de Erro (Duas Séries)">
+                <option value="meanError">Erro médio</option>
+                <option value="minimumError">Erro mínimo</option>
+                <option value="maximumError">Erro máximo</option>
+                <option value="meanAbsoluteError">Erro absoluto médio</option>
+                <option value="meanSquaredError">Erro quadrático médio</option>
+                <option value="rootMeanSquaredError">Raiz do erro quadrático médio</option>
+                <option value="standardDeviationError">Desvio-padrão do erro</option>
+                <option value="cpkError">Cpk do erro</option>
+                <option value="oocMaeMaximum">Erro absoluto máximo fora de controle</option>
+                <option value="oocMaeMean">Erro absoluto médio fora de controle</option>
+              </optgroup>
+            </Form.Select>
+          </Form.Group>
+
+          {unitMetricDefinition ? (
+            <Form.Text className="d-block mt-1 text-muted" data-testid="metric-description">
+              {unitMetricDefinition.description} Requisito: {unitMetricDefinition.requirements}.
+            </Form.Text>
+          ) : null}
+
+          {metricConfigurationState && metricConfigurationState.kind !== "none" && !isLegacyProductionUnitRule(timeAnalysisRule) ? (
+            <div className="border rounded p-2 mt-2 bg-light d-flex flex-column gap-2" data-testid="unit-metric-parameters">
+              {"actualTagId" in metricConfigurationState ? (
+                <Row className="g-2">
+                  <Form.Group as={Col} xs={12} sm={6} controlId="metric-actual-series">
+                    <Form.Label>Série real</Form.Label>
+                    <Form.Select
+                      value={metricConfigurationState.actualSeriesInstanceId ?? (metricConfigurationState.actualTagId === null ? "" : `tag:${metricConfigurationState.actualTagId}`)}
+                      data-testid="metric-actual-series"
+                      onChange={(event) => selectUnitSeries("actual", event.target.value)}
+                    >
+                      <option value="">Selecione...</option>
+                      {metricSeriesOptions?.map((entry) => (
+                        <option key={entry.series_instance_id ?? `tag:${entry.tag_id}`} value={entry.series_instance_id ?? `tag:${entry.tag_id}`}>
+                          {entry.display_name} ({entry.tag_name})
+                        </option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+                  <Form.Group as={Col} xs={12} sm={6} controlId="metric-reference-series">
+                    <Form.Label>Série de referência</Form.Label>
+                    <Form.Select
+                      value={metricConfigurationState.referenceSeriesInstanceId ?? (metricConfigurationState.referenceTagId === null ? "" : `tag:${metricConfigurationState.referenceTagId}`)}
+                      data-testid="metric-reference-series"
+                      onChange={(event) => selectUnitSeries("reference", event.target.value)}
+                    >
+                      <option value="">Selecione...</option>
+                      {metricSeriesOptions?.map((entry) => (
+                        <option key={entry.series_instance_id ?? `tag:${entry.tag_id}`} value={entry.series_instance_id ?? `tag:${entry.tag_id}`}>
+                          {entry.display_name} ({entry.tag_name})
+                        </option>
+                      ))}
+                    </Form.Select>
+                  </Form.Group>
+                </Row>
+              ) : null}
+
+              {metricConfigurationState.kind === "specification" || metricConfigurationState.kind === "errorCapability" ? (
+                <Row className="g-2">
+                  <Form.Group as={Col} xs={6} controlId="metric-lie">
+                    <Form.Label>LIE</Form.Label>
+                    <Form.Control
+                      type="number"
+                      step="any"
+                      value={metricConfigurationState.lowerSpecification ?? ""}
+                      data-testid="metric-lie"
+                      onChange={(event) =>
+                        onMetricConfigurationChange?.({
+                          ...metricConfigurationState,
+                          lowerSpecification: event.target.value === "" ? null : Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Form.Group>
+                  <Form.Group as={Col} xs={6} controlId="metric-lse">
+                    <Form.Label>LSE</Form.Label>
+                    <Form.Control
+                      type="number"
+                      step="any"
+                      value={metricConfigurationState.upperSpecification ?? ""}
+                      data-testid="metric-lse"
+                      onChange={(event) =>
+                        onMetricConfigurationChange?.({
+                          ...metricConfigurationState,
+                          upperSpecification: event.target.value === "" ? null : Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Form.Group>
+                </Row>
+              ) : null}
+
+              {metricConfigurationState.kind === "control" || metricConfigurationState.kind === "oocError" ? (
+                <Row className="g-2">
+                  <Form.Group as={Col} xs={6} controlId="metric-lic">
+                    <Form.Label>LIC</Form.Label>
+                    <Form.Control
+                      type="number"
+                      step="any"
+                      value={metricConfigurationState.lowerControl ?? ""}
+                      data-testid="metric-lic"
+                      onChange={(event) =>
+                        onMetricConfigurationChange?.({
+                          ...metricConfigurationState,
+                          lowerControl: event.target.value === "" ? null : Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Form.Group>
+                  <Form.Group as={Col} xs={6} controlId="metric-lsc">
+                    <Form.Label>LSC</Form.Label>
+                    <Form.Control
+                      type="number"
+                      step="any"
+                      value={metricConfigurationState.upperControl ?? ""}
+                      data-testid="metric-lsc"
+                      onChange={(event) =>
+                        onMetricConfigurationChange?.({
+                          ...metricConfigurationState,
+                          upperControl: event.target.value === "" ? null : Number(event.target.value),
+                        })
+                      }
+                    />
+                  </Form.Group>
+                </Row>
+              ) : null}
+
+              {unitMetricErrors.length > 0 ? (
+                <Alert variant="warning" className="mt-2 mb-0 py-2" role="alert" data-testid="metric-validation">
+                  {unitMetricErrors.join(" ")}
+                </Alert>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       ) : null}
 
       <Form.Group controlId="equipment-select">
@@ -350,6 +623,9 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
           selectedIds={selectedTagIds}
           onChange={onTagsChange}
           testId="tag-multi-select"
+          isInvalid={Boolean(errorMessage && !selectedTagIds.length && errorMessage.toLowerCase().includes("tag"))}
+          errorMessage={errorMessage && !selectedTagIds.length && errorMessage.toLowerCase().includes("tag") ? errorMessage : null}
+          inputRef={tagSelectRef}
         />
         <Form.Text className="text-muted">
           Apenas tags ativas com validacao <strong>VALID</strong> ou <strong>PENDING</strong> podem ser
@@ -410,7 +686,7 @@ export function DataFiltersPanel(props: DataFiltersPanelProps) {
         </Collapse>
       </div>
 
-      {advancedFilters}
+      {(!isCyclicModalOpen || analysisModel !== "cyclic") ? advancedFilters : null}
 
       <div className="d-flex flex-column gap-1 mb-2">
         <Form.Check

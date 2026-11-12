@@ -29,6 +29,7 @@ interface AdvancedFiltersPanelProps {
   ruleResults: FilterRuleResult[];
   hasData: boolean;
   initialExpanded?: boolean;
+  hideToggle?: boolean;
   onChange: (configuration: DataFilterConfiguration) => void;
   analysisTags?: SectionAnalysisTag[];
   conflictedVariables?: ConflictedVariable[];
@@ -240,6 +241,47 @@ function fieldTestId(key: string): string {
   return `named-filter-${key}`;
 }
 
+function initialDraftFromRules(rules: DataFilterRule[] | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!Array.isArray(rules)) return result;
+  for (const rule of rules) {
+    if (typeof rule.id === "string" && rule.id.startsWith("named-filter:")) {
+      const fieldKey = rule.id.slice("named-filter:".length);
+      if (rule.kind === "numeric") {
+        if (rule.operator === "between") {
+          result[fieldKey] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+          const maxKey = fieldKey.endsWith("Min") ? fieldKey.replace(/Min$/, "Max") : `${fieldKey}Max`;
+          result[maxKey] = rule.secondValue !== null && rule.secondValue !== undefined ? String(rule.secondValue) : "";
+        } else if (rule.operator === "lessThanOrEqual") {
+          const maxKey = fieldKey.endsWith("Min") ? fieldKey.replace(/Min$/, "Max") : fieldKey;
+          result[maxKey] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+        } else {
+          result[fieldKey] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+        }
+      } else if (rule.kind === "text") {
+        result[fieldKey] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+      }
+    } else if (typeof rule.id === "string" && rule.id.startsWith("section-filter:")) {
+      const vtId = rule.id.slice("section-filter:".length);
+      if (rule.kind === "numeric") {
+        if (rule.operator === "between") {
+          result[`sectionTag_${vtId}_min`] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+          result[`sectionTag_${vtId}_max`] = rule.secondValue !== null && rule.secondValue !== undefined ? String(rule.secondValue) : "";
+        } else if (rule.operator === "greaterThanOrEqual") {
+          result[`sectionTag_${vtId}_min`] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+        } else if (rule.operator === "lessThanOrEqual") {
+          result[`sectionTag_${vtId}_max`] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+        } else {
+          result[`sectionTag_${vtId}`] = rule.value !== null && rule.value !== undefined ? String(rule.value) : "";
+        }
+      } else if ("value" in rule) {
+        result[`sectionTag_${vtId}`] = (rule as any).value !== null && (rule as any).value !== undefined ? String((rule as any).value) : "";
+      }
+    }
+  }
+  return result;
+}
+
 export function AdvancedFiltersPanel({
   configuration,
   enabled,
@@ -247,6 +289,7 @@ export function AdvancedFiltersPanel({
   summary,
   hasData,
   initialExpanded = true,
+  hideToggle = false,
   onChange,
   analysisTags = [],
   conflictedVariables = [],
@@ -254,7 +297,7 @@ export function AdvancedFiltersPanel({
   onDynamicFilterChange,
 }: AdvancedFiltersPanelProps) {
   const [expanded, setExpanded] = useState(initialExpanded);
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState<Record<string, string>>(() => initialDraftFromRules(configuration.rules));
   const [applied, setApplied] = useState(false);
   const [unmappedFields, setUnmappedFields] = useState<string[]>([]);
   const [stringValidationErrors, setStringValidationErrors] = useState<Record<number, string | undefined>>({});
@@ -496,21 +539,25 @@ export function AdvancedFiltersPanel({
   }).length;
   const totalActiveCount = activeDraftCount + activeDynamicCount;
 
+  const isExpanded = hideToggle || expanded;
+
   return (
     <div data-testid="advanced-filters-panel" className="named-filters-panel">
-      <Button
-        variant="outline-info"
-        size="sm"
-        className="w-100 mb-2"
-        onClick={() => setExpanded((current) => !current)}
-        aria-expanded={expanded}
-        aria-controls="named-filters-content"
-        data-testid="advanced-filters-toggle"
-      >
-        {expanded ? "▲" : "▼"} Filtros
-      </Button>
+      {!hideToggle ? (
+        <Button
+          variant="outline-info"
+          size="sm"
+          className="w-100 mb-2"
+          onClick={() => setExpanded((current) => !current)}
+          aria-expanded={expanded}
+          aria-controls="named-filters-content"
+          data-testid="advanced-filters-toggle"
+        >
+          {expanded ? "▲" : "▼"} Filtros
+        </Button>
+      ) : null}
 
-      {expanded ? (
+      {isExpanded ? (
         <div id="named-filters-content" className="border rounded p-3 mb-2" data-testid="advanced-filters-content">
           <div className="small text-muted mb-3">
             Use primeiro os parâmetros obrigatórios e depois os filtros opcionais necessários para reduzir o universo.

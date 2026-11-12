@@ -136,7 +136,9 @@ class PiLongRangeService:
             tag._meta_equipment_code = tag.equipment.code if tag.equipment else None
             tag._meta_section_code = tag.section.code if tag.section else None
             tag._meta_variable_type_code = tag.variable_type.code if tag.variable_type else None
-            tag._meta_unit = tag.engineering_unit
+            tag._meta_unit = tag.engineering_unit or (
+                tag.variable_type.default_unit if tag.variable_type else None
+            )
             tags.append(tag)
         return tags
 
@@ -545,7 +547,9 @@ class PiLongRangeService:
         equipment_code = getattr(tag, "_meta_equipment_code", None) or (tag.equipment.code if tag.equipment else None)
         section_code = getattr(tag, "_meta_section_code", None) or (tag.section.code if tag.section else None)
         variable_type_code = getattr(tag, "_meta_variable_type_code", None) or (tag.variable_type.code if tag.variable_type else None)
-        unit = getattr(tag, "_meta_unit", None) or tag.engineering_unit
+        unit = getattr(tag, "_meta_unit", None) or tag.engineering_unit or (
+            tag.variable_type.default_unit if tag.variable_type else None
+        )
         return TimeSeriesSeries(
             tag_id=tag.id,
             tag_name=tag.pi_tag_name,

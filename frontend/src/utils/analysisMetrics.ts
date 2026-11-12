@@ -98,15 +98,77 @@ export function validateMetricConfiguration(configuration: MetricConfiguration, 
   return errors;
 }
 
-function normalizeUnit(unit: string | null): string { return unit?.trim().toLocaleLowerCase("pt-BR") ?? ""; }
-function displayUnit(unit: string | null): string | null { return unit?.trim() || null; }
-function mean(values: readonly number[]): number { return values.reduce((sum, value) => sum + value, 0) / values.length; }
-function sampleDeviation(values: readonly number[]): number | null {
+export function normalizeUnit(unit: string | null): string { return unit?.trim().toLocaleLowerCase("pt-BR") ?? ""; }
+export function displayUnit(unit: string | null): string | null { return unit?.trim() || null; }
+export function mean(values: readonly number[]): number { return values.reduce((sum, value) => sum + value, 0) / values.length; }
+export function sampleDeviation(values: readonly number[]): number | null {
   if (values.length < 2) return null;
   let average = 0; let m2 = 0; let count = 0;
   for (const value of values) { count += 1; const delta = value - average; average += delta / count; m2 += delta * (value - average); }
   const result = Math.sqrt(m2 / (count - 1));
   return Number.isFinite(result) ? result : null;
+}
+
+export function isErrorOrPairMetric(metric: string): boolean {
+  return (
+    metric === "standardDeviationError" ||
+    metric === "meanAbsoluteError" ||
+    metric === "meanSquaredError" ||
+    metric === "rootMeanSquaredError" ||
+    metric === "maximumError" ||
+    metric === "meanError" ||
+    metric === "minimumError" ||
+    metric === "oocMaeMaximum" ||
+    metric === "oocMaeMean" ||
+    metric === "cpkError"
+  );
+}
+
+export function calculateErrorMetricValue(
+  metric: string,
+  errors: readonly number[],
+  oocValues?: readonly number[],
+  lowerSpecification?: number | null,
+  upperSpecification?: number | null,
+): number | null {
+  const definition = METRIC_BY_ID.get(metric as AnalysisMetric);
+  const minimum = definition?.minimumPoints ?? 1;
+  if (errors.length < minimum) return null;
+
+  switch (metric) {
+    case "standardDeviationError":
+      return sampleDeviation(errors);
+    case "meanAbsoluteError":
+      return mean(errors.map(Math.abs));
+    case "meanSquaredError":
+      return mean(errors.map((entry) => entry ** 2));
+    case "rootMeanSquaredError":
+      return Math.sqrt(mean(errors.map((entry) => entry ** 2)));
+    case "maximumError":
+      return Math.max(...errors);
+    case "meanError":
+      return mean(errors);
+    case "minimumError":
+      return Math.min(...errors);
+    case "oocMaeMaximum":
+      if (!oocValues || oocValues.length === 0) return 0;
+      return Math.max(...oocValues);
+    case "oocMaeMean":
+      if (!oocValues || oocValues.length === 0) return 0;
+      return mean(oocValues);
+    case "cpkError": {
+      const deviation = sampleDeviation(errors);
+      if (deviation === null || deviation === 0 || lowerSpecification == null || upperSpecification == null) {
+        return null;
+      }
+      return Math.min(
+        (upperSpecification - mean(errors)) / (3 * deviation),
+        (mean(errors) - lowerSpecification) / (3 * deviation),
+      );
+    }
+    default:
+      return null;
+  }
 }
 
 function result(configuration: Exclude<MetricConfiguration, { kind: "none" }>, status: MetricResult["status"], value: number | null, unit: string | null, sampleCount: number, excludedCount: number, message: string, seriesTagId: number | null, referenceTagId: number | null = null, oocCount?: number, seriesInstanceId?: string | null, referenceSeriesInstanceId?: string | null): MetricResult {
@@ -121,7 +183,7 @@ function valuesAndExcluded(series: TimeSeriesSeries, ignoreBadQuality: boolean) 
   return { values: observations.map((item) => item.value), excluded: Math.max(0, series.points.length - observations.length) };
 }
 
-function individualValue(metric: AnalysisMetric, values: readonly number[], lower?: number, upper?: number): number | null {
+export function individualValue(metric: AnalysisMetric, values: readonly number[], lower?: number, upper?: number): number | null {
   if (!values.length) return null;
   if (metric === "count") return values.length;
   if (metric === "total") return values.reduce((sum, value) => sum + value, 0);
@@ -138,8 +200,10 @@ function individualValue(metric: AnalysisMetric, values: readonly number[], lowe
   return null;
 }
 
-function unitFor(metric: AnalysisMetric, unit: string | null): string | null {
-  const rule = METRIC_BY_ID.get(metric)?.unitRule;
+export function unitFor(metric: AnalysisMetric | string, unit: string | null): string | null {
+  if (metric === "OOC" || metric === "pc") return "%";
+  if (metric === "MEDIA" || metric === "MIN" || metric === "MAXIMO") return displayUnit(unit);
+  const rule = METRIC_BY_ID.get(metric as AnalysisMetric)?.unitRule;
   if (rule === "percent") return "%";
   if (rule === "none") return null;
   const source = displayUnit(unit);
