@@ -7,13 +7,14 @@ import {
   productionUnitTooltip,
 } from "../src/utils/productionUnitChart";
 import {
-  createMetricConfiguration,
   validateMetricConfiguration,
 } from "../src/utils/analysisMetrics";
+import { applyDataFilters, validateFilterConfiguration } from "../src/utils/dataFilters";
+import type { ProductionUnitAnalysisResponse } from "../src/api";
 import type {
-  ProductionUnitAnalysisResponse,
   TimeSeries,
   MetricConfiguration,
+  DataFilterConfiguration,
 } from "../src/types";
 
 describe("Production unit metrics calculation and lifecycle", () => {
@@ -148,7 +149,7 @@ describe("Production unit metrics calculation and lifecycle", () => {
         ],
       },
     ],
-  };
+  } as any;
 
   const rawTimeSeries: TimeSeries = {
     start_time: new Date(T).toISOString(),
@@ -678,6 +679,72 @@ describe("Production unit metrics calculation and lifecycle", () => {
         },
       );
       expect(result.series[0].unit_aggregation?.segments[0].value).toBeNull();
+    });
+  });
+
+  describe("Draft and filter configuration resilience in Base Unidade", () => {
+    it("does not throw 'configuration.rules is not iterable' when filter configuration has missing or uninitialized rules", () => {
+      // Scenario: draft state with missing rules or uninitialized object
+      const draftConfigMissingRules = {
+        quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
+      } as unknown as DataFilterConfiguration;
+
+      expect(() => validateFilterConfiguration(draftConfigMissingRules)).not.toThrow();
+      expect(() => applyDataFilters(rawTimeSeries, draftConfigMissingRules)).not.toThrow();
+
+      const filtered = applyDataFilters(rawTimeSeries, draftConfigMissingRules);
+      expect(filtered.timeSeries).toBeDefined();
+    });
+
+    it("handles configuration passed as rules array defensively without throwing", () => {
+      const rulesArray = [
+        {
+          id: "rule-1",
+          kind: "numeric" as const,
+          enabled: true,
+          tagId: 1,
+          operator: "greaterThan" as const,
+          value: 25,
+        },
+      ];
+
+      expect(() => applyDataFilters(rawTimeSeries, rulesArray as unknown as DataFilterConfiguration)).not.toThrow();
+      const filtered = applyDataFilters(rawTimeSeries, rulesArray as unknown as DataFilterConfiguration);
+      expect(filtered.timeSeries).toBeDefined();
+    });
+
+    it("correctly filters points and calculates UM metrics during consultation with draft active filters", () => {
+      // Draft filter: only points where value >= 30 are retained
+      const draftFilterConfig: DataFilterConfiguration = {
+        quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
+        rules: [
+          {
+            id: "draft-rule-1",
+            kind: "numeric",
+            enabled: true,
+            tagId: 1,
+            operator: "greaterThanOrEqual",
+            value: 30,
+            secondValue: null,
+          },
+        ],
+      };
+
+      const filtered = applyDataFilters(rawTimeSeries, draftFilterConfig);
+      // In UM-101 (points 10, 20, 30, 40, 50), points 10 and 20 are marked filtered_out
+      const result = buildProductionUnitTimeSeries(
+        multiUmResponse,
+        "count",
+        [1],
+        null,
+        filtered.timeSeries,
+      );
+
+      const intervals = result.series[0].unit_aggregation?.segments!;
+      // Points 30, 40, 50 -> count is 3
+      expect(intervals[0].value).toBe(3);
+      // UM-102 (points 100, 110, 120, 130): all >= 30 -> count is 4
+      expect(intervals[1].value).toBe(4);
     });
   });
 });

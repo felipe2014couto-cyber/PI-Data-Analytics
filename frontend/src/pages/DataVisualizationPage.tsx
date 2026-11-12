@@ -10,6 +10,7 @@ import type {
   DataFilterConfiguration,
   Equipment,
   AnalysisModel,
+  AnalysisMetric,
   TimeAnalysisRule,
   PiHealth,
   PiTag,
@@ -71,7 +72,7 @@ import {
   validateAssignments,
   type AssignmentTag,
 } from "../utils/seriesAssignments";
-import { calculateMetricResults, createMetricConfiguration } from "../utils/analysisMetrics";
+import { createMetricConfiguration } from "../utils/analysisMetrics";
 import { buildVisualConfigurationDocument, normalizeVisualConfigurationDocument, type PersistablePageState } from "../utils/visualConfiguration";
 import { applyTimeAnalysisRule } from "../utils/timeAnalysisRule";
 import { assignProductionUnitAxes, buildProductionUnitTimeSeries, isLegacyProductionUnitRule, isProductionUnitRule } from "../utils/productionUnitChart";
@@ -991,10 +992,6 @@ export function DataVisualizationPage() {
       equipment: null, section: null, variable_type: null, unit: tag.engineering_unit, points: [],
     }));
   }, [filters.analysisModel, filteredTimeSeries, metricNumericSeries, selectedTagIds, tags]);
-  const metricResults = useMemo(
-    () => calculateMetricResults(metricNumericSeries, metricConfiguration, false),
-    [metricNumericSeries, metricConfiguration],
-  );
 
   const scatterXSeries = useMemo(() => {
     const assignment = seriesAssignments.find((item) => item.scatterRole === "x");
@@ -1322,7 +1319,7 @@ export function DataVisualizationPage() {
     const baseFilterConfiguration = restored.filters.filterConfiguration ?? { quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false }, rules: [] };
     const cleanedFilterConfiguration = {
       ...baseFilterConfiguration,
-      rules: stripRetiredNamedFilterRules(baseFilterConfiguration.rules),
+      rules: stripRetiredNamedFilterRules(baseFilterConfiguration.rules ?? []),
     };
     setFilters({
       ...INITIAL_FILTERS,
@@ -1525,8 +1522,8 @@ export function DataVisualizationPage() {
           start_time: resolvedPeriod.startTime, end_time: resolvedPeriod.endTime,
           filter_configuration: {
             filtersEnabled: filters.filtersEnabled,
-            quality: filters.filterConfiguration.quality,
-            rules: filters.filtersEnabled ? filters.filterConfiguration.rules.filter((rule) => rule.enabled) : [],
+            quality: filters.filterConfiguration?.quality ?? { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
+            rules: filters.filtersEnabled ? (filters.filterConfiguration?.rules ?? []).filter((rule) => rule.enabled) : [],
           },
           analysis_filters: filters.filtersEnabled ? activeDynamicFilters : [],
         }, controller.signal);
@@ -1536,11 +1533,9 @@ export function DataVisualizationPage() {
           if (filters.filtersEnabled) {
             const filtered = applyDataFilters(
               raw,
-              filters.filterConfiguration.rules.filter((r) => r.enabled),
-              activeDynamicFilters,
-              filters.filterConfiguration.quality,
+              filters.filterConfiguration,
             );
-            unitPoints = filtered.timeSeries;
+            unitPoints = filtered.filteredTimeSeries;
           } else {
             unitPoints = raw;
           }
@@ -1564,7 +1559,7 @@ export function DataVisualizationPage() {
         timeSeries: result,
         unitAnalysis,
         unitTimeSeriesPoints: unitPoints,
-        unitFiltersActive: unitAnalysis ? filters.filtersEnabled && (activeDynamicFilters.length > 0 || filters.filterConfiguration.rules.some((rule) => rule.enabled)) : undefined,
+        unitFiltersActive: unitAnalysis ? filters.filtersEnabled && (activeDynamicFilters.length > 0 || (filters.filterConfiguration?.rules ?? []).some((rule) => rule.enabled)) : undefined,
         loading: false,
         errorMessage: null,
         errorDetails: null,

@@ -67,7 +67,15 @@ export function normalizeVisualConfigurationDocument(
         : {}),
       timezone,
       timePeriod: saved.filters.timePeriod ?? defaults.filters.timePeriod,
-      filterConfiguration: saved.filters.filterConfiguration ?? defaults.filters.filterConfiguration,
+      filterConfiguration: saved.filters.filterConfiguration
+        ? {
+            ...saved.filters.filterConfiguration,
+            quality: saved.filters.filterConfiguration.quality ?? defaults.filters.filterConfiguration.quality,
+            rules: Array.isArray(saved.filters.filterConfiguration.rules)
+              ? saved.filters.filterConfiguration.rules
+              : [],
+          }
+        : defaults.filters.filterConfiguration,
     },
     selectedTagIds: saved.selectedTagIds ?? defaults.selectedTagIds,
     seriesAssignments: saved.seriesAssignments ?? defaults.seriesAssignments,

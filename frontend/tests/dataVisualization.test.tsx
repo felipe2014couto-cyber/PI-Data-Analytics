@@ -124,7 +124,8 @@ describe("Data visualization page", () => {
     });
     renderAt("/analises/visualizacao");
     const user = userEvent.setup();
-    const equipmentSelect = await screen.findByTestId("equipment-select");
+    const equipmentSelect = (await screen.findByTestId("equipment-select")) as HTMLSelectElement;
+    await waitFor(() => expect(equipmentSelect.options.length).toBeGreaterThan(1));
     await user.selectOptions(equipmentSelect, "1");
     await waitFor(() => expect(equipmentSelect).toHaveValue("1"));
     const tagList = await screen.findByTestId("tag-multi-select");

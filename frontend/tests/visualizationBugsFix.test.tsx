@@ -14,7 +14,7 @@ import {
 } from "./mocks/api";
 import type { PiTag, TimeSeries, VariableType, Equipment } from "../src/types";
 import { buildTagOption } from "../src/components/TagMultiSelect";
-import { createInitialAssignments, reconcileAssignments } from "../src/utils/seriesAssignments";
+import { createInitialAssignments } from "../src/utils/seriesAssignments";
 import { buildTimeSeriesChartOption } from "../src/components/TimeSeriesChart";
 import { buildChartData } from "../src/utils/chartData";
 import { VisualConfigurationsPanel } from "../src/components/VisualConfigurationsPanel";
@@ -133,6 +133,7 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
         ],
         errors: [],
         query_execution: {
+          resolution_mode: "raw",
           requested_start: "2026-11-11T13:04:54.000Z",
           requested_end: "2026-11-11T13:19:54.000Z",
           effective_start: "2026-11-11T13:04:54.000Z",
@@ -312,6 +313,7 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
             points: [[Date.parse("2026-07-15T00:30:00Z"), 2.5] as any],
           },
         ],
+        errors: [],
       };
 
       const chart = buildChartData(timeSeries, { ignoreBadQuality: false });
@@ -337,6 +339,7 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
         equipment: "RB3",
         start: new Date("2026-07-15T00:00:00Z"),
         end: new Date("2026-07-15T01:00:00Z"),
+        mode: "recorded",
         normLimitSeries: [orphanNormLimit],
       });
 
@@ -368,6 +371,7 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
             points: [[Date.parse("2026-07-15T00:30:00Z"), 30] as any],
           },
         ],
+        errors: [],
       };
 
       const chart = buildChartData(timeSeries, { ignoreBadQuality: false });
@@ -393,6 +397,7 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
         equipment: "RB1",
         start: new Date("2026-07-15T00:00:00Z"),
         end: new Date("2026-07-15T01:00:00Z"),
+        mode: "recorded",
         normLimitSeries: [normLimit],
       });
 
@@ -415,7 +420,7 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
     it("exibe badge de rascunho não salvo quando nenhuma configuração está aberta", () => {
       render(
         <VisualConfigurationsPanel
-          document={{ version: 1, filters: {} as any, seriesAssignments: [], metricConfiguration: {} as any, comparison: {} as any, visualRules: {} as any }}
+          document={{ schema_version: 1, visual_rules: {} as any }}
           onOpen={vi.fn()}
         />,
       );
@@ -448,8 +453,8 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
       // Troca para período absoluto
       fireEvent.change(screen.getByTestId("period-kind"), { target: { value: "absolute" } });
 
-      const startInput = screen.getByTestId("absolute-start");
-      const endInput = screen.getByTestId("absolute-end");
+      const startInput = screen.getByTestId<HTMLInputElement>("absolute-start");
+      const endInput = screen.getByTestId<HTMLInputElement>("absolute-end");
       const submitBtn = screen.getByTestId("filters-submit");
 
       // Possuem atributo step="1" para aceitar segundos
@@ -487,8 +492,8 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
       renderAt("/analises/visualizacao");
 
       fireEvent.change(await screen.findByTestId("period-kind"), { target: { value: "absolute" } });
-      const startInput = screen.getByTestId("absolute-start");
-      const endInput = screen.getByTestId("absolute-end");
+      const startInput = screen.getByTestId<HTMLInputElement>("absolute-start");
+      const endInput = screen.getByTestId<HTMLInputElement>("absolute-end");
 
       // Simula colar texto em formato brasileiro
       fireEvent.paste(startInput, {
@@ -534,12 +539,12 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
           },
         ],
         query_execution: {
+          resolution_mode: "raw",
           requested_start: "2026-11-11T13:04:54.000Z",
           requested_end: "2026-11-11T13:19:54.000Z",
           effective_start: "2026-11-11T13:04:54.000Z",
           effective_end: "2026-11-11T13:19:00.000Z",
           data_available_until: "2026-11-11T13:19:00.000Z",
-          resolution_mode: "automatic",
           sampled: false,
           partial: false,
         },
@@ -559,8 +564,8 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
 
       // Define período absoluto: 11/11/2026 10:04:54 até 11/11/2026 10:19:54
       fireEvent.change(screen.getByTestId("period-kind"), { target: { value: "absolute" } });
-      const startInput = screen.getByTestId("absolute-start");
-      const endInput = screen.getByTestId("absolute-end");
+      const startInput = screen.getByTestId<HTMLInputElement>("absolute-start");
+      const endInput = screen.getByTestId<HTMLInputElement>("absolute-end");
       fireEvent.change(startInput, { target: { value: "2026-11-11T10:04:54" } });
       fireEvent.change(endInput, { target: { value: "2026-11-11T10:19:54" } });
 
@@ -616,11 +621,11 @@ describe("Visualização de Dados - Correções dos 8 Bugs", () => {
           },
         ],
         query_execution: {
+          resolution_mode: "raw",
           requested_start: "2026-11-11T13:04:54.000Z",
           requested_end: "2026-11-11T13:19:54.000Z",
           effective_start: "2026-11-11T13:04:54.000Z",
           effective_end: "2026-11-11T13:19:54.000Z",
-          resolution_mode: "automatic",
           sampled: false,
           partial: false,
         },

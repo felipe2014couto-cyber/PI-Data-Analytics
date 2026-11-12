@@ -156,6 +156,7 @@ export const RETIRED_NAMED_FILTER_FIELDS: readonly string[] = [
 ];
 
 export function stripRetiredNamedFilterRules<T extends { id: string }>(rules: T[]): T[] {
+  if (!Array.isArray(rules)) return [];
   return rules.filter((rule) => {
     if (typeof rule.id !== "string") return true;
     if (!rule.id.startsWith("named-filter:")) return true;

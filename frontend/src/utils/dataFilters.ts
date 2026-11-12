@@ -157,8 +157,13 @@ export function validateFilterConfiguration(
   configuration: DataFilterConfiguration,
 ): FilterRuleError[] {
   const errors: FilterRuleError[] = [];
-  for (const rule of configuration.rules) {
-    if (!rule.enabled) continue;
+  const rules = Array.isArray(configuration?.rules)
+    ? configuration.rules
+    : Array.isArray(configuration)
+    ? (configuration as unknown as DataFilterRule[])
+    : [];
+  for (const rule of rules) {
+    if (!rule || !rule.enabled) continue;
     switch (rule.kind) {
       case "numeric":
         if (rule.value === null || !Number.isFinite(rule.value)) {
@@ -207,19 +212,30 @@ export function applyDataFilters(
     seriesSectionMap?: Map<string, number>;
   } = {},
 ): FilterApplicationResult {
-  const errors: FilterRuleError[] = validateFilterConfiguration(configuration);
+  const normalizedConfig: DataFilterConfiguration = Array.isArray(configuration)
+    ? {
+        quality: { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
+        rules: configuration as unknown as DataFilterRule[],
+      }
+    : {
+        ...configuration,
+        quality: configuration?.quality ?? { excludeBad: false, excludeQuestionable: false, excludeSubstituted: false },
+        rules: Array.isArray(configuration?.rules) ? configuration.rules : [],
+      };
+
+  const errors: FilterRuleError[] = validateFilterConfiguration(normalizedConfig);
   const validRuleIds = new Set(
-    configuration.rules
-      .filter((rule) => rule.enabled)
+    normalizedConfig.rules
+      .filter((rule) => rule && rule.enabled)
       .map((rule) => rule.id),
   );
   for (const err of errors) {
     if (err.ruleId) validRuleIds.delete(err.ruleId);
   }
 
-  const quality = configuration.quality;
-  const activeRules = configuration.rules.filter(
-    (rule) => rule.enabled && validRuleIds.has(rule.id),
+  const quality = normalizedConfig.quality;
+  const activeRules = normalizedConfig.rules.filter(
+    (rule) => rule && rule.enabled && validRuleIds.has(rule.id),
   );
 
   const weekdayRule = activeRules.find((r) => r.kind === "weekday");
@@ -295,9 +311,15 @@ export function applyDataFilters(
     return undefined;
   }
 
+  const rules = Array.isArray(configuration?.rules)
+    ? configuration.rules
+    : Array.isArray(configuration)
+    ? (configuration as unknown as DataFilterRule[])
+    : [];
+
   const ruleResultsMap = new Map<string, number>();
-  for (const rule of configuration.rules) {
-    ruleResultsMap.set(rule.id, 0);
+  for (const rule of rules) {
+    if (rule) ruleResultsMap.set(rule.id, 0);
   }
 
   let totalReceived = 0;
@@ -540,11 +562,14 @@ export function applyDataFilters(
     removedPoints,
   }));
 
+  const filteredObj: TimeSeries = {
+    ...timeSeries,
+    series: filteredSeries,
+  };
+
   return {
-    filteredTimeSeries: {
-      ...timeSeries,
-      series: filteredSeries,
-    },
+    filteredTimeSeries: filteredObj,
+    timeSeries: filteredObj,
     summary,
     ruleResults,
     errors,

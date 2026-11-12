@@ -447,6 +447,7 @@ describe("Base Cíclica - Filtros e Limites Vinculados às Tags", () => {
       lowerTagName: "RB3_ESP_MIN",
       upperTagName: "RB3_ESP_MAX",
       yAxisIndex: 0,
+      lineStyle: "dashed" as const,
       width: 2,
       lowerColor: "#2e7d32",
       upperColor: "#d32f2f",
@@ -461,6 +462,7 @@ describe("Base Cíclica - Filtros e Limites Vinculados às Tags", () => {
       lowerTagName: "RB3_ESC04_MIN",
       upperTagName: "RB3_ESC04_MAX",
       yAxisIndex: 1,
+      lineStyle: "dashed" as const,
       width: 2,
       lowerColor: "#388e3c",
       upperColor: "#c62828",
@@ -470,6 +472,8 @@ describe("Base Cíclica - Filtros e Limites Vinculados às Tags", () => {
 
     const option = buildTimeSeriesChartOption({
       chart: numericChart!,
+      equipment: "RB3",
+      mode: "recorded",
       start: new Date("2026-07-15T00:00:00Z"),
       end: new Date("2026-07-15T01:00:00Z"),
       baseStart: new Date("2026-07-15T00:00:00Z"),

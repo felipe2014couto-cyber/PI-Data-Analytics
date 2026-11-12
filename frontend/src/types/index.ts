@@ -890,6 +890,7 @@ export interface FilterRuleError {
 
 export interface FilterApplicationResult {
   filteredTimeSeries: TimeSeries;
+  timeSeries?: TimeSeries;
   summary: FilterApplicationSummary;
   ruleResults: FilterRuleResult[];
   errors: FilterRuleError[];
